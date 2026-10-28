@@ -1,0 +1,17 @@
+node_modules/
+dist/
+*.log
+
+# 各包的编译产物
+packages/*/lib/
+packages/*/dist/
+examples/*/lib/
+*.tsbuildinfo
+
+# 外壳：嵌入用的前端产物由 scripts/stage-resources.mjs 生成
+packages/shell/resources/ui/
+packages/shell/resources/shared/
+# go build 在工作目录留下的二进制
+packages/shell/shell
+
+.DS_Store

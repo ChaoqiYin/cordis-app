@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>cordis-app</title>
+
+    <!--
+      import map 必须出现在任何模块脚本之前，否则浏览器会先按裸模块名解析并失败。
+
+      这里的每一项都指向 /__shared/ 下的产物，宿主 bundle 也把同样的裸模块名
+      标为 external —— 两边因此共享同一份 React。插件前端 bundle 用同样的方式
+      external，于是全页面只有一个 React 实例，插件的 hooks 才能正常工作。
+
+      清单由 shared-modules.mjs 单一维护，构建时注入，不手写。
+    -->
+    %CORDIS_IMPORT_MAP%
+
+    <script>
+      // 首屏前恢复外观，避免浅色闪一下再切到深色
+      try {
+        const theme = localStorage.getItem('cordis-app/theme')
+        if (theme && theme !== 'auto') document.documentElement.dataset.theme = theme
+        const accent = localStorage.getItem('cordis-app/accent')
+        if (accent) document.documentElement.style.setProperty('--accent', accent)
+      } catch {}
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/ui/main.tsx"></script>
+  </body>
+</html>

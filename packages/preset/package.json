@@ -1,0 +1,30 @@
+{
+  "name": "@cordis-app/preset",
+  "version": "1.0.0",
+  "description": "Plugin build preset: esbuild configuration and the shared-module external whitelist",
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "main": "./lib/index.js",
+  "types": "./lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib"
+  ],
+  "scripts": {
+    "build": "tsc -b tsconfig.json",
+    "typecheck": "tsc -b tsconfig.json --noEmit",
+    "test": "tsc -b tsconfig.json && node --test \"test/*.test.ts\""
+  },
+  "dependencies": {
+    "esbuild": "^0.28.2"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}

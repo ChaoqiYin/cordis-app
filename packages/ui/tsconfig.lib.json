@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "outDir": "dist/shared",
+    "rootDir": "src/client",
+    "types": []
+  },
+  "include": ["src/client"]
+}

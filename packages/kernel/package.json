@@ -1,0 +1,32 @@
+{
+  "name": "@cordis-app/kernel",
+  "version": "1.0.0",
+  "description": "cordis adapter layer and the Kernel interface. The only package that depends on cordis.",
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "main": "./lib/index.js",
+  "types": "./lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib"
+  ],
+  "scripts": {
+    "build": "tsc -b tsconfig.json",
+    "typecheck": "tsc -b tsconfig.json --noEmit",
+    "test": "tsc -b tsconfig.json && node --test \"test/*.test.ts\""
+  },
+  "dependencies": {
+    "@cordisjs/core": "3.18.1",
+    "@cordis-app/protocol": "workspace:*",
+    "schemastery": "^3.18.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}

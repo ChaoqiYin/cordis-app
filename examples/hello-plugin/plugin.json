@@ -1,0 +1,9 @@
+{
+  "id": "hello",
+  "displayName": "Hello",
+  "description": "最小可用插件示例：一个服务端路由 + 一个前端页面",
+  "version": "1.0.0",
+  "server": "lib/server.js",
+  "client": "lib/client.js",
+  "capabilities": ["storage"]
+}

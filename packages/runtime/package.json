@@ -1,0 +1,43 @@
+{
+  "name": "@cordis-app/runtime",
+  "version": "1.0.0",
+  "description": "Host process: supervisor, worker, built-in plugins, HTTP, handshake",
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "main": "./lib/index.js",
+  "types": "./lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./supervisor": "./lib/supervisor/main.js",
+    "./worker": "./lib/worker/main.js",
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "cordis-app-supervisor": "./lib/supervisor/main.js"
+  },
+  "files": [
+    "lib"
+  ],
+  "scripts": {
+    "build": "tsc -b tsconfig.json",
+    "typecheck": "tsc -b tsconfig.json --noEmit",
+    "test": "tsc -b tsconfig.json && node --test \"test/*.test.ts\""
+  },
+  "dependencies": {
+    "@cordis-app/kernel": "workspace:*",
+    "@cordis-app/protocol": "workspace:*",
+    "semver": "^7.8.5",
+    "ws": "^8.22.0",
+    "yaml": "^2.9.1",
+    "chokidar": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/semver": "^7.7.0",
+    "@types/ws": "^8.18.2",
+    "typescript": "^5.9.3"
+  }
+}
