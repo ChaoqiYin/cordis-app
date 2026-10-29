@@ -314,3 +314,231 @@ test('run 在缺少应用定义时不会去 fork worker', async () => {
   assert.equal(code, 1)
   assert.ok(fake.err.some((line) => line.includes('找不到应用定义')))
 })
+
+// ---------------------------------------------------------------- dev / build / start
+
+import type {
+  BuildResult,
+  ProjectDevServer,
+  ProjectDevServerOptions,
+  ProjectWatcher,
+  ProjectWatcherOptions,
+} from '@cordis-app/ui/build'
+import type { AppExitEvent, AppHandle, StartAppOptions } from '@cordis-app/runtime'
+import { commandBuild, commandDev, commandStart } from '../lib/index.js'
+
+/** 一个可观察的假 AppHandle：只实现命令真正会用的成员。 */
+class FakeApp implements AppHandle {
+  readonly url = 'http://127.0.0.1:5000/#token=t'
+  readonly token = 't'
+  readonly port = 5000
+  stopped = 0
+  restarted = 0
+  private readonly listeners = new Map<string, Set<(payload: unknown) => void>>()
+
+  on(event: keyof import('@cordis-app/runtime').AppEvents, listener: (payload: any) => void): () => void {
+    const set = this.listeners.get(event) ?? new Set()
+    set.add(listener)
+    this.listeners.set(event, set)
+    return () => set.delete(listener)
+  }
+
+  emit(event: string, payload: unknown): void {
+    for (const listener of [...(this.listeners.get(event) ?? [])]) listener(payload)
+  }
+
+  async stop(): Promise<void> {
+    this.stopped++
+  }
+
+  async restart(): Promise<void> {}
+
+  async restartWorker(): Promise<void> {
+    this.restarted++
+  }
+}
+
+function writeBuiltProject(root: string): void {
+  mkdirSync(join(root, 'dist', 'resources', 'ui'), { recursive: true })
+  mkdirSync(join(root, 'dist', 'server'), { recursive: true })
+  writeFileSync(join(root, 'dist', 'app.json'), JSON.stringify({ name: 'demo', version: '0.1.0' }))
+  writeFileSync(join(root, 'dist', 'resources', 'ui', 'index.html'), '<!doctype html>')
+  writeFileSync(join(root, 'dist', 'server', 'index.js'), 'export default function apply() {}\n')
+}
+
+test('dev/build/start 都是合法子命令', () => {
+  assert.equal(parseArgs(['dev']).command, 'dev')
+  assert.equal(parseArgs(['build']).command, 'build')
+  assert.equal(parseArgs(['start']).command, 'start')
+})
+
+test('build 调用构建器并打印产物位置', async () => {
+  const root = join(tempDir(), 'demo')
+  await commandNew(parseArgs(['new', 'demo', '--project', root]), fakeIO().io)
+
+  const result: BuildResult = {
+    projectRoot: root,
+    outDir: join(root, 'dist'),
+    resourcesDir: join(root, 'dist', 'resources'),
+    serverEntry: join(root, 'dist', 'server', 'index.js'),
+    appJson: join(root, 'dist', 'app.json'),
+    packageJson: join(root, 'dist', 'package.json'),
+    plugins: [],
+  }
+  const calls: string[] = []
+  const fake = fakeIO({
+    projectBuilder: async (options) => {
+      calls.push(options.projectRoot)
+      return result
+    },
+  })
+
+  const code = await commandBuild(parseArgs(['build', '--project', root]), fake.io)
+  assert.equal(code, 0)
+  assert.deepEqual(calls, [root])
+  assert.ok(fake.out.some((line) => line.includes(result.outDir)))
+  assert.ok(fake.out.some((line) => line.includes('构建完成')))
+})
+
+test('start 在产物缺失时失败并提示先 build', async () => {
+  const root = join(tempDir(), 'demo')
+  await commandNew(parseArgs(['new', 'demo', '--project', root]), fakeIO().io)
+
+  const fake = fakeIO({
+    appStarter: async () => {
+      throw new Error('不应启动')
+    },
+  })
+  const code = await commandStart(parseArgs(['start', '--project', root]), fake.io)
+  assert.equal(code, 1)
+  assert.ok(fake.err.some((line) => line.includes('cordis-app build')))
+})
+
+test('start 用 dist 的 resources 与 server 入口启动，而不是源码入口', async () => {
+  const root = join(tempDir(), 'demo')
+  await commandNew(parseArgs(['new', 'demo', '--project', root]), fakeIO().io)
+  writeBuiltProject(root)
+
+  let options: StartAppOptions | undefined
+  const app = new FakeApp()
+  const fake = fakeIO({
+    appStarter: async (value) => {
+      options = value
+      setTimeout(() => app.emit('exit', { code: 0, signal: null, expected: true }), 0)
+      return app
+    },
+  })
+
+  const code = await commandStart(parseArgs(['start', '--project', root]), fake.io)
+  assert.equal(code, 0)
+  assert.equal(options?.projectRoot, root)
+  assert.equal(options?.resourcesDir, join(root, 'dist', 'resources'))
+  assert.equal(options?.serverEntry, join(root, 'dist', 'server', 'index.js'))
+  assert.ok(fake.out.includes(app.url))
+})
+
+test('dev 先构建 worker 产物，再起 Vite，并在 server 变化时重启 worker', async () => {
+  const root = join(tempDir(), 'demo')
+  await commandNew(parseArgs(['new', 'demo', '--project', root]), fakeIO().io)
+
+  const app = new FakeApp()
+  let watcherOptions: ProjectWatcherOptions | undefined
+  let appOptions: StartAppOptions | undefined
+  let devOptions: ProjectDevServerOptions | undefined
+  let reloads = 0
+
+  const watcher: ProjectWatcher = {
+    devRoot: join(root, '.cordis', 'dev'),
+    serverEntry: join(root, '.cordis', 'dev', 'server', 'index.js'),
+    localPluginsDir: join(root, '.cordis', 'dev', 'plugins'),
+    async close() {},
+  }
+  const dev: ProjectDevServer = {
+    url: 'http://127.0.0.1:5173/#token=t',
+    port: 5173,
+    server: {} as ProjectDevServer['server'],
+    reload() {
+      reloads++
+    },
+    async close() {},
+  }
+
+  const fake = fakeIO({
+    projectWatcher: async (options) => {
+      watcherOptions = options
+      return watcher
+    },
+    appStarter: async (options) => {
+      appOptions = options
+      setTimeout(() => {
+        void (async () => {
+          await watcherOptions?.onChange?.({ kind: 'server' })
+          app.emit('exit', { code: 0, signal: null, expected: true } satisfies AppExitEvent)
+        })()
+      }, 0)
+      return app
+    },
+    devServerStarter: async (options) => {
+      devOptions = options
+      return dev
+    },
+  })
+
+  const code = await commandDev(parseArgs(['dev', '--project', root]), fake.io)
+
+  assert.equal(code, 0)
+  assert.equal(watcherOptions?.projectRoot, root)
+  assert.equal(appOptions?.dev, true)
+  assert.equal(appOptions?.serverEntry, watcher.serverEntry)
+  assert.equal(appOptions?.localPluginsDir, watcher.localPluginsDir)
+  assert.deepEqual(devOptions?.worker, { port: app.port, token: app.token })
+  assert.equal(app.restarted, 1, 'server 变化应重启 worker')
+  assert.equal(reloads, 0, 'server 变化不需要刷新页面')
+  assert.ok(fake.out.includes(dev.url))
+  assert.equal(app.stopped, 1)
+})
+
+test('dev 的插件前端变化在重启后触发整页刷新', async () => {
+  const root = join(tempDir(), 'demo')
+  await commandNew(parseArgs(['new', 'demo', '--project', root]), fakeIO().io)
+
+  const app = new FakeApp()
+  let watcherOptions: ProjectWatcherOptions | undefined
+  let reloads = 0
+
+  const fake = fakeIO({
+    projectWatcher: async (options) => {
+      watcherOptions = options
+      return {
+        devRoot: join(root, '.cordis', 'dev'),
+        serverEntry: join(root, '.cordis', 'dev', 'server', 'index.js'),
+        localPluginsDir: join(root, '.cordis', 'dev', 'plugins'),
+        async close() {},
+      }
+    },
+    appStarter: async () => {
+      setTimeout(() => {
+        void (async () => {
+          await watcherOptions?.onChange?.({ kind: 'plugin' })
+          app.emit('exit', { code: 0, signal: null, expected: true } satisfies AppExitEvent)
+        })()
+      }, 0)
+      return app
+    },
+    devServerStarter: async () =>
+      ({
+        url: 'http://127.0.0.1:5173/#token=t',
+        port: 5173,
+        server: {} as ProjectDevServer['server'],
+        reload() {
+          reloads++
+        },
+        async close() {},
+      }) satisfies ProjectDevServer,
+  })
+
+  const code = await commandDev(parseArgs(['dev', '--project', root]), fake.io)
+  assert.equal(code, 0)
+  assert.equal(app.restarted, 1)
+  assert.equal(reloads, 1)
+})

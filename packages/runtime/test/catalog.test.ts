@@ -241,3 +241,22 @@ test('readPluginId 对清单不完整但 id 存在的插件仍然可读', () => 
   assert.equal(readPluginId(dir, 'bare'), 'bare-id')
   assert.equal(readPluginId(dir, 'missing'), undefined)
 })
+
+test('插件前端缓存键：生产按内容 hash，开发按时间戳', async () => {
+  const { clientVersion } = await import('../lib/plugin/loader.js')
+  const dir = tempDir('cordis-version-')
+  const file = join(dir, 'client.js')
+  writeFileSync(file, 'export const a = 1\n')
+
+  const first = clientVersion(file, false)
+  assert.equal(clientVersion(file, false), first, '内容不变时 hash 必须稳定')
+  writeFileSync(file, 'export const a = 2\n')
+  assert.notEqual(clientVersion(file, false), first, '内容变化必须换 hash')
+
+  const originalNow = Date.now
+  Date.now = () => 1_000
+  assert.equal(clientVersion(file, true), '1000')
+  Date.now = () => 2_000
+  assert.equal(clientVersion(file, true), '2000')
+  Date.now = originalNow
+})

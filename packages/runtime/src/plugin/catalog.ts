@@ -318,14 +318,22 @@ export function readPluginId(nodeModulesDir: string, packageName: string): strin
  *
  * 挂载键是插件 id，不是磁盘相对路径：插件包放在 `@scope/name` 还是扁平目录，
  * URL 都只有 `/__plugins/<id>/...`。相对文件路径逐段编码，静态服务再解码。
+ *
+ * `version` 会作为查询参数附在 URL 后：生产构建传内容 hash，开发模式传时间戳，
+ * 避免浏览器 ESM 缓存继续使用旧模块。查询串不参与静态服务的路径解析。
  */
-export function pluginFileUrl(plugin: InstalledPlugin, filePath: string): string {
+export function pluginFileUrl(
+  plugin: InstalledPlugin,
+  filePath: string,
+  version?: string | number,
+): string {
   const relativeFile = relative(plugin.root, filePath)
   if (relativeFile === '' || relativeFile.startsWith('..') || isAbsolute(relativeFile)) {
     throw new Error(`插件资源必须位于插件根内: ${filePath}`)
   }
   const file = relativeFile.split(/[\\/]/).map(encodeURIComponent).join('/')
-  return `${PLUGINS_PREFIX}/${encodeURIComponent(plugin.id)}/${file}`
+  const url = `${PLUGINS_PREFIX}/${encodeURIComponent(plugin.id)}/${file}`
+  return version === undefined ? url : `${url}?v=${encodeURIComponent(String(version))}`
 }
 
 function readdirSafe(dir: string): string[] {

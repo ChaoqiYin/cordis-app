@@ -16,10 +16,15 @@
 import { createRoot } from 'react-dom/client'
 import type { ReactNode } from 'react'
 import './styles.css'
-import Body from './body.js'
-import { BodyHost } from '../host/index.js'
-import { warnUiCompatibility, warnUiContractVersion } from '../host/capabilities.js'
-import { installHistoryListener } from '../host/router.js'
+// body 是项目替换点：仓库内由 vite 配置指向默认实现，项目构建/开发由
+// `@cordis-app/ui/build` 指向项目的 src/body.tsx。壳逻辑只有这一份。
+import Body from 'virtual:cordis-app/body'
+import {
+  BodyHost,
+  installHistoryListener,
+  warnUiCompatibility,
+  warnUiContractVersion,
+} from 'cordis-app/ui'
 import { MANIFEST_PATH, type ClientManifest } from '@cordis-app/protocol/client'
 import {
   ClientRuntime,

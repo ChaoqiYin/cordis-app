@@ -11,8 +11,32 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { spawn } from 'node:child_process'
-import { FRAMEWORK_VERSION, waitForReady } from '@cordis-app/protocol'
-import { PluginInstaller, Supervisor, readPluginId } from '@cordis-app/runtime'
+import {
+  FRAMEWORK_VERSION,
+  resolveProjectLayout,
+  waitForReady,
+  type PluginFailure,
+} from '@cordis-app/protocol'
+import {
+  PluginInstaller,
+  StartAppError,
+  Supervisor,
+  readPluginId,
+  startApp as defaultStartApp,
+  type AppExitEvent,
+  type AppHandle,
+  type StartAppOptions,
+} from '@cordis-app/runtime'
+import {
+  buildProject as defaultBuildProject,
+  createProjectDevServer as defaultDevServer,
+  createProjectWatcher as defaultWatcher,
+  type BuildResult,
+  type ProjectDevServer,
+  type ProjectDevServerOptions,
+  type ProjectWatcher,
+  type ProjectWatcherOptions,
+} from '@cordis-app/ui/build'
 import type { ParsedArgs } from './args.js'
 import { UsageError } from './args.js'
 import {
@@ -43,6 +67,14 @@ export interface CommandIO {
   resourcesDir?: string
   /** 执行包管理器，测试时替换；默认在项目根执行 npm */
   packageManager?(command: string, args: string[], cwd: string): Promise<void>
+  /** 构建实现；测试时替换，避免真的跑 Vite */
+  projectBuilder?(options: { projectRoot: string; outDir?: string }): Promise<BuildResult>
+  /** 启动 supervisor 的实现；测试时替换 */
+  appStarter?(options: StartAppOptions): Promise<AppHandle>
+  /** 开发期的源码监听器；测试时替换 */
+  projectWatcher?(options: ProjectWatcherOptions): Promise<ProjectWatcher>
+  /** 开发期 Vite 服务器；测试时替换 */
+  devServerStarter?(options: ProjectDevServerOptions): Promise<ProjectDevServer>
 }
 
 export const defaultIO: CommandIO = {
@@ -172,6 +204,204 @@ function startSupervisor(
       },
     )
   })
+}
+
+// ---------------------------------------------------------------- dev
+
+/**
+ * 开发模式。
+ *
+ * 顺序：先把项目 server 与本地插件现场构建到 `.cordis/dev`，再用这些产物
+ * 启动 worker，最后起 Vite。worker 必须先于 Vite，代理目标才有端口与 token。
+ *
+ * 源码变化由 watcher 统一处理：server 变化只重启 worker；插件变化还要让
+ * 浏览器整页刷新，因为插件前端入口换了带时间戳的 URL。重启沿用 worker 的
+ * exit(75) 语义，页面靠既有 WebSocket 重连后重拉清单。
+ */
+export async function commandDev(args: ParsedArgs, io: CommandIO): Promise<number> {
+  const workspace = openWorkspace(args.projectDir)
+  if (!requireApp(workspace, io)) return 1
+  if (!existsSync(workspace.layout.bodyEntry)) {
+    io.err(`找不到项目 body 入口：${workspace.layout.bodyEntry}`)
+    return 1
+  }
+
+  let app: AppHandle | undefined
+  let dev: ProjectDevServer | undefined
+  let watcher: ProjectWatcher | undefined
+  let stopping = false
+
+  const stopAll = async (): Promise<void> => {
+    if (stopping) return
+    stopping = true
+    await Promise.allSettled([
+      dev?.close() ?? Promise.resolve(),
+      watcher?.close() ?? Promise.resolve(),
+      app?.stop() ?? Promise.resolve(),
+    ])
+  }
+
+  try {
+    const createWatcher = io.projectWatcher ?? defaultWatcher
+    watcher = await createWatcher({
+      projectRoot: workspace.projectRoot,
+      onChange: async ({ kind }) => {
+        if (!app) return
+        try {
+          // 端口与 token 保持不变；前端通过重连事件重新拉清单。
+          await app.restartWorker()
+          if (kind === 'plugin') dev?.reload()
+        } catch (error) {
+          io.err(`重启 worker 失败：${(error as Error).message}`)
+        }
+      },
+    })
+
+    const starter = io.appStarter ?? defaultStartApp
+    app = await starter({
+      projectRoot: workspace.projectRoot,
+      dev: true,
+      serverEntry: watcher.serverEntry,
+      localPluginsDir: watcher.localPluginsDir,
+    })
+
+    const startDev = io.devServerStarter ?? defaultDevServer
+    dev = await startDev({
+      projectRoot: workspace.projectRoot,
+      worker: { port: app.port, token: app.token },
+      ...(args.port ? { port: args.port, strictPort: true } : {}),
+    })
+
+    app.on('ready', (line) => printFailures(line.failures, io))
+    io.out(dev.url)
+    if (args.open) io.openBrowser?.(dev.url)
+  } catch (error) {
+    await stopAll()
+    io.err(`启动开发服务器失败：${formatError(error)}`)
+    return 1
+  }
+
+  return waitForAppExit(app, io, stopAll)
+}
+
+// ---------------------------------------------------------------- build
+
+/** 构建可发布布局。重复执行是幂等的：产物整体替换，不残留旧文件。 */
+export async function commandBuild(args: ParsedArgs, io: CommandIO): Promise<number> {
+  const workspace = openWorkspace(args.projectDir)
+  if (!requireApp(workspace, io)) return 1
+
+  const builder = io.projectBuilder ?? defaultBuildProject
+  try {
+    const result = await builder({ projectRoot: workspace.projectRoot })
+    io.out('构建完成')
+    io.out(`  产物      ${result.outDir}`)
+    io.out(`  前端      ${join(result.resourcesDir, 'ui')}`)
+    io.out(`  共享模块  ${join(result.resourcesDir, 'shared')}`)
+    io.out(`  插件      ${join(result.resourcesDir, 'plugins')}`)
+    io.out(`  服务端    ${result.serverEntry}`)
+    return 0
+  } catch (error) {
+    io.err(`构建失败：${formatError(error)}`)
+    return 1
+  }
+}
+
+// ---------------------------------------------------------------- start
+
+/**
+ * 运行构建产物。
+ *
+ * 项目根不变（data/、.cordis/ 仍按项目定位），只把 resources 与 server 入口
+ * 覆盖到 dist/。产物缺失时直接失败，而不是悄悄回退到源码入口——那会让
+ * 「start 跑的是源码」这种错误在部署后才暴露。
+ */
+export async function commandStart(args: ParsedArgs, io: CommandIO): Promise<number> {
+  const workspace = openWorkspace(args.projectDir)
+  if (!requireApp(workspace, io)) return 1
+
+  const distDir = resolveProjectLayout(workspace.projectRoot).distDir
+  const resourcesDir = args.resourcesDir ? expandPath(args.resourcesDir) : join(distDir, 'resources')
+  const serverEntry = join(distDir, 'server', 'index.js')
+  const appJson = join(distDir, 'app.json')
+
+  if (
+    !existsSync(appJson) ||
+    !existsSync(join(resourcesDir, 'ui', 'index.html')) ||
+    !existsSync(serverEntry)
+  ) {
+    io.err('找不到构建产物。')
+    io.err(`  期望目录：${distDir}`)
+    io.err('先执行 cordis-app build。')
+    return 1
+  }
+
+  let app: AppHandle
+  try {
+    const starter = io.appStarter ?? defaultStartApp
+    app = await starter({
+      projectRoot: workspace.projectRoot,
+      resourcesDir,
+      serverEntry,
+      ...(args.port ? { port: args.port } : {}),
+    })
+  } catch (error) {
+    io.err(`启动失败：${formatError(error)}`)
+    return 1
+  }
+
+  app.on('ready', (line) => printFailures(line.failures, io))
+  io.out(app.url)
+  if (args.open) io.openBrowser?.(app.url)
+  return waitForAppExit(app, io, () => app.stop())
+}
+
+/** 常驻到应用退出或收到信号。退出码遵循命令行惯例：130 / 143。 */
+function waitForAppExit(
+  app: AppHandle,
+  io: CommandIO,
+  cleanup: () => Promise<void>,
+): Promise<number> {
+  return new Promise<number>((resolve) => {
+    let done = false
+    const finish = (code: number): void => {
+      if (done) return
+      done = true
+      process.off('SIGINT', onSigint)
+      process.off('SIGTERM', onSigterm)
+      void cleanup().finally(() => resolve(code))
+    }
+
+    const offExit = app.on('exit', (event: AppExitEvent) => {
+      if (!event.expected) {
+        const reason = event.signal ? `signal ${event.signal}` : `exit ${event.code}`
+        io.err(`应用已退出（${reason}）`)
+      }
+      finish(event.expected ? 0 : (event.code ?? 1))
+    })
+
+    const onSigint = (): void => {
+      offExit()
+      finish(130)
+    }
+    const onSigterm = (): void => {
+      offExit()
+      finish(143)
+    }
+    process.once('SIGINT', onSigint)
+    process.once('SIGTERM', onSigterm)
+  })
+}
+
+function printFailures(failures: PluginFailure[], io: CommandIO): void {
+  if (failures.length === 0) return
+  io.err(`有 ${failures.length} 个插件加载失败：`)
+  for (const failure of failures) io.err(`  ${failure.id}: ${failure.reason}`)
+}
+
+function formatError(error: unknown): string {
+  if (error instanceof StartAppError) return error.message
+  return (error as Error).message
 }
 
 // ---------------------------------------------------------------- add / remove
@@ -380,6 +610,9 @@ export const COMMAND_HANDLERS = {
   add: commandAdd,
   remove: commandRemove,
   run: commandRun,
+  dev: commandDev,
+  build: commandBuild,
+  start: commandStart,
   restart: commandRestart,
   list: commandList,
 } as const

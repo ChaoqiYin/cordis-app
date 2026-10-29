@@ -26,7 +26,8 @@
   },
   "dependencies": {
     "@cordis-app/protocol": "workspace:*",
-    "@cordis-app/runtime": "workspace:*"
+    "@cordis-app/runtime": "workspace:*",
+    "@cordis-app/ui": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

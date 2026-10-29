@@ -35,7 +35,17 @@ export default defineConfig(({ command }) => ({
     // build 不能用 alias：alias 在 external 判定之前生效，会把 cordis-app/client
     // 内联进宿主 bundle，于是宿主与插件各持一份 RuntimeContext，
     // 插件的 useContext 永远读不到 Provider。
-    alias: command === 'serve' ? { 'cordis-app/client': resolve(__dirname, 'src/client/index.ts') } : undefined,
+    alias: {
+      // 仓库内运行壳时使用默认 body；项目构建/开发由 @cordis-app/ui/build 覆盖
+      'virtual:cordis-app/body': resolve(__dirname, 'src/ui/body.tsx'),
+      // 壳只依赖宿主出口；源码别名保证仓库内构建不依赖 dist 的构建顺序
+      'cordis-app/ui': resolve(__dirname, 'src/host/index.ts'),
+      // dev 下没有 import map，源码里的裸模块名需要一个落点。
+      // build 不能用 alias：alias 在 external 判定之前生效，会把 cordis-app/client
+      // 内联进宿主 bundle，于是宿主与插件各持一份 RuntimeContext，
+      // 插件的 useContext 永远读不到 Provider。
+      ...(command === 'serve' ? { 'cordis-app/client': resolve(__dirname, 'src/client/index.ts') } : {}),
+    },
   },
   server: {
     port: 5173,
