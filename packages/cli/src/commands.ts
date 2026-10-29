@@ -423,8 +423,16 @@ export async function commandAdd(args: ParsedArgs, io: CommandIO): Promise<numbe
 
   const installer = await makeInstaller(workspace, io)
   const result = await installer.install(spec)
-  io.out(`已安装 ${result.id}`)
+  io.out(`已安装 ${result.id}${result.version ? `@${result.version}` : ''}`)
   io.out(`  ${result.reason}`)
+  // UI 能力缺失不阻断后端安装，但要让用户知道页面/插槽为什么没出现。
+  if (result.uiCompatibility && result.uiCompatibility !== 'full') {
+    io.err(
+      result.uiCompatibility === 'incompatible'
+        ? '  警告：当前 body 没有声明 UI 能力，插件只能提供后端功能'
+        : '  警告：当前 body 缺少插件声明的部分 UI 出口，插件仅部分可用',
+    )
+  }
 
   // 只有正在运行的项目才需要人去重启；没跑的话下次 run 自然就加载了新插件
   if (result.restarted && readRuntimeFile(workspace.runtimeJsonPath)) {

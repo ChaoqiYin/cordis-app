@@ -81,7 +81,9 @@ export function installRoutes(ctx: KernelContext, options: ApiOptions): void {
       return
     }
     try {
-      const result = await installer.remove(plugin.packageName)
+      // 用插件 id 而不是包名：bundle 来源以 id 为目录身份，npm 源会在内部
+      // 把 id 归一成包名。设置页不需要知道这次运行用的是哪种来源。
+      const result = await installer.remove(plugin.id)
       options.config.delete(plugin.id)
       sendJson(res, 200, result)
       options.requestRestart?.()
