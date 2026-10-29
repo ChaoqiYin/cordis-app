@@ -14,10 +14,12 @@
  */
 
 import { existsSync, mkdirSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import type { KeyObject } from 'node:crypto'
 import { createKernel, createLoggerFactory, ConfigStore, type KernelContext } from '@cordis-app/kernel'
 import {
+  ENV_BUNDLE_PUBLIC_KEY,
   ENV_PORT,
   ENV_PROJECT,
   ENV_RESOURCES,
@@ -37,11 +39,20 @@ import {
 } from '@cordis-app/protocol'
 import * as builtin from '../builtin/index.js'
 import { PluginInstaller } from '../plugin/installer.js'
+import { BundleInstallSource } from '../plugin/bundle-source.js'
 import { loadPlugins } from '../plugin/loader.js'
 import { scanPluginRoots, type PluginRoot } from '../plugin/catalog.js'
 import { checkProjectFrameworkFile } from '../plugin/doctor.js'
 import { sendJson } from '../builtin/http-utils.js'
 import { installRoutes } from './api.js'
+
+/** 打包形态的 bundle 安装配置；只由进程配置注入，不接受 HTTP 请求覆盖。 */
+export interface WorkerBundleOptions {
+  /** 可信 Ed25519 公钥；缺省读 `CORDIS_APP_BUNDLE_PUBLIC_KEY` */
+  publicKey?: string | Buffer | KeyObject
+  /** 读取插件包归档；缺省只接受本地文件路径 */
+  readArchive?: (spec: string) => Promise<Uint8Array>
+}
 
 export interface WorkerOptions {
   port: number
@@ -54,6 +65,13 @@ export interface WorkerOptions {
   /** 打包形态的可写用户插件根；项目模式通常没有 */
   userPluginsDir?: string
   /**
+   * 运行形态。项目模式（缺省）用 npm 安装；打包模式只接受签名插件包。
+   * 这是进程配置，不接受 HTTP 请求切换。
+   */
+  mode?: 'project' | 'packaged'
+  /** bundle 安装配置 */
+  bundle?: WorkerBundleOptions
+  /**
    * 框架版本。supervisor 通过环境注入；直接调用 startWorker 时缺省取
    * `FRAMEWORK_VERSION`（同样来自聚合包 package.json 的构建期生成）。
    */
@@ -65,6 +83,8 @@ export interface WorkerHandle {
   manifest: ClientManifest
   failures: PluginFailure[]
   port: number
+  /** 本轮运行实际使用的安装来源；项目模式为 npm，打包模式为 bundle */
+  sourceKind: 'npm' | 'bundle'
   /** 优雅重启：关监听 → 通知客户端 → dispose → exit(75) */
   restart(): Promise<never>
   /** 测试用：直接关闭 */
@@ -95,9 +115,42 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
   })
   const logger = createLoggerFactory({ level: 'info' })
   const frameworkVersion = options.version ?? FRAMEWORK_VERSION
+
+  // 四个根按优先级扫描一次：builtin > local > dependency > user。
+  // loader、静态服务与 /api/plugins 共用这次结果（API 在安装/卸载后重新扫描）。
+  const builtinPluginsDir =
+    options.builtinPluginsDir ??
+    (options.resourcesDir ? join(options.resourcesDir, 'plugins') : undefined)
+  const userPluginsDir = options.userPluginsDir ?? layout.userPluginsDir
+  const userDataDir = userPluginsDir ? dirname(userPluginsDir) : undefined
+
+  // 运行形态决定安装来源：项目模式跑 npm，打包应用只接受签名插件包。
+  // 来源是进程配置，HTTP 请求不能切换它，也不能指定任意下载地址。
+  const packaged = options.mode === 'packaged'
+  if (packaged && !userDataDir) {
+    throw new Error('打包模式必须提供 userPluginsDir（可写用户插件根）')
+  }
+  const bundleSource = packaged && userDataDir
+    ? new BundleInstallSource({
+        userDataDir,
+        frameworkVersion,
+        appJsonPath: layout.appJson,
+        ...(options.bundle?.publicKey ?? process.env[ENV_BUNDLE_PUBLIC_KEY]
+          ? { publicKey: options.bundle?.publicKey ?? process.env[ENV_BUNDLE_PUBLIC_KEY]! }
+          : {}),
+        ...(options.bundle?.readArchive ? { readArchive: options.bundle.readArchive } : {}),
+      })
+    : undefined
+
   const installer = new PluginInstaller({
     projectRoot: layout.projectRoot,
     frameworkVersion,
+    ...(bundleSource ? { source: bundleSource } : {}),
+    // 项目模式的事务日志属于项目 `.cordis/`；打包模式的项目根可能只读，
+    // 日志必须和 bundle 的事实文件一起放在用户数据目录。
+    ...(packaged && userDataDir
+      ? { journalPath: join(userDataDir, '.cordis', 'install-journal.json') }
+      : {}),
   })
 
   // 项目可能刚被 `new` 出来，运行时目录还没建齐。
@@ -127,10 +180,6 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
 
   // 四个根按优先级扫描一次：builtin > local > dependency > user。
   // loader、静态服务与 /api/plugins 共用这次结果（API 在安装/卸载后重新扫描）。
-  const builtinPluginsDir =
-    options.builtinPluginsDir ??
-    (options.resourcesDir ? join(options.resourcesDir, 'plugins') : undefined)
-  const userPluginsDir = options.userPluginsDir ?? layout.userPluginsDir
   const pluginRoots: PluginRoot[] = [
     ...(builtinPluginsDir ? [{ kind: 'builtin' as const, dir: builtinPluginsDir }] : []),
     { kind: 'local', dir: layout.localPluginsDir },
@@ -272,6 +321,7 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
     get port() {
       return ctx.server.port
     },
+    sourceKind: installer.sourceKind,
     restart,
     async close() {
       process.off('SIGTERM', sigterm)

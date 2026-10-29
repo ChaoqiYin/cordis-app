@@ -187,6 +187,46 @@ test('/__health 免 token，只回 200 与版本', async () => {
   })
 })
 
+test('运行形态决定安装来源：项目模式 npm，打包模式 bundle', async () => {
+  // 项目模式即使有可写用户插件根，也仍然走 npm：来源由进程形态决定，
+  // 不能因为某个可选目录存在就悄悄换掉安装语义。
+  await withWorker(async ({ handle }) => {
+    assert.equal(handle.sourceKind, 'npm')
+  })
+
+  const fixture = createFixture()
+  mkdirSync(fixture.userPluginsDir, { recursive: true })
+  const port = await findFreePort()
+  const token = generateToken()
+  const handle = await startWorker({
+    port,
+    token,
+    projectRoot: fixture.projectRoot,
+    resourcesDir: fixture.resourcesDir,
+    userPluginsDir: fixture.userPluginsDir,
+    mode: 'packaged',
+  })
+  try {
+    assert.equal(handle.sourceKind, 'bundle')
+  } finally {
+    await handle.close()
+  }
+})
+
+test('打包模式缺少可写用户插件根时拒绝启动', async () => {
+  const fixture = createFixture()
+  await assert.rejects(
+    startWorker({
+      port: await findFreePort(),
+      token: generateToken(),
+      projectRoot: fixture.projectRoot,
+      resourcesDir: fixture.resourcesDir,
+      mode: 'packaged',
+    }),
+    /打包模式必须提供 userPluginsDir/,
+  )
+})
+
 test('/__health 与 /__plugins 使用注入的框架版本', async () => {
   const fixture = createFixture()
   const port = await findFreePort()

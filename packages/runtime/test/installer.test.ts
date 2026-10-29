@@ -78,7 +78,7 @@ function createFixture(): Fixture {
 function writePlugin(
   fixture: Fixture,
   name: string,
-  options: { version?: string; peer?: Record<string, string>; id?: string } = {},
+  options: { version?: string; peer?: Record<string, string>; id?: string; ui?: Record<string, unknown> } = {},
 ): void {
   const dir = join(fixture.nodeModules, name)
   mkdirSync(dir, { recursive: true })
@@ -91,7 +91,14 @@ function writePlugin(
       peerDependencies: options.peer ?? { 'cordis-app': '^1.0.0' },
     }),
   )
-  writeFileSync(join(dir, 'plugin.json'), JSON.stringify({ id: options.id ?? name, server: './index.js' }))
+  writeFileSync(
+    join(dir, 'plugin.json'),
+    JSON.stringify({
+      id: options.id ?? name,
+      server: './index.js',
+      ...(options.ui ? { ui: options.ui } : {}),
+    }),
+  )
   writeFileSync(join(dir, 'index.js'), 'export const apply = () => {}')
 }
 
@@ -197,6 +204,41 @@ test('安装新插件把插件 id 追加到 app.json 的启用列表', async () 
   assert.deepEqual(readApp(fixture).plugins, ['theme-picker'], 'app.json 记的是插件 id')
   assert.equal(readPackage(fixture).dependencies['theme-picker'], '^2.1.3', '依赖写进项目 package.json')
 })
+
+test('安装结果带出实际装进来的插件版本', async () => {
+  const fixture = createFixture()
+  installTask(fixture, 'theme-picker', { version: '2.1.3' })
+
+  const result = await fixture.installer.install('theme-picker')
+  assert.equal(result.version, '2.1.3')
+})
+
+test('npm 安装按 app.json 的 UI 能力填充 uiCompatibility', async () => {
+  const fixture = createFixture()
+  // 项目声明了 pages，但没有 settings；插件两个都要。
+  writeFileSync(
+    join(fixture.projectRoot, 'app.json'),
+    JSON.stringify({
+      name: 't',
+      version: '0.1.0',
+      plugins: [],
+      ui: { pages: true, slots: [], menus: [], settings: false },
+    }),
+  )
+  installTask(fixture, 'ui-plugin', { ui: { pages: true, settings: true } })
+
+  const result = await fixture.installer.install('ui-plugin')
+  assert.equal(result.uiCompatibility, 'backend-only')
+})
+
+test('没有 UI 需求的插件永远是 full', async () => {
+  const fixture = createFixture()
+  installTask(fixture, 'plain-plugin')
+
+  const result = await fixture.installer.install('plain-plugin')
+  assert.equal(result.uiCompatibility, 'full')
+})
+
 
 test('包名与 plugin.json 的 id 不一致时，app.json 记 id 而 package.json 记包名', async () => {
   const fixture = createFixture()

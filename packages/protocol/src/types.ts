@@ -136,6 +136,8 @@ export interface ClientPluginEntry {
 /** 安装动作的结果，供 CLI 与 HTTP 共用。 */
 export interface InstallResult {
   id: string
+  /** 已安装的插件版本；来源能确定时填写 */
+  version?: string
   /** 是否触发 worker 重启 */
   restarted: boolean
   reason: string
