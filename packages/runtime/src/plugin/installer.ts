@@ -27,7 +27,7 @@ import {
   type InstallSourceKind,
   type SourceInstallResult,
 } from './install-source.js'
-import { NpmInstallSource, NPM_LOCKFILE_NAMES, type LayoutSnapshot } from './npm-source.js'
+import { NpmInstallSource, NPM_LOCKFILE_NAMES } from './npm-source.js'
 
 export type { LayoutSnapshot } from './npm-source.js'
 
@@ -120,15 +120,6 @@ export class PluginInstaller {
     return this.defaultSource.kind
   }
 
-  /** 保留旧入口：npm 源仍在 node_modules 上做布局快照。 */
-  snapshot(): LayoutSnapshot {
-    return this.npmSource()?.snapshot() ?? new Map()
-  }
-
-  static layoutChanged(before: LayoutSnapshot, after: LayoutSnapshot): string[] {
-    return NpmInstallSource.layoutChanged(before, after)
-  }
-
   async install(spec: string): Promise<InstallResult> {
     // 上一次事务若没走完（进程被杀、机器断电），先还原再叠加新的改动。
     await this.recover()
@@ -212,11 +203,6 @@ export class PluginInstaller {
     } catch (error) {
       return `回滚失败，磁盘可能处于不一致状态：${(error as Error).message}`
     }
-  }
-
-  private npmSource(): NpmInstallSource | undefined {
-    const source = this.sources.get('npm')
-    return source instanceof NpmInstallSource ? source : undefined
   }
 
   private writeJournal(journal: InstallJournal): void {

@@ -48,16 +48,21 @@ export function openWorkspace(projectFlag?: string): Workspace {
   }
 }
 
-/** 读 app.json；缺失或损坏时返回 undefined，由调用方决定是「新建」还是「报错」。 */
-export function readAppManifest(path: string): AppManifest | undefined {
+/** 读一份「顶层必须是对象」的 JSON；缺失或损坏时返回 undefined。 */
+function readObjectJson<T>(path: string): T | undefined {
   if (!existsSync(path)) return undefined
   try {
-    const parsed = JSON.parse(readFileSync(path, 'utf8'))
+    const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'))
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined
-    return parsed as AppManifest
+    return parsed as T
   } catch {
     return undefined
   }
+}
+
+/** 读 app.json；缺失或损坏时返回 undefined，由调用方决定是「新建」还是「报错」。 */
+export function readAppManifest(path: string): AppManifest | undefined {
+  return readObjectJson<AppManifest>(path)
 }
 
 /** 项目 package.json 中 CLI 关心的字段。 */
@@ -72,14 +77,7 @@ export interface ProjectPackageJson {
 }
 
 export function readProjectPackage(path: string): ProjectPackageJson | undefined {
-  if (!existsSync(path)) return undefined
-  try {
-    const parsed = JSON.parse(readFileSync(path, 'utf8'))
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined
-    return parsed as ProjectPackageJson
-  } catch {
-    return undefined
-  }
+  return readObjectJson<ProjectPackageJson>(path)
 }
 
 /**
@@ -120,10 +118,11 @@ export function accessUrl(port: number, token: string): string {
 /**
  * 找 UI 产物目录。
  *
- * 三种部署形态都要能跑：
+ * 按以下候选顺序尝试：
  *   - 随 CLI 包分发：`<cli 包>/resources/ui`
  *   - 仓库内开发：`packages/ui/dist/ui`
- *   - 项目构建产物：`<project>/dist/ui`
+ *   - 仓库根的资源目录：`<repo>/resources/ui`
+ *   - 项目自己的构建产物：`<project>/dist/ui` 或 `<project>/resources/ui`
  *
  * 找不到不是错误——`new` / `add` / `remove` 完全不碰 UI，只有 `run` 需要它。
  */
