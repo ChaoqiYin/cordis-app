@@ -8,13 +8,21 @@
  * 现在只有这一个模块回答它们：loader 拿它去挂载，API 拿它去列表与卸载，
  * CLI 拿它去展示。扫描是纯读操作，不做缓存——安装/卸载之后重启 worker，
  * 目录自然重新生成。
+ *
+ * 四个根按固定优先级合并：builtin > local > dependency > user。每个根只扫
+ * 一层，带 plugin.json 的包才是插件。重复 id 保留高优先级插件，并为低优先级
+ * 的冲突产生一条可读失败；应用继续启动，只让冲突插件不可用。
  */
 
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
-import { join, relative } from 'node:path'
+import { isAbsolute, join, relative } from 'node:path'
+import semver from 'semver'
 import {
   CORE_PACKAGE,
+  FRAMEWORK_VERSION,
   PLUGINS_PREFIX,
+  SHARED_MODULES,
+  SHARED_PEER_RANGES,
   type PluginFailure,
   type PluginManifest,
 } from '@cordis-app/protocol'
@@ -28,67 +36,129 @@ export interface PackageJsonLike {
   peerDependencies?: Record<string, string>
 }
 
+export type PluginRootKind = 'builtin' | 'local' | 'dependency' | 'user'
+
+/** 一个插件根。`dir` 不存在时扫描会安静跳过。 */
+export interface PluginRoot {
+  kind: PluginRootKind
+  dir: string
+}
+
 /** 一个已安装、清单合法的插件。id 与包名是两套身份，这里都保留。 */
 export interface InstalledPlugin {
-  /** plugin.json 里的 id */
+  /** plugin.json 里的 id，也是 `/__plugins/<id>/` 的挂载键 */
   id: string
   /** npm 包名 */
   packageName: string
-  /** 包根目录 */
+  /** 包根目录，仅用于磁盘寻址；不进入 URL */
   root: string
-  /**
-   * 包在 node_modules 下的相对路径，如 `demo` 或 `@scope/demo`。
-   * 它同时是 `/__plugins/<mountPath>/` 的挂载点——用目录而不是 id，
-   * 因为静态文件服务是按磁盘布局寻址的。
-   */
-  mountPath: string
+  /** 插件来自哪个根 */
+  rootKind: PluginRootKind
   manifest: PluginManifest
   packageJson: PackageJsonLike
 }
 
 export interface PluginScan {
   plugins: InstalledPlugin[]
-  /** 清单非法、peer 缺失等「这个包是插件但不能用」的记录 */
+  /** 清单非法、peer 不兼容、id 冲突等「这个包是插件但不能用」的记录 */
   failures: PluginFailure[]
+  /** id → 包根目录。静态服务只查这张表，绝不把 URL 拼到磁盘路径。 */
+  roots: Map<string, string>
+}
+
+export interface ScanOptions {
+  /** 启动 doctor 使用的框架版本；缺省取构建期注入的 FRAMEWORK_VERSION */
+  frameworkVersion?: string
 }
 
 /**
- * 扫描 node_modules 一层，找出声明了 plugin.json 的包。
+ * 根的优先级，数字越小越优先。
  *
- * 只扫一层：插件的传递依赖不需要被框架挂载，它们由 require 自己解析。
- * 这也保证「装了多少个直接插件 = 挂载多少个」。
+ * 内置插件排第一是安全边界：用户插件不能靠同名 id 静默替换随应用分发的代码。
  */
-export function scanPlugins(nodeModulesDir: string): PluginScan {
-  const plugins: InstalledPlugin[] = []
+const ROOT_PRIORITY: Record<PluginRootKind, number> = {
+  builtin: 0,
+  local: 1,
+  dependency: 2,
+  user: 3,
+}
+
+const ROOT_LABEL: Record<PluginRootKind, string> = {
+  builtin: '内置插件',
+  local: '项目本地',
+  dependency: '项目依赖',
+  user: '用户插件',
+}
+
+/**
+ * 扫描多个插件根并按优先级合并。
+ *
+ * 传入顺序不重要：这里会先按 kind 排序，再依次扫描，因此高优先级根总是先
+ * 占用 id。重复 id 只在最终结果里留下一条失败，失败原因列出冲突双方来自哪个根。
+ */
+export function scanPluginRoots(roots: readonly PluginRoot[], options: ScanOptions = {}): PluginScan {
+  const frameworkVersion = options.frameworkVersion ?? FRAMEWORK_VERSION
+  const ordered = [...roots].sort((a, b) => ROOT_PRIORITY[a.kind] - ROOT_PRIORITY[b.kind])
+
+  const candidates: InstalledPlugin[] = []
   const failures: PluginFailure[] = []
-  if (!existsSync(nodeModulesDir)) return { plugins, failures }
 
-  const collect = (root: string): void => {
-    const found = readPlugin(root, nodeModulesDir)
-    if (!found) return
-    if ('failure' in found) {
-      failures.push(found.failure)
-      return
-    }
-    plugins.push(found.plugin)
-  }
-
-  for (const entry of readdirSafe(nodeModulesDir)) {
-    // 跳过 .bin、.pnpm 之类的框架目录
-    if (entry.startsWith('.')) continue
-    if (entry.startsWith('@')) {
-      const scopeDir = join(nodeModulesDir, entry)
-      for (const scoped of readdirSafe(scopeDir)) collect(join(scopeDir, scoped))
-    } else {
-      collect(join(nodeModulesDir, entry))
+  for (const root of ordered) {
+    if (!existsSync(root.dir)) continue
+    for (const packageRoot of packageDirectories(root.dir)) {
+      const found = readPlugin(packageRoot, root.kind, frameworkVersion)
+      if (!found) continue
+      if ('failure' in found) failures.push(found.failure)
+      else candidates.push(found.plugin)
     }
   }
-  return { plugins, failures }
+
+  const winners = new Map<string, InstalledPlugin>()
+  const conflicts = new Map<string, { winner: InstalledPlugin; losers: InstalledPlugin[] }>()
+
+  for (const plugin of candidates) {
+    const existing = winners.get(plugin.id)
+    if (!existing) {
+      winners.set(plugin.id, plugin)
+      continue
+    }
+    // 排序保证 existing 来自更高优先级的根：保留它，只记录冲突。
+    const conflict = conflicts.get(plugin.id) ?? { winner: existing, losers: [] }
+    conflict.losers.push(plugin)
+    conflicts.set(plugin.id, conflict)
+  }
+
+  for (const [id, { winner, losers }] of conflicts) {
+    const ignored = losers
+      .map((plugin) => `${ROOT_LABEL[plugin.rootKind]}（${plugin.root}）`)
+      .join('、')
+    failures.push({
+      id,
+      reason: `插件 id "${id}" 在多个根中重复：保留${ROOT_LABEL[winner.rootKind]}（${winner.root}），忽略${ignored}`,
+    })
+  }
+
+  const plugins = [...winners.values()]
+  const rootsById = new Map(plugins.map((plugin) => [plugin.id, plugin.root]))
+  return { plugins, failures, roots: rootsById }
+}
+
+/**
+ * 扫描一个 node_modules 根，保留给测试与 CLI 场景的便捷入口。
+ *
+ * 正式的 worker 使用 `scanPluginRoots`，一次得到四个根、冲突与 id→root 映射。
+ */
+export function scanPlugins(dir: string, options: ScanOptions = {}): PluginScan {
+  return scanPluginRoots([{ kind: 'dependency', dir }], options)
 }
 
 type ReadResult = { plugin: InstalledPlugin } | { failure: PluginFailure }
 
-function readPlugin(root: string, nodeModulesDir: string): ReadResult | undefined {
+function readPlugin(
+  root: string,
+  rootKind: PluginRootKind,
+  frameworkVersion: string,
+): ReadResult | undefined {
   const manifestPath = join(root, 'plugin.json')
   if (!existsSync(manifestPath)) return undefined
 
@@ -99,8 +169,15 @@ function readPlugin(root: string, nodeModulesDir: string): ReadResult | undefine
     return { failure: { id: root, reason: `plugin.json 解析失败: ${(error as Error).message}` } }
   }
 
-  const id = manifest.id
-  if (!id) return { failure: { id: root, reason: 'plugin.json 缺少 id' } }
+  const id: unknown = manifest.id
+  if (!isValidPluginId(id)) {
+    return {
+      failure: {
+        id: typeof id === 'string' && id ? id : root,
+        reason: `plugin.json 的 id 必须是 URL 安全段（不能为空、不能含 / 或 ..）: ${JSON.stringify(id)}`,
+      },
+    }
+  }
   if (!manifest.server && !manifest.client) {
     return { failure: { id, reason: 'plugin.json 既没有 server 也没有 client 入口' } }
   }
@@ -112,7 +189,7 @@ function readPlugin(root: string, nodeModulesDir: string): ReadResult | undefine
     return { failure: { id, reason: '缺少或无法解析 package.json' } }
   }
 
-  const reason = validatePeer(packageJson)
+  const reason = validatePeer(packageJson, frameworkVersion)
   if (reason) return { failure: { id, reason } }
 
   return {
@@ -120,7 +197,7 @@ function readPlugin(root: string, nodeModulesDir: string): ReadResult | undefine
       id,
       packageName: packageJson.name ?? id,
       root,
-      mountPath: relative(nodeModulesDir, root).split(/[\\/]/).join('/'),
+      rootKind,
       manifest,
       packageJson,
     },
@@ -128,16 +205,88 @@ function readPlugin(root: string, nodeModulesDir: string): ReadResult | undefine
 }
 
 /**
- * 核心包必须声明为 peerDependencies。
+ * 一个根里的候选包目录。
  *
- * 框架核心包持有服务注册表与事件总线，出现第二份会导致插件各自正常、
- * 彼此失联——这是最难排查的一类问题，所以在安装/加载时强制校验。
+ * node_modules 的 `@scope/name` 是「一个包」，所以作用域目录要再展开一层；
+ * 其他插件根（builtin/local/user）同样接受 `@scope/name` 布局，规则保持一致。
+ * 点目录（.bin、.pnpm）一律跳过。
  */
-export function validatePeer(packageJson: PackageJsonLike): string | undefined {
+function packageDirectories(dir: string): string[] {
+  const found: string[] = []
+  for (const entry of readdirSafe(dir)) {
+    if (entry.startsWith('.')) continue
+    if (entry.startsWith('@')) {
+      const scopeDir = join(dir, entry)
+      for (const scoped of readdirSafe(scopeDir)) {
+        if (scoped.startsWith('.')) continue
+        found.push(join(scopeDir, scoped))
+      }
+    } else {
+      found.push(join(dir, entry))
+    }
+  }
+  return found
+}
+
+/**
+ * 插件 id 必须是单个 URL 安全路径段。
+ *
+ * 拒绝空串、`.`、`..`、斜杠、反斜杠、NUL 以及任何需要百分号编码的字符。
+ * 这样 `pluginFileUrl` 编出来的 id 段和磁盘目录名一一对应，静态服务解码后
+ * 查表不会出现歧义。
+ */
+export function isValidPluginId(id: unknown): id is string {
+  if (typeof id !== 'string' || id.length === 0) return false
+  if (id === '.' || id === '..') return false
+  if (id.includes('/') || id.includes('\\') || id.includes('\0')) return false
+  return encodeURIComponent(id) === id
+}
+
+/**
+ * 插件的启动期兼容性检查。
+ *
+ * 这三件事原先只在安装器里做，手工 `pnpm add` 或直接拷进 node_modules 的插件
+ * 可以绕过。扫描时统一校验，失败只记录为这个插件的失败，不影响其他插件。
+ */
+export function validatePeer(
+  packageJson: PackageJsonLike,
+  frameworkVersion: string = FRAMEWORK_VERSION,
+): string | undefined {
   const peers = packageJson.peerDependencies ?? {}
-  if (!(CORE_PACKAGE in peers)) {
+
+  const coreRange = peers[CORE_PACKAGE]
+  if (!coreRange) {
     return `必须把 ${CORE_PACKAGE} 声明为 peerDependencies`
   }
+
+  let coreSatisfied: boolean
+  try {
+    coreSatisfied = semver.satisfies(frameworkVersion, coreRange, { includePrerelease: true })
+  } catch {
+    return `无法解析插件声明的 ${CORE_PACKAGE} peer 范围: ${coreRange}`
+  }
+  if (!coreSatisfied) {
+    return `插件要求 ${CORE_PACKAGE}@${coreRange}，当前框架版本是 ${frameworkVersion}`
+  }
+
+  for (const shared of SHARED_MODULES) {
+    const range = peers[shared]
+    if (!range) continue
+    // 省略范围的模块（如 cordis-app/client）由框架直接提供，没有可比较的版本承诺
+    const provided = SHARED_PEER_RANGES[shared]
+    if (!provided) continue
+
+    let compatible: boolean
+    try {
+      compatible = semver.intersects(range, provided, { includePrerelease: true })
+    } catch {
+      return `无法解析插件声明的 ${shared} peer 范围: ${range}`
+    }
+    if (!compatible) {
+      return `插件要求 ${shared}@${range}，框架提供 ${provided}，两者不兼容`
+    }
+  }
+
   return undefined
 }
 
@@ -164,24 +313,19 @@ export function readPluginId(nodeModulesDir: string, packageName: string): strin
   }
 }
 
-/** 包内文件 → 浏览器可访问的 URL。按包目录挂载，作用域包不会退化成裸名。 */
+/**
+ * 包内文件 → 浏览器可访问的 URL。
+ *
+ * 挂载键是插件 id，不是磁盘相对路径：插件包放在 `@scope/name` 还是扁平目录，
+ * URL 都只有 `/__plugins/<id>/...`。相对文件路径逐段编码，静态服务再解码。
+ */
 export function pluginFileUrl(plugin: InstalledPlugin, filePath: string): string {
   const relativeFile = relative(plugin.root, filePath)
-    .split(/[\\/]/)
-    .map(encodePathSegment)
-    .join('/')
-  const mount = plugin.mountPath.split('/').map(encodePathSegment).join('/')
-  return `${PLUGINS_PREFIX}/${mount}/${relativeFile}`
-}
-
-/**
- * 目录名 → URL 片段。
- *
- * `@` 必须保留字面量：静态资源 middleware 直接拿 `url.pathname` 去拼磁盘路径，
- * 不做事后解码；把它编码成 `%40` 会让作用域插件全部 404。
- */
-function encodePathSegment(segment: string): string {
-  return encodeURIComponent(segment).replace(/%40/g, '@')
+  if (relativeFile === '' || relativeFile.startsWith('..') || isAbsolute(relativeFile)) {
+    throw new Error(`插件资源必须位于插件根内: ${filePath}`)
+  }
+  const file = relativeFile.split(/[\\/]/).map(encodeURIComponent).join('/')
+  return `${PLUGINS_PREFIX}/${encodeURIComponent(plugin.id)}/${file}`
 }
 
 function readdirSafe(dir: string): string[] {

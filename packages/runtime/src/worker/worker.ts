@@ -28,6 +28,7 @@ import {
   HEALTH_PATH,
   MANIFEST_PATH,
   RECONNECT_EVENT,
+  UI_CONTRACT_VERSION,
   resolveProjectLayout,
   type AppManifest,
   type ClientManifest,
@@ -37,6 +38,8 @@ import {
 import * as builtin from '../builtin/index.js'
 import { PluginInstaller } from '../plugin/installer.js'
 import { loadPlugins } from '../plugin/loader.js'
+import { scanPluginRoots, type PluginRoot } from '../plugin/catalog.js'
+import { checkProjectFrameworkFile } from '../plugin/doctor.js'
 import { sendJson } from '../builtin/http-utils.js'
 import { installRoutes } from './api.js'
 
@@ -46,6 +49,10 @@ export interface WorkerOptions {
   /** 项目根。所有路径都从它推导。 */
   projectRoot: string
   resourcesDir?: string
+  /** 打包形态的只读内置插件根；缺省时从 `resourcesDir/plugins` 推导 */
+  builtinPluginsDir?: string
+  /** 打包形态的可写用户插件根；项目模式通常没有 */
+  userPluginsDir?: string
   /**
    * 框架版本。supervisor 通过环境注入；直接调用 startWorker 时缺省取
    * `FRAMEWORK_VERSION`（同样来自聚合包 package.json 的构建期生成）。
@@ -82,7 +89,10 @@ export function readWorkerOptions(env: NodeJS.ProcessEnv = process.env): WorkerO
 }
 
 export async function startWorker(options: WorkerOptions): Promise<WorkerHandle> {
-  const layout = resolveProjectLayout(options.projectRoot)
+  const layout = resolveProjectLayout(options.projectRoot, {
+    ...(options.builtinPluginsDir ? { builtinPluginsDir: options.builtinPluginsDir } : {}),
+    ...(options.userPluginsDir ? { userPluginsDir: options.userPluginsDir } : {}),
+  })
   const logger = createLoggerFactory({ level: 'info' })
   const frameworkVersion = options.version ?? FRAMEWORK_VERSION
   const installer = new PluginInstaller({
@@ -106,6 +116,29 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
     logger.error('恢复中断的安装事务失败，node_modules 可能不一致:', error)
   }
 
+  // 启动 doctor（项目侧）：依赖存在但不兼容是硬错误；只是没声明则警告。
+  // 必须在监听端口之前完成，避免失败后留下一个半启动的 worker。
+  const projectCheck = checkProjectFrameworkFile(layout.packageJson, frameworkVersion)
+  if (projectCheck.missing) {
+    logger.warn(projectCheck.reason ?? '项目没有声明 cordis-app 依赖')
+  } else if (!projectCheck.ok) {
+    throw new Error(projectCheck.reason ?? '项目 cordis-app 依赖与当前框架版本不兼容')
+  }
+
+  // 四个根按优先级扫描一次：builtin > local > dependency > user。
+  // loader、静态服务与 /api/plugins 共用这次结果（API 在安装/卸载后重新扫描）。
+  const builtinPluginsDir =
+    options.builtinPluginsDir ??
+    (options.resourcesDir ? join(options.resourcesDir, 'plugins') : undefined)
+  const userPluginsDir = options.userPluginsDir ?? layout.userPluginsDir
+  const pluginRoots: PluginRoot[] = [
+    ...(builtinPluginsDir ? [{ kind: 'builtin' as const, dir: builtinPluginsDir }] : []),
+    { kind: 'local', dir: layout.localPluginsDir },
+    { kind: 'dependency', dir: layout.nodeModulesDir },
+    ...(userPluginsDir ? [{ kind: 'user' as const, dir: userPluginsDir }] : []),
+  ]
+  const scan = scanPluginRoots(pluginRoots, { frameworkVersion })
+
   const config = new ConfigStore({ filePath: layout.config })
   const kernel = createKernel({ logger: logger('kernel') })
   const ctx = kernel.context as KernelContext
@@ -115,7 +148,12 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
   ctx.set('config', config)
 
   const failures: PluginFailure[] = []
-  let manifest: ClientManifest = { version: frameworkVersion, plugins: {} }
+  let manifest: ClientManifest = {
+    version: frameworkVersion,
+    uiContractVersion: UI_CONTRACT_VERSION,
+    plugins: {},
+    failures: [],
+  }
 
   // 内置插件顺序即中间件顺序：auth 必须排在 router / static 之前。
   kernel.plugin(builtin.server, { port: options.port })
@@ -124,7 +162,7 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
   kernel.plugin(builtin.static, {
     uiDir: options.resourcesDir ? join(options.resourcesDir, 'ui') : undefined,
     sharedDir: options.resourcesDir ? join(options.resourcesDir, 'shared') : undefined,
-    pluginsDir: layout.nodeModulesDir,
+    pluginRoots: scan.roots,
   })
   kernel.plugin(builtin.ws, {})
   kernel.plugin(builtin.storage, { root: layout.dataDir })
@@ -142,18 +180,22 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
     throw error
   }
 
-  // 应用插件：先扫 node_modules，再按 app.json 的启用顺序逐个挂载。
+  // 应用插件：使用启动时那一次扫描结果，再按 app.json 的启用顺序逐个挂载。
   // 失败不阻断其他插件。
-  const enabledOrder = readEnabledPlugins(layout.appJson)
+  const app = readAppManifest(layout.appJson)
+  const enabledOrder = Array.isArray(app?.plugins)
+    ? app.plugins.filter((id): id is string => typeof id === 'string')
+    : undefined
   const loaded = await loadPlugins({
     kernel,
-    nodeModulesDir: layout.nodeModulesDir,
+    scan,
     version: manifest.version,
+    ...(app?.ui ? { ui: app.ui } : {}),
     ...(enabledOrder ? { order: enabledOrder } : {}),
     configFor: (id) => config.get(id) ?? {},
   })
   failures.push(...loaded.failures)
-  manifest = loaded.client
+  manifest = { ...loaded.client, failures }
 
   // 配置变更 → 按新配置重载该插件。
   //
@@ -188,6 +230,7 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
     config,
     getManifest: () => manifest,
     setManifest: (next) => (manifest = next),
+    scan: () => scanPluginRoots(pluginRoots, { frameworkVersion }),
     failures,
     requestRestart: () => setTimeout(() => void restart(), 50),
   })
@@ -255,12 +298,12 @@ async function applyProjectServer(ctx: KernelContext, entry: string): Promise<vo
   await apply(ctx)
 }
 
-/** 读 app.json.plugins；缺失或格式不对时返回 undefined（等价于发现即启用）。 */
-function readEnabledPlugins(path: string): string[] | undefined {
+/** 读 app.json；缺失或格式不对时返回 undefined（等价于发现即启用、无 body 能力声明）。 */
+function readAppManifest(path: string): AppManifest | undefined {
   try {
     const manifest = JSON.parse(readFileSync(path, 'utf8')) as AppManifest
-    if (!Array.isArray(manifest.plugins)) return undefined
-    return manifest.plugins.filter((id): id is string => typeof id === 'string')
+    if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) return undefined
+    return manifest
   } catch {
     return undefined
   }

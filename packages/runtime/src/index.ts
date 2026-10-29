@@ -10,13 +10,23 @@ export {
 } from './plugin/installer.js'
 export {
   scanPlugins,
+  scanPluginRoots,
   findPlugin,
   readPluginId,
   pluginFileUrl,
   validatePeer,
+  isValidPluginId,
   type InstalledPlugin,
   type PluginScan,
+  type PluginRoot,
+  type PluginRootKind,
   type PackageJsonLike,
+  type ScanOptions,
 } from './plugin/catalog.js'
+export {
+  checkProjectFramework,
+  checkProjectFrameworkFile,
+  type ProjectFrameworkCheck,
+} from './plugin/doctor.js'
 export { loadPlugins, toDefinition } from './plugin/loader.js'
 export * as builtin from './builtin/index.js'
