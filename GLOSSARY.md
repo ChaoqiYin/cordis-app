@@ -9,6 +9,22 @@
 一个普通目录，包含 `package.json`、`app.json`、`src/`、`server/`、`plugins/`、
 `data/`、`.cordis/` 与 `dist/`。项目是唯一的应用形态，没有平台级「实例」概念。
 
+**运行形态（`RuntimeMode`）**
+`project` 或 `packaged`，由 supervisor 参数与 `CORDIS_APP_MODE` 环境变量传到
+worker。它决定安装来源与插件根的扫描范围，是进程配置，HTTP 请求不能切换。
+
+**项目模式**
+缺省运行形态。项目根是事实源，安装走 npm，插件可来自项目本地根与项目依赖根。
+
+**打包模式**
+面向分发布局的运行形态：从 `dist/` 产物运行，清单是 `dist/app.json`，只接受
+签名插件包；不扫描 `<project>/plugins` 与 `<project>/node_modules`，除非显式
+传入本地插件根。
+
+**用户插件根（`userPluginsDir`）**
+可写的插件安装目录。`start` 使用 `<project>/data/plugins`；worker 以它的父目录
+作为用户数据根，`installed.json`、安装事务日志与插件目录都在那里。
+
 **`package.json`**
 项目依赖的唯一真源：`cordis-app`、React、插件包都写在这里。`add`/`remove` 通过
 项目包管理器更新它和 lockfile。
@@ -46,7 +62,8 @@
 **插件根**
 发现插件的目录，每个根只扫一层。按优先级从高到低：内置（`resources/plugins`）、
 项目本地（`<project>/plugins`）、项目依赖（`<project>/node_modules`）、用户
-（`<userData>/plugins`）。重复 id 保留高优先级插件。
+（`<userData>/plugins`）。重复 id 保留高优先级插件。项目模式四个根都参与；打包
+模式只扫内置与用户（显式传入的本地根仍生效），不扫项目依赖。
 
 **插件入口**
 服务端入口导出 `name` / `inject` / `apply`，可选导出 `data`；前端入口默认导出

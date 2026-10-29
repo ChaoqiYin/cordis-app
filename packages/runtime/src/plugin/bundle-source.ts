@@ -40,6 +40,7 @@ import {
   type PublicKeyInput,
 } from './bundle-format.js'
 import { isValidPluginId, validatePeer } from './catalog.js'
+import { readObjectJson } from '../json.js'
 import {
   safeJoinWithin,
   uiCompatibilityFor,
@@ -127,8 +128,10 @@ export class BundleInstallSource implements InstallSource {
       const files = readTarGz(await this.readArchive(spec), {
         ...(this.options.maxBytes ? { maxBytes: this.options.maxBytes } : {}),
       })
-      const bundle = this.verifyArchive(files)
-      const hash = computeBundleHash(files)
+      // 校验与落盘记录共用同一次 hash 计算：归档只在内存里，重算不会带来
+      // 新的安全性，只会让「校验的 hash」与「记进 installed.json 的 hash」
+      // 多一个可能分叉的来源。
+      const { bundle, hash } = this.verifyArchive(files)
 
       // 解压与校验在临时目录完成；此时用户插件根还没有任何改动。
       this.extract(files, extractRoot)
@@ -197,7 +200,11 @@ export class BundleInstallSource implements InstallSource {
 
   // ------------------------------------------------------------ 校验
 
-  private verifyArchive(files: ReadonlyMap<string, Buffer>): BundleManifest {
+  private verifyArchive(files: ReadonlyMap<string, Buffer>): {
+    bundle: BundleManifest
+    /** 与 bundle.json 比对通过的规范化内容 hash，供 installed.json 复用 */
+    hash: string
+  } {
     const raw = files.get(BUNDLE_FILE)
     if (!raw) throw new Error(`插件包缺少 ${BUNDLE_FILE}`)
 
@@ -231,7 +238,7 @@ export class BundleInstallSource implements InstallSource {
       throw new Error(`插件包内容 hash 不匹配：bundle.json 声明 ${bundle.hash}，实际 ${actual}`)
     }
     verifyBundleSignature(bundle, this.options.publicKey)
-    return bundle
+    return { bundle, hash: actual }
   }
 
   private extract(files: ReadonlyMap<string, Buffer>, root: string): void {
@@ -251,7 +258,10 @@ export class BundleInstallSource implements InstallSource {
    * 归档读取阶段已经拒绝符号链接，这里再做一次 realpath 检查，防止实现回归。
    */
   private validateExtracted(root: string, bundle: BundleManifest): PluginManifest {
-    const manifest = this.readJson<PluginManifest>(join(root, 'plugin.json'), 'plugin.json')
+    const manifest = readObjectJson<PluginManifest>(
+      join(root, 'plugin.json'),
+      '插件包中的 plugin.json',
+    )
     if (manifest.id !== bundle.id) {
       throw new Error(`plugin.json 的 id（${manifest.id}）与 bundle.json（${bundle.id}）不一致`)
     }
@@ -262,9 +272,9 @@ export class BundleInstallSource implements InstallSource {
       throw new Error('plugin.json 既没有 server 也没有 client 入口')
     }
 
-    const pkg = this.readJson<{ peerDependencies?: Record<string, string> }>(
+    const pkg = readObjectJson<{ peerDependencies?: Record<string, string> }>(
       join(root, 'package.json'),
-      'package.json',
+      '插件包中的 package.json',
     )
     const reason = validatePeer(pkg, this.options.frameworkVersion)
     if (reason) throw new Error(`插件包 peer 校验失败：${reason}`)
@@ -286,15 +296,6 @@ export class BundleInstallSource implements InstallSource {
     }
 
     return manifest
-  }
-
-  private readJson<T>(path: string, label: string): T {
-    if (!existsSync(path)) throw new Error(`插件包缺少 ${label}`)
-    try {
-      return JSON.parse(readFileSync(path, 'utf8')) as T
-    } catch (error) {
-      throw new Error(`${label} 不是合法 JSON：${(error as Error).message}`)
-    }
   }
 
   // ------------------------------------------------------------ 原子切换
@@ -425,9 +426,7 @@ export class BundleInstallSource implements InstallSource {
   private resolveInstalledId(spec: string, installed: Record<string, InstalledBundleEntry>): string {
     if (installed[spec]) return spec
     // 兼容 remove('id@version') 的写法；插件 id 本身不允许含 @。
-    const base = spec.split('@')[0]!
-    if (installed[base]) return base
-    return base
+    return spec.split('@')[0]!
   }
 
   private takeTxId(): string {

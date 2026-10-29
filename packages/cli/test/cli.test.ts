@@ -132,10 +132,14 @@ test('new 生成一个可运行的项目根', async () => {
   assert.ok(existsSync(join(root, 'data')))
   assert.ok(existsSync(join(root, '.cordis')))
 
-  // body 直接使用宿主的默认参考实现，同时保留项目自己的编辑点
+  // body 直接使用宿主的默认参考实现，同时保留项目自己的编辑点；
+  // 根路径渲染脚手架自带的 Home，其余路径交给 DefaultBody。
   const body = readFileSync(join(root, 'src', 'body.tsx'), 'utf8')
   assert.match(body, /cordis-app\/ui/)
   assert.match(body, /DefaultBody/)
+  assert.match(body, /usePath/)
+  assert.match(body, /from '\.\/pages\/Home'/)
+  assert.match(body, /<Home \/>/)
   assert.match(body, /export default function Body/)
 
   const server = readFileSync(join(root, 'server', 'index.js'), 'utf8')
@@ -434,6 +438,11 @@ test('start 用 dist 的 resources 与 server 入口启动，而不是源码入�
   assert.equal(options?.projectRoot, root)
   assert.equal(options?.resourcesDir, join(root, 'dist', 'resources'))
   assert.equal(options?.serverEntry, join(root, 'dist', 'server', 'index.js'))
+  assert.equal(
+    options?.appJson,
+    join(root, 'dist', 'app.json'),
+    'worker 必须读构建产物里的清单，而不是源码根',
+  )
   assert.equal(options?.mode, 'packaged', 'start 运行的是构建产物，安装来源应为签名插件包')
   assert.equal(
     options?.userPluginsDir,
@@ -441,6 +450,29 @@ test('start 用 dist 的 resources 与 server 入口启动，而不是源码入�
     '用户插件根是 <userData>/plugins，userData 仍是项目可写数据目录',
   )
   assert.ok(fake.out.includes(app.url))
+})
+
+test('start 只依赖 dist 产物：源码根 app.json 缺失也能启动', async () => {
+  // start 是「运行构建产物」：清单、前端与服务端入口都来自 dist。
+  // 源码根没有 app.json 时不能因此拒绝启动。
+  const root = join(tempDir(), 'demo')
+  await commandNew(parseArgs(['new', 'demo', '--project', root]), fakeIO().io)
+  writeBuiltProject(root)
+  rmSync(join(root, 'app.json'))
+
+  let options: StartAppOptions | undefined
+  const app = new FakeApp()
+  const fake = fakeIO({
+    appStarter: async (value) => {
+      options = value
+      setTimeout(() => app.emit('exit', { code: 0, signal: null, expected: true }), 0)
+      return app
+    },
+  })
+
+  const code = await commandStart(parseArgs(['start', '--project', root]), fake.io)
+  assert.equal(code, 0, '源码根缺 app.json 不应阻止 start')
+  assert.equal(options?.appJson, join(root, 'dist', 'app.json'))
 })
 
 test('dev 先构建 worker 产物，再起 Vite，并在 server 变化时重启 worker', async () => {

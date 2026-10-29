@@ -19,6 +19,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
+  ENV_APP_JSON,
   ENV_DEV,
   ENV_LOCAL_PLUGINS,
   ENV_MODE,
@@ -56,6 +57,13 @@ export interface SupervisorOptions {
    * 项目源码里的 `server/index.js`（`run` / `dev` 的形态）。
    */
   serverEntry?: string
+  /**
+   * 覆盖应用清单路径。
+   *
+   * `cordis-app start` 用它指向构建产物 `dist/app.json`：worker 的启用顺序、
+   * UI 能力与安装期兼容性都必须来自这一份，而不是源码根。
+   */
+  appJson?: string
   /** 覆盖项目本地插件根；`dev` 指向构建出来的 .cordis/dev/plugins */
   localPluginsDir?: string
   /**
@@ -151,6 +159,7 @@ export class Supervisor {
           projectRoot: this.options.projectRoot,
           resourcesDir: this.options.resourcesDir,
           ...(this.options.serverEntry ? { serverEntry: this.options.serverEntry } : {}),
+          ...(this.options.appJson ? { appJson: this.options.appJson } : {}),
           ...(this.options.localPluginsDir ? { localPluginsDir: this.options.localPluginsDir } : {}),
           ...(this.options.userPluginsDir ? { userPluginsDir: this.options.userPluginsDir } : {}),
           ...(this.options.mode ? { mode: this.options.mode } : {}),
@@ -308,6 +317,7 @@ export function buildWorkerEnv(input: {
   projectRoot: string
   resourcesDir?: string
   serverEntry?: string
+  appJson?: string
   localPluginsDir?: string
   userPluginsDir?: string
   mode?: RuntimeMode
@@ -330,6 +340,7 @@ export function buildWorkerEnv(input: {
     [ENV_VERSION]: input.version,
     ...(input.resourcesDir ? { [ENV_RESOURCES]: input.resourcesDir } : {}),
     ...(input.serverEntry ? { [ENV_SERVER_ENTRY]: input.serverEntry } : {}),
+    ...(input.appJson ? { [ENV_APP_JSON]: input.appJson } : {}),
     ...(input.localPluginsDir ? { [ENV_LOCAL_PLUGINS]: input.localPluginsDir } : {}),
     ...(input.userPluginsDir ? { [ENV_USER_PLUGINS]: input.userPluginsDir } : {}),
     ...(input.mode ? { [ENV_MODE]: input.mode } : {}),

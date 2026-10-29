@@ -16,6 +16,7 @@ import { Supervisor, buildWorkerEnv } from '../lib/supervisor/supervisor.js'
 import { readSupervisorArgs } from '../lib/supervisor/args.js'
 import {
   decodeHandshake,
+  ENV_APP_JSON,
   ENV_MODE,
   ENV_USER_PLUGINS,
   FRAMEWORK_VERSION,
@@ -51,9 +52,12 @@ test('运行形态与用户插件根从 supervisor 参数传到 worker 环境', 
     'packaged',
     '--user-plugins',
     '/projects/demo/data/plugins',
+    '--app-json',
+    '/projects/demo/dist/app.json',
   ])
   assert.equal(args.mode, 'packaged')
   assert.equal(args.userPluginsDir, '/projects/demo/data/plugins')
+  assert.equal(args.appJson, '/projects/demo/dist/app.json')
 
   const env = buildWorkerEnv({
     port: 5140,
@@ -62,9 +66,11 @@ test('运行形态与用户插件根从 supervisor 参数传到 worker 环境', 
     version: '1.0.0',
     mode: args.mode,
     userPluginsDir: args.userPluginsDir,
+    appJson: args.appJson,
   })
   assert.equal(env[ENV_MODE], 'packaged')
   assert.equal(env[ENV_USER_PLUGINS], '/projects/demo/data/plugins')
+  assert.equal(env[ENV_APP_JSON], '/projects/demo/dist/app.json')
 
   assert.throws(() => readSupervisorArgs(['--mode', 'weird']), /未知运行形态/)
 })

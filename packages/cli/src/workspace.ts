@@ -249,16 +249,20 @@ function packageNameOf(name: string): string {
 }
 
 const BODY_TEMPLATE = `import type { ReactElement } from 'react'
-import { DefaultBody } from 'cordis-app/ui'
+import { DefaultBody, usePath } from 'cordis-app/ui'
+import Home from './pages/Home'
 
 /**
  * 项目 body 入口。
  *
- * 默认转出框架的参考布局；布局、导航和项目页面都可以在这里替换。
- * 自定义时请保留宿主出口：PluginPageOutlet、PluginSlot、PluginMenuTrigger、
- * SettingsPanel，并让 app.json.ui 声明的能力与实际布局一致。
+ * 项目页面优先：\`/\` 与 \`/home\` 由这里渲染 Home，其余路径交给框架的参考
+ * 布局。这样脚手架一启动就能看到示例页面，同时保留插件页面、插槽、菜单与
+ * 设置面板。自定义布局时请保留宿主出口：PluginPageOutlet、PluginSlot、
+ * PluginMenuTrigger、SettingsPanel，并让 app.json.ui 声明的能力与实际布局一致。
  */
 export default function Body(): ReactElement {
+  const path = usePath()
+  if (path === '/' || path === '/home') return <Home />
   return <DefaultBody />
 }
 `

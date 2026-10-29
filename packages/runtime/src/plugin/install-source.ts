@@ -19,6 +19,7 @@ import type {
   UiCapabilities,
   UiCompatibility,
 } from '@cordis-app/protocol'
+import { readOptionalObjectJson } from '../json.js'
 
 export type InstallSourceKind = 'npm' | 'bundle'
 
@@ -95,12 +96,7 @@ export function uiCompatibilityFor(
 /** 读取 app.json 的 UI 能力；文件缺失或损坏按「没有声明能力」处理。 */
 export function readAppUi(path: string | undefined): UiCapabilities | undefined {
   if (!path) return undefined
-  try {
-    const app = JSON.parse(readFileSync(path, 'utf8')) as { ui?: UiCapabilities }
-    return app?.ui
-  } catch {
-    return undefined
-  }
+  return readOptionalObjectJson<{ ui?: UiCapabilities }>(path)?.ui
 }
 
 /**

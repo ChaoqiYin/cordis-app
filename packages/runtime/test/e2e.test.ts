@@ -10,7 +10,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { startWorker, readWorkerOptions } from '../lib/worker/worker.js'
@@ -18,6 +18,7 @@ import { findFreePort, generateToken, buildWorkerEnv } from '../lib/supervisor/s
 import { NpmInstallSource } from '../lib/plugin/npm-source.js'
 import { safeJoin } from '../lib/builtin/http-utils.js'
 import {
+  ENV_APP_JSON,
   ENV_MODE,
   ENV_PORT,
   ENV_PROJECT,
@@ -271,11 +272,13 @@ test('worker 从 supervisor 构造的环境读取项目根与框架版本', () =
     [ENV_VERSION]: '2.3.4',
     [ENV_MODE]: 'packaged',
     [ENV_USER_PLUGINS]: '/tmp/project/data/plugins',
+    [ENV_APP_JSON]: '/tmp/project/dist/app.json',
   })
   assert.equal(options.projectRoot, '/tmp/project')
   assert.equal(options.version, '2.3.4')
   assert.equal(options.mode, 'packaged', '运行形态必须从环境进入 worker')
   assert.equal(options.userPluginsDir, '/tmp/project/data/plugins')
+  assert.equal(options.appJson, '/tmp/project/dist/app.json', '清单覆盖必须从环境进入 worker')
 
   const env = buildWorkerEnv({
     port: 5140,
@@ -284,11 +287,13 @@ test('worker 从 supervisor 构造的环境读取项目根与框架版本', () =
     version: '2.3.4',
     mode: 'packaged',
     userPluginsDir: '/tmp/project/data/plugins',
+    appJson: '/tmp/project/dist/app.json',
   })
   assert.equal(env[ENV_PROJECT], '/tmp/project', 'supervisor 必须把项目根随环境注入 worker')
   assert.equal(env[ENV_VERSION], '2.3.4', 'supervisor 必须把版本随环境注入 worker')
   assert.equal(env[ENV_MODE], 'packaged', 'supervisor 必须把运行形态随环境注入 worker')
   assert.equal(env[ENV_USER_PLUGINS], '/tmp/project/data/plugins')
+  assert.equal(env[ENV_APP_JSON], '/tmp/project/dist/app.json')
   assert.equal(env.HOME, '/tmp/project', 'worker 的 HOME 指向项目根，插件落盘不会跑到仓库里')
 
   assert.throws(
@@ -361,6 +366,41 @@ test('应用插件按 app.json.plugins 的顺序加载', async () => {
     },
     createFixture({ plugins: ['alpha', 'beta'], enabled: ['beta', 'alpha'] }),
   )
+})
+
+test('appJson 覆盖决定启用顺序与 UI 能力，源码根清单不再参与', async () => {
+  // start 形态的清单在 dist/app.json，源码根的 app.json 可能不存在，
+  // 也可能还是上一次构建前的旧内容。worker 只能读覆盖后的那一份。
+  const fixture = createFixture({ plugins: ['alpha', 'beta'], enabled: ['alpha', 'beta'] })
+  const distDir = join(fixture.projectRoot, 'dist')
+  mkdirSync(distDir, { recursive: true })
+  const appJson = join(distDir, 'app.json')
+  const ui = { pages: true, slots: ['header.right'] }
+  writeFileSync(
+    appJson,
+    JSON.stringify({ name: 'test', version: '1.0.0', plugins: ['beta', 'alpha'], ui }),
+  )
+  rmSync(join(fixture.projectRoot, 'app.json'))
+
+  const port = await findFreePort()
+  const handle = await startWorker({
+    port,
+    token: generateToken(),
+    projectRoot: fixture.projectRoot,
+    resourcesDir: fixture.resourcesDir,
+    userPluginsDir: fixture.userPluginsDir,
+    appJson,
+  })
+  try {
+    assert.deepEqual(
+      Object.keys(handle.manifest.plugins),
+      ['beta', 'alpha'],
+      '启用顺序必须来自覆盖清单',
+    )
+    assert.deepEqual(handle.manifest.ui, ui, 'UI 能力必须来自覆盖清单')
+  } finally {
+    await handle.close()
+  }
 })
 
 test('伪造 Origin 被拒绝，合法 Origin 放行', async () => {
@@ -601,6 +641,34 @@ test('打包模式用户插件根生效，且不把项目源码插件根当成�
   try {
     assert.deepEqual(handle.failures, [], '内置与源码同名不应产生重复 id failure')
     assert.deepEqual(Object.keys(handle.manifest.plugins).sort(), ['same', 'user-only'])
+  } finally {
+    await handle.close()
+  }
+})
+
+test('打包模式不扫描项目依赖根：node_modules 里的插件不会被加载', async () => {
+  // 打包应用只应加载内置产物与用户签名安装的插件。可执行目录旁边恰好存在
+  // node_modules 时，未签名的依赖不能被当成插件挂上。
+  const fixture = createFixture({ plugins: [] })
+  writePluginAt(join(fixture.projectRoot, 'node_modules', 'dep-only'), 'dep-only')
+  writePluginAt(join(fixture.resourcesDir, 'plugins', 'builtin-one'), 'builtin-one')
+  writePluginAt(join(fixture.userPluginsDir, 'user-one'), 'user-one')
+
+  const handle = await startWorker({
+    port: await findFreePort(),
+    token: generateToken(),
+    projectRoot: fixture.projectRoot,
+    resourcesDir: fixture.resourcesDir,
+    userPluginsDir: fixture.userPluginsDir,
+    mode: 'packaged',
+  })
+  try {
+    assert.deepEqual(handle.failures, [])
+    assert.deepEqual(
+      Object.keys(handle.manifest.plugins).sort(),
+      ['builtin-one', 'user-one'],
+      '打包模式只认识内置根与用户根',
+    )
   } finally {
     await handle.close()
   }

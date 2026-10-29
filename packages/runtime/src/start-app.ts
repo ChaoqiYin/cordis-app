@@ -51,6 +51,13 @@ export interface StartAppOptions {
   resourcesDir?: string
   /** 覆盖项目 server 入口；`cordis-app start` 指向 `<project>/dist/server/index.js` */
   serverEntry?: string
+  /**
+   * 覆盖应用清单路径；`cordis-app start` 指向 `<project>/dist/app.json`。
+   *
+   * 打包布局把清单与产物放在一起，worker 必须从构建产物读取启用顺序与
+   * UI 能力，而不是源码根里的 `app.json`。
+   */
+  appJson?: string
   /** 覆盖项目本地插件根；`cordis-app dev` 指向现场构建的 `.cordis/dev/plugins` */
   localPluginsDir?: string
   /**
@@ -149,7 +156,6 @@ export async function startApp(options: StartAppOptions): Promise<AppHandle> {
 
   let child: SupervisorChild | undefined
   let stopping = false
-  let restarting = false
   let expectedExit = false
   let state: HandshakeLine | undefined
   let stderrTail = ''
@@ -159,6 +165,7 @@ export async function startApp(options: StartAppOptions): Promise<AppHandle> {
   const args = ['--project', options.projectRoot]
   if (options.resourcesDir) args.push('--resources', options.resourcesDir)
   if (options.serverEntry) args.push('--server-entry', options.serverEntry)
+  if (options.appJson) args.push('--app-json', options.appJson)
   if (options.localPluginsDir) args.push('--local-plugins', options.localPluginsDir)
   if (options.userPluginsDir) args.push('--user-plugins', options.userPluginsDir)
   if (options.mode) args.push('--mode', options.mode)
@@ -170,6 +177,9 @@ export async function startApp(options: StartAppOptions): Promise<AppHandle> {
   }
 
   async function launch(): Promise<HandshakeLine> {
+    // 每次启动都是新的一轮生命周期：stop() 留下的 stopping 必须复位，
+    // 否则新 supervisor 崩溃时仍会被当成「预期退出」，退出码悄悄变成 0。
+    stopping = false
     expectedExit = false
     stderrTail = ''
 
@@ -330,6 +340,28 @@ export async function startApp(options: StartAppOptions): Promise<AppHandle> {
     return stopPromise
   }
 
+  /**
+   * stop / restart 的操作队列。
+   *
+   * 两者都改同一个 `child` 与 `state`，并发执行会让「stop() 返回时一定没有
+   * 运行中的 supervisor」失效：restart() 在旧进程退出后、新进程拉起前就
+   * resolve 了 stopPromise，此时并发的 stop() 会提前返回。
+   *
+   * 队列保证顺序执行；restart() 还额外做 in-flight 去重，并发调用等待同一
+   * 次重启并得到同一个结果，而不是各自再重启一遍。
+   */
+  let tail: Promise<void> = Promise.resolve()
+  const serialize = <T>(operation: () => Promise<T>): Promise<T> => {
+    const run = tail.then(operation, operation)
+    tail = run.then(
+      () => undefined,
+      () => undefined,
+    )
+    return run
+  }
+
+  let restartPromise: Promise<void> | undefined
+
   const handle: AppHandle = {
     get url() {
       return state ? accessUrl(state.port, state.token) : ''
@@ -341,20 +373,26 @@ export async function startApp(options: StartAppOptions): Promise<AppHandle> {
       return state?.port ?? 0
     },
     async stop() {
-      // 幂等：重复或并发的 stop() 等的是同一个子进程退出。
-      stopping = true
-      await stopChildShared()
+      // 幂等：重复或并发的 stop() 等的是同一个子进程退出；排在 restart
+      // 之后的 stop() 会等新 supervisor 起来后再把它停掉。
+      return serialize(async () => {
+        stopping = true
+        await stopChildShared()
+      })
     },
-    async restart() {
-      if (restarting) return
-      restarting = true
-      try {
+    restart() {
+      if (restartPromise) return restartPromise
+      const pending = serialize(async () => {
+        stopping = true
         await stopChildShared()
         const payload = await launch()
         state = payload
-      } finally {
-        restarting = false
-      }
+      })
+      const tracked = pending.finally(() => {
+        if (restartPromise === tracked) restartPromise = undefined
+      })
+      restartPromise = tracked
+      return tracked
     },
     async restartWorker() {
       const current = state
