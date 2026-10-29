@@ -29,11 +29,11 @@
   "scripts": {
     "dev": "vite",
     "build:host": "node scripts/build-host.mjs && tsc -p tsconfig.host.json",
-    "build:shared": "node scripts/build-shared.mjs",
+    "build:shared": "node scripts/build-shared.mjs && tsc -p tsconfig.lib.json",
     "build:shell": "node scripts/stage-shell.mjs",
     "build:build": "tsc -p tsconfig.build.json",
-    "build": "pnpm build:shared && vite build && tsc -p tsconfig.lib.json && pnpm build:host && pnpm build:shell && pnpm build:build",
-    "pretypecheck": "pnpm --filter @cordis-app/protocol build && pnpm build:host && pnpm build:shell",
+    "build": "pnpm build:shared && vite build && pnpm build:host && pnpm build:shell && pnpm build:build",
+    "pretypecheck": "pnpm --filter @cordis-app/protocol build && pnpm build:shared && pnpm build:host && pnpm build:shell",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.build.json --noEmit",
     "pretest": "pnpm --filter @cordis-app/protocol build && pnpm build:host && pnpm build:shared && pnpm build:shell",
     "test": "node --import ./test/register-loader.mjs --test \"test/*.test.ts\""
