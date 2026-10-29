@@ -140,7 +140,13 @@ export async function buildProject(options: BuildProjectOptions): Promise<BuildR
   }
 }
 
-/** 文件系统操作注入点；只为测试「切换失败也要保住旧产物」这一分支。 */
+/**
+ * 文件系统操作注入点。
+ *
+ * 保留为导出是必要的测试 seam：`rename` 失败是「旧产物必须保住」的唯一
+ * 证据，而真实文件系统无法在不破坏机器的前提下稳定制造 EXDEV/权限错误。
+ * 生产调用方不应传入这个参数，缺省实现就是 node:fs。
+ */
 export interface SwapOps {
   existsSync(path: string): boolean
   renameSync(from: string, to: string): void
@@ -152,6 +158,8 @@ export interface SwapOps {
  *
  * 先把旧目录 rename 到同级备份（不是删除），再把 staging rename 成 outDir。
  * 两次 rename 都在同一父目录下，不会跨设备；第二次失败就把备份移回去。
+ *
+ * `ops` 只用于测试失败分支（见 `SwapOps` 的说明），生产路径使用缺省实现。
  */
 export function swapIntoPlace(
   staging: string,
@@ -697,8 +705,11 @@ function serveSharedModules(): Plugin {
  * WebSocket 路径必须来自 protocol 的 `WS_PATH`：前端连接的是 `/__ws`，dev
  * 代理若写成别的路径，浏览器会连到 Vite 自己身上，worker 重启后的清单重拉
  * 就永远等不到。
+ *
+ * 内部实现：对外的可验证行为是 `createProjectDevServer` 的代理结果，测试
+ * 从那个公共入口断言，不再单独导出这个配置函数。
  */
-export function devProxyConfig(target: string) {
+function devProxyConfig(target: string) {
   return {
     ...proxyFor('/api', target),
     ...proxyFor('/__plugins', target),

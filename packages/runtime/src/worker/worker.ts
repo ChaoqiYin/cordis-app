@@ -13,12 +13,13 @@
  * 第 5 步的顺序保证握手回传的是「完整就绪」而不是「HTTP 起来了」。
  */
 
-import { existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type { KeyObject } from 'node:crypto'
 import { createKernel, createLoggerFactory, ConfigStore, type KernelContext } from '@cordis-app/kernel'
 import {
+  ENV_APP_JSON,
   ENV_BUNDLE_PUBLIC_KEY,
   ENV_DEV,
   ENV_LOCAL_PLUGINS,
@@ -36,6 +37,7 @@ import {
   MANIFEST_PATH,
   RECONNECT_EVENT,
   UI_CONTRACT_VERSION,
+  parseRuntimeMode,
   resolveProjectLayout,
   type AppManifest,
   type ClientManifest,
@@ -51,6 +53,7 @@ import { scanPluginRoots, type PluginRoot } from '../plugin/catalog.js'
 import { checkProjectFrameworkFile } from '../plugin/doctor.js'
 import { sendJson } from '../builtin/http-utils.js'
 import { installRoutes } from './api.js'
+import { readOptionalObjectJson } from '../json.js'
 
 /** 打包形态的 bundle 安装配置；只由进程配置注入，不接受 HTTP 请求覆盖。 */
 export interface WorkerBundleOptions {
@@ -68,6 +71,13 @@ export interface WorkerOptions {
   resourcesDir?: string
   /** 覆盖项目 server 入口；缺省为 `<project>/server/index.js` */
   serverEntry?: string
+  /**
+   * 覆盖应用清单路径。
+   *
+   * `cordis-app start` 指向 `dist/app.json`：启用顺序、UI 能力与安装期兼容性
+   * 都读同一份清单，不能混用源码根里的旧文件。
+   */
+  appJson?: string
   /** 覆盖项目本地插件根；`dev` 指向现场构建的 `.cordis/dev/plugins` */
   localPluginsDir?: string
   /** 开发模式：插件前端 URL 使用时间戳而不是内容 hash */
@@ -112,18 +122,17 @@ export function readWorkerOptions(env: NodeJS.ProcessEnv = process.env): WorkerO
     throw new Error('worker 必须由 supervisor 拉起（缺少端口 / token / 项目根环境变量）')
   }
   const rawMode = env[ENV_MODE]
-  if (rawMode !== undefined && rawMode !== 'project' && rawMode !== 'packaged') {
-    throw new Error(`未知运行形态：${rawMode}（只支持 project / packaged）`)
-  }
+  const mode = parseRuntimeMode(rawMode)
   return {
     port,
     token,
     projectRoot,
     resourcesDir: env[ENV_RESOURCES],
     ...(env[ENV_SERVER_ENTRY] ? { serverEntry: env[ENV_SERVER_ENTRY] } : {}),
+    ...(env[ENV_APP_JSON] ? { appJson: env[ENV_APP_JSON] } : {}),
     ...(env[ENV_LOCAL_PLUGINS] ? { localPluginsDir: env[ENV_LOCAL_PLUGINS] } : {}),
     ...(env[ENV_USER_PLUGINS] ? { userPluginsDir: env[ENV_USER_PLUGINS] } : {}),
-    ...(rawMode ? { mode: rawMode as RuntimeMode } : {}),
+    ...(mode ? { mode } : {}),
     ...(env[ENV_DEV] === '1' ? { dev: true } : {}),
     version: env[ENV_VERSION] ?? FRAMEWORK_VERSION,
   }
@@ -147,6 +156,9 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
     (options.resourcesDir ? join(options.resourcesDir, 'plugins') : undefined)
   const userPluginsDir = options.userPluginsDir ?? layout.userPluginsDir
   const userDataDir = userPluginsDir ? dirname(userPluginsDir) : undefined
+  // 应用清单只有一份：显式覆盖时（`cordis-app start`）就是 dist/app.json，
+  // 启用顺序、UI 能力与安装期兼容性全部从它读取。
+  const appJsonPath = options.appJson ?? layout.appJson
   // 打包形态的 local 根是「项目源码插件」，产物已经进了 resources/plugins；
   // 再扫项目根只会让同一批插件以「内置 + 本地」重复出现。只有显式传入时
   // 才启用 local 根（例如测试或特殊部署），项目模式保持原有默认。
@@ -159,7 +171,7 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
     ? new BundleInstallSource({
         userDataDir,
         frameworkVersion,
-        appJsonPath: layout.appJson,
+        appJsonPath,
         ...(options.bundle?.publicKey ?? process.env[ENV_BUNDLE_PUBLIC_KEY]
           ? { publicKey: options.bundle?.publicKey ?? process.env[ENV_BUNDLE_PUBLIC_KEY]! }
           : {}),
@@ -203,12 +215,13 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
     throw new Error(projectCheck.reason ?? '项目 cordis-app 依赖与当前框架版本不兼容')
   }
 
-  // 四个根按优先级扫描一次（builtin > local > dependency > user）。loader、
-  // 静态服务与 /api/plugins 共用这次结果；API 在安装/卸载后重新扫描。
+  // 插件根按优先级扫描一次。打包形态只认「内置 + 用户」：依赖根属于项目
+  // 源码的安装方式，打包应用不应因为可执行目录旁边恰好有 node_modules 就
+  // 加载未经签名校验的插件；显式传入的 localPluginsDir 仍然生效。
   const pluginRoots: PluginRoot[] = [
     ...(builtinPluginsDir ? [{ kind: 'builtin' as const, dir: builtinPluginsDir }] : []),
     ...(localPluginsDir ? [{ kind: 'local' as const, dir: localPluginsDir }] : []),
-    { kind: 'dependency', dir: layout.nodeModulesDir },
+    ...(packaged ? [] : [{ kind: 'dependency' as const, dir: layout.nodeModulesDir }]),
     ...(userPluginsDir ? [{ kind: 'user' as const, dir: userPluginsDir }] : []),
   ]
   const scan = scanPluginRoots(pluginRoots, { frameworkVersion })
@@ -257,7 +270,7 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
 
   // 应用插件：使用启动时那一次扫描结果，再按 app.json 的启用顺序逐个挂载。
   // 失败不阻断其他插件。
-  const app = readAppManifest(layout.appJson)
+  const app = readAppManifest(appJsonPath)
   const enabledOrder = Array.isArray(app?.plugins)
     ? app.plugins.filter((id): id is string => typeof id === 'string')
     : undefined
@@ -377,11 +390,5 @@ async function applyProjectServer(ctx: KernelContext, entry: string): Promise<vo
 
 /** 读 app.json；缺失或格式不对时返回 undefined（等价于发现即启用、无 body 能力声明）。 */
 function readAppManifest(path: string): AppManifest | undefined {
-  try {
-    const manifest = JSON.parse(readFileSync(path, 'utf8')) as AppManifest
-    if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) return undefined
-    return manifest
-  } catch {
-    return undefined
-  }
+  return readOptionalObjectJson<AppManifest>(path)
 }

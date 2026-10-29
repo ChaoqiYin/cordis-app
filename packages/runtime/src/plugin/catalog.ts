@@ -143,15 +143,6 @@ export function scanPluginRoots(roots: readonly PluginRoot[], options: ScanOptio
   return { plugins, failures, roots: rootsById }
 }
 
-/**
- * 扫描一个 node_modules 根，保留给测试与 CLI 场景的便捷入口。
- *
- * 正式的 worker 使用 `scanPluginRoots`，一次得到四个根、冲突与 id→root 映射。
- */
-export function scanPlugins(dir: string, options: ScanOptions = {}): PluginScan {
-  return scanPluginRoots([{ kind: 'dependency', dir }], options)
-}
-
 type ReadResult = { plugin: InstalledPlugin } | { failure: PluginFailure }
 
 function readPlugin(
@@ -302,7 +293,7 @@ export function findPlugin(scan: PluginScan, idOrPackageName: string): Installed
  * 只读包名对应的插件 id，不做可加载性校验。
  *
  * 列表类场景（CLI `list`）要能展示「装了但清单不全」的插件，因此不能复用
- * scanPlugins 的严格过滤；但读 plugin.json 这件事仍然只在这里发生。
+ * scanPluginRoots 的严格过滤；但读 plugin.json 这件事仍然只在这里发生。
  */
 export function readPluginId(nodeModulesDir: string, packageName: string): string | undefined {
   try {

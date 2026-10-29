@@ -56,7 +56,6 @@ export {
   safeJoinWithin,
 } from './plugin/install-source.js'
 export {
-  scanPlugins,
   scanPluginRoots,
   findPlugin,
   readPluginId,

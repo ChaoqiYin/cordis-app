@@ -362,6 +362,11 @@ test('项目 body 示例保留全部 UI 出口，并能构建出可分发布局'
       0,
     )
 
+    // 脚手架原样就应该能构建：模板同时使用 Home、usePath 与 DefaultBody，
+    // 不需要先替换成示例文件。
+    const scaffold = await buildProject({ projectRoot })
+    assert.equal(existsSync(join(scaffold.resourcesDir, 'ui', 'index.html')), true)
+
     // 示例的唯一要求是能作为 src/body.tsx 直接使用：它只依赖脚手架已生成的
     // pages/Home.tsx 与框架的公开出口。
     const exampleBody = fileURLToPath(

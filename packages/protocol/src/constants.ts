@@ -25,6 +25,13 @@ export const ENV_RESOURCES = 'CORDIS_APP_RESOURCES'
 export const ENV_HANDSHAKE_PIPE = 'CORDIS_APP_HANDSHAKE'
 /** 覆盖项目 server 入口：`cordis-app start` 指向打包后的 dist/server/index.js */
 export const ENV_SERVER_ENTRY = 'CORDIS_APP_SERVER_ENTRY'
+/**
+ * 覆盖应用清单路径：`cordis-app start` 指向 `dist/app.json`。
+ *
+ * 打包布局把 app.json 和前端/服务端产物放在一起；worker 必须用这同一份
+ * 清单决定启用顺序、UI 能力与安装期兼容性，不能回头读源码根。
+ */
+export const ENV_APP_JSON = 'CORDIS_APP_APP_JSON'
 /** 覆盖项目本地插件根：`cordis-app dev` 指向 .cordis/dev/plugins */
 export const ENV_LOCAL_PLUGINS = 'CORDIS_APP_LOCAL_PLUGINS'
 /**
@@ -40,6 +47,18 @@ export const ENV_DEV = 'CORDIS_APP_DEV'
 
 /** worker 运行形态。项目模式走 npm，打包模式只接受签名插件包。 */
 export type RuntimeMode = 'project' | 'packaged'
+
+/**
+ * 解析运行形态。
+ *
+ * supervisor 的参数与 worker 的环境变量都走这里：两处各写一份 if 判断，
+ * 迟早会出现一处接受拼写错误、另一处拒绝的漂移。
+ */
+export function parseRuntimeMode(value: string | undefined): RuntimeMode | undefined {
+  if (value === undefined) return undefined
+  if (value === 'project' || value === 'packaged') return value
+  throw new Error(`未知运行形态：${value}（只支持 project / packaged）`)
+}
 
 /**
  * supervisor 注入 worker 的框架版本。

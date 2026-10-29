@@ -17,6 +17,7 @@ import { encodeHandshake, type HandshakeLine } from '@cordis-app/protocol'
 import {
   startApp,
   StartAppError,
+  type AppExitEvent,
   type SpawnSupervisor,
   type SupervisorChild,
 } from '../lib/start-app.js'
@@ -87,6 +88,94 @@ test('ready 与 plugin-failure 事件在返回后仍能被订阅到', async () =
 
   assert.deepEqual(ready, [4321])
   assert.deepEqual(failures, ['broken'])
+  await app.stop()
+})
+
+test('restart 之后的新 supervisor 异常退出仍标记为 expected=false', async () => {
+  // stop() 会把 stopping 置为 true；restart() 拉起的是新一轮生命周期，
+  // 必须复位这两个标记，否则新进程的真实崩溃会被当成「预期退出」，
+  // 退出码悄悄变成 0。
+  const fake = fakeSpawn()
+  const app = await startApp({ ...baseOptions, spawn: fake.spawn })
+  const exits: AppExitEvent[] = []
+  app.on('exit', (event) => exits.push(event))
+
+  await app.stop()
+  await app.restart()
+  fake.children[1]!.emit('exit', 7, null)
+
+  assert.deepEqual(exits.at(-1), { code: 7, signal: null, expected: false })
+})
+
+test('restart 进行中并发调用 stop：等新 supervisor 起来后把它停掉', async () => {
+  const fake = fakeSpawn()
+  const app = await startApp({ ...baseOptions, spawn: fake.spawn })
+
+  // 两个调用同时发起：restart 排在前面。stop 不能提前 resolve 而漏掉
+  // restart 刚刚拉起的新 supervisor。
+  const restarting = app.restart()
+  const stopping = app.stop()
+  await Promise.all([restarting, stopping])
+
+  assert.equal(fake.children.length, 2)
+  assert.deepEqual(
+    fake.children[1]!.killed,
+    ['SIGTERM'],
+    'stop() 完成时不能还有运行中的 supervisor',
+  )
+})
+
+test('stop 进行中并发调用 restart：stop 完成后才重新启动', async () => {
+  const payloads = [
+    handshake({ port: 4201, token: 'one' }),
+    handshake({ port: 4202, token: 'two' }),
+  ]
+  const children: FakeChild[] = []
+  const spawn: SpawnSupervisor = () => {
+    const payload = payloads[children.length]!
+    const child = new FakeChild()
+    children.push(child)
+    queueMicrotask(() => child.stdout.write(encodeHandshake(payload) + '\n'))
+    return child
+  }
+
+  const app = await startApp({ ...baseOptions, spawn })
+  const stopping = app.stop()
+  const restarting = app.restart()
+  await Promise.all([stopping, restarting])
+
+  assert.equal(children.length, 2, 'restart 必须在 stop 之后重新拉起 supervisor')
+  assert.deepEqual(children[1]!.killed, [], 'restart 完成后新 supervisor 应仍在运行')
+  assert.equal(app.port, 4202)
+
+  await app.stop()
+  assert.deepEqual(children[1]!.killed, ['SIGTERM'])
+})
+
+test('并发 restart 等待同一次重启，不会各自再拉起一个 supervisor', async () => {
+  const payloads = [
+    handshake({ port: 4101, token: 'one' }),
+    handshake({ port: 4102, token: 'two' }),
+  ]
+  const children: FakeChild[] = []
+  const spawn: SpawnSupervisor = () => {
+    const payload = payloads[children.length]!
+    const child = new FakeChild()
+    children.push(child)
+    queueMicrotask(() => child.stdout.write(encodeHandshake(payload) + '\n'))
+    return child
+  }
+
+  const app = await startApp({ ...baseOptions, spawn })
+  const first = app.restart()
+  const second = app.restart()
+
+  assert.equal(first, second, '并发 restart 必须共享同一个 Promise')
+  await Promise.all([first, second])
+
+  assert.equal(children.length, 2, '第二次调用等待第一次的结果，而不是再重启一遍')
+  assert.equal(app.port, 4102)
+
   await app.stop()
 })
 
@@ -186,6 +275,22 @@ test('start 形态把 resources 与 server 入口传给 supervisor', async () =>
     '/p/dist/resources',
     '--server-entry',
     '/p/dist/server/index.js',
+  ])
+  await app.stop()
+})
+
+test('appJson 覆盖作为 --app-json 传给 supervisor', async () => {
+  const fake = fakeSpawn()
+  const app = await startApp({
+    ...baseOptions,
+    spawn: fake.spawn,
+    appJson: '/p/dist/app.json',
+  })
+  assert.deepEqual(fake.calls[0]!.slice(1), [
+    '--project',
+    baseOptions.projectRoot,
+    '--app-json',
+    '/p/dist/app.json',
   ])
   await app.stop()
 })

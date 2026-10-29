@@ -318,7 +318,6 @@ export async function commandBuild(args: ParsedArgs, io: CommandIO): Promise<num
  */
 export async function commandStart(args: ParsedArgs, io: CommandIO): Promise<number> {
   const workspace = openWorkspace(args.projectDir)
-  if (!requireApp(workspace, io)) return 1
 
   const layout = workspace.layout
   const distDir = layout.distDir
@@ -344,6 +343,8 @@ export async function commandStart(args: ParsedArgs, io: CommandIO): Promise<num
       projectRoot: workspace.projectRoot,
       resourcesDir,
       serverEntry,
+      // 清单与产物一起放在 dist：`start` 不需要源码根里还有一份 app.json。
+      appJson,
       mode: 'packaged',
       // 与 runtime 的约定一致：用户插件根是 `<userData>/plugins`，
       // worker 以 dirname 推导 bundle 安装事实与事务日志的位置。

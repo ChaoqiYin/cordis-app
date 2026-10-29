@@ -93,7 +93,8 @@ node packages/cli/lib/cli.js start --project /tmp/cordis-demo
 └── server/index.js  项目后端产物
 ```
 
-`start` 只读 `dist/`，数据与 `.cordis/` 仍按项目根定位。
+`start` 从 `dist/` 读取 `app.json`、前端产物与 server 入口；可写的 `data/` 与
+运行时 `.cordis/` 仍按项目根定位。源码根没有 `app.json` 不影响 `start`。
 
 ## 项目 body 与 `cordis-app/ui`
 
@@ -144,14 +145,19 @@ menus、settings 四个出口全部保留的写法。
 
 ## 插件从哪来
 
-四个根，按优先级从高到低：
+四个根按优先级从高到低；实际参与扫描的范围由运行形态决定：
 
-| 优先级 | 根 | 典型用途 |
-| --- | --- | --- |
-| 1 | `resources/plugins` | 打包应用内置、只读 |
-| 2 | `<project>/plugins` | 项目本地插件 |
-| 3 | `<project>/node_modules` | `add` 安装的项目依赖 |
-| 4 | `<userData>/plugins` | 打包应用的用户安装目录 |
+| 优先级 | 根 | 项目模式 | 打包模式 | 典型用途 |
+| --- | --- | --- | --- | --- |
+| 1 | `resources/plugins` | 有则扫描 | 扫描 | 随产物分发、只读 |
+| 2 | `<project>/plugins` | 扫描 | 不扫描¹ | 项目本地插件 |
+| 3 | `<project>/node_modules` | 扫描 | 不扫描 | `add` 安装的项目依赖 |
+| 4 | `<userData>/plugins` | 有则扫描 | 扫描 | 打包应用的用户安装目录 |
+
+¹ 打包应用的源码插件已由 `build` 复制进 `resources/plugins`；再扫源码根会让同一
+批插件重复出现。显式传入 `localPluginsDir` 时本地根仍然生效（`dev` 就靠它指向
+`.cordis/dev/plugins`）。打包模式同样不扫描 `node_modules`，避免加载未经签名
+校验的依赖。
 
 重复 id 保留高优先级插件，低优先级产生一条失败记录；应用继续启动，只让冲突插件
 不可用。

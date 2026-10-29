@@ -14,10 +14,14 @@ import {
   findPlugin,
   pluginFileUrl,
   readPluginId,
-  scanPlugins,
   scanPluginRoots,
   type PluginRoot,
 } from '../lib/plugin/catalog.js'
+
+/** 依赖根（node_modules）里的单根扫描；正式入口是 scanPluginRoots。 */
+function scanPlugins(dir: string) {
+  return scanPluginRoots([{ kind: 'dependency', dir }])
+}
 
 function tempDir(prefix = 'cordis-catalog-'): string {
   const dir = mkdtempSync(join(tmpdir(), prefix))

@@ -7,10 +7,25 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { SHARED_MODULE_TABLE, WS_PATH } from '@cordis-app/protocol'
-import { buildProject, devProxyConfig, swapIntoPlace } from '../src/build/index.ts'
+import { buildProject, createProjectDevServer, swapIntoPlace } from '../src/build/index.ts'
+
+/** 取一个当前空闲的端口，避免测试与开发者本机的 5173 冲突。 */
+function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = createServer()
+    server.unref()
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address()
+      const port = typeof address === 'object' && address ? address.port : 0
+      server.close(() => resolve(port))
+    })
+  })
+}
 
 function createProject(): string {
   const root = mkdtempSync(join(tmpdir(), 'cordis-build-'))
@@ -74,17 +89,33 @@ test('build 产出发布布局，body 与 server 都来自项目源码', async (
   assert.doesNotMatch(server, /interface|: number/, 'TypeScript 类型应被剥离')
 })
 
-test('dev 代理的 WebSocket 路径与前端连接路径一致', () => {
-  const proxy = devProxyConfig('http://127.0.0.1:9000')
+test('dev 代理的 WebSocket 路径与前端连接路径一致', async () => {
+  // 通过公共入口 createProjectDevServer 观察代理配置；devProxyConfig 本身
+  // 是实现细节，不再单独导出。
+  const root = mkdtempSync(join(tmpdir(), 'cordis-dev-proxy-'))
+  mkdirSync(join(root, 'src'), { recursive: true })
+  writeFileSync(join(root, 'src', 'body.tsx'), 'export default function Body() { return null }\n')
 
-  assert.deepEqual(
-    Object.keys(proxy).sort(),
-    ['/api', '/__health', '/__plugins', WS_PATH].sort(),
-    'WebSocket 必须代理到 WS_PATH，而不是另一条字面量路径',
-  )
-  assert.equal(proxy[WS_PATH]?.ws, true, `${WS_PATH} 必须启用 ws 代理`)
-  assert.equal(proxy['/api']?.ws, false)
-  assert.equal((proxy as Record<string, unknown>)['/ws'], undefined, '不保留 /ws 别名')
+  const dev = await createProjectDevServer({
+    projectRoot: root,
+    port: await freePort(),
+    strictPort: true,
+    worker: { port: 9000, token: 'test-token' },
+  })
+  try {
+    const proxy = dev.server.config.server.proxy as Record<string, { ws?: boolean }>
+
+    assert.deepEqual(
+      Object.keys(proxy).sort(),
+      ['/api', '/__health', '/__plugins', WS_PATH].sort(),
+      'WebSocket 必须代理到 WS_PATH，而不是另一条字面量路径',
+    )
+    assert.equal(proxy[WS_PATH]?.ws, true, `${WS_PATH} 必须启用 ws 代理`)
+    assert.equal(proxy['/api']?.ws, false)
+    assert.equal(proxy['/ws'], undefined, '不保留 /ws 别名')
+  } finally {
+    await dev.close()
+  }
 })
 
 test('产物切换失败时把旧目录移回原位，而不是丢掉新旧两份', () => {
