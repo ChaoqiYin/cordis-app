@@ -37,7 +37,7 @@ type _ClientTypes = ClientContext
 
 test('聚合包的子路径都能从消费者解析到真实文件', () => {
   assert.equal(packageJson.name, 'cordis-app')
-  for (const subpath of ['', '/client', '/server', '/preset', '/package.json']) {
+  for (const subpath of ['', '/client', '/server', '/preset', '/ui', '/package.json']) {
     const resolved = fileURLToPath(import.meta.resolve(`cordis-app${subpath}`))
     assert.ok(existsSync(resolved), `cordis-app${subpath || ''} 应解析到存在的文件，实际为 ${resolved}`)
   }
@@ -64,6 +64,29 @@ test('共享模块表与 cordis-app/client 构建入口保持原状', () => {
     'src/client/index.ts',
     '聚合包不能复制 client 实现；共享模块仍由 UI 包的客户端源码构建',
   )
+})
+
+test('cordis-app/ui 转出宿主组件，且不携带运行时重复实现', async () => {
+  const aggregate = await import('cordis-app/ui')
+  const source = await import('@cordis-app/ui/host')
+
+  assert.deepEqual(
+    Object.keys(aggregate).sort(),
+    Object.keys(source).sort(),
+    '聚合包不能增加或遗漏宿主导出',
+  )
+  for (const name of [
+    'BodyHost',
+    'DefaultBody',
+    'PluginPageOutlet',
+    'PluginSlot',
+    'PluginMenuTrigger',
+    'SettingsPanel',
+    'usePath',
+    'navigate',
+  ]) {
+    assert.ok(name in aggregate, `cordis-app/ui 应导出 ${name}`)
+  }
 })
 
 test('cordis-app/server 只提供类型，不携带运行时值', async () => {
