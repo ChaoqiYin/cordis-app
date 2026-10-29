@@ -32,6 +32,13 @@ export const ENV_HANDSHAKE_PIPE = 'CORDIS_APP_HANDSHAKE'
  */
 export const ENV_VERSION = 'CORDIS_APP_VERSION'
 
+/**
+ * 打包应用安装签名插件包时使用的可信公钥。
+ *
+ * 未配置时 bundle 安装一律被拒绝——安全默认是「不信任」，不是「跳过校验」。
+ */
+export const ENV_BUNDLE_PUBLIC_KEY = 'CORDIS_APP_BUNDLE_PUBLIC_KEY'
+
 /** 免 token 的健康检查端点 */
 export const HEALTH_PATH = '/__health'
 
