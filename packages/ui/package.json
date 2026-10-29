@@ -12,6 +12,10 @@
       "default": "./dist/shared/client.js"
     },
     "./ui": "./dist/ui/",
+    "./host": {
+      "types": "./dist/host/index.d.ts",
+      "default": "./dist/host/index.js"
+    },
     "./shared": "./dist/shared/",
     "./package.json": "./package.json"
   },
@@ -20,9 +24,12 @@
   ],
   "scripts": {
     "dev": "vite",
-    "build": "node scripts/build-shared.mjs && vite build && tsc -p tsconfig.lib.json",
+    "build:host": "node scripts/build-host.mjs && tsc -p tsconfig.host.json",
+    "build": "node scripts/build-shared.mjs && vite build && tsc -p tsconfig.lib.json && pnpm build:host",
+    "pretypecheck": "pnpm --filter @cordis-app/protocol build && pnpm build:host",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --test \"test/*.test.ts\""
+    "pretest": "pnpm --filter @cordis-app/protocol build && pnpm build:host",
+    "test": "node --import ./test/register-loader.mjs --test \"test/*.test.ts\""
   },
   "peerDependencies": {
     "react": "^19.0.0",

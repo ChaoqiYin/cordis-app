@@ -107,7 +107,12 @@ test('new 生成一个可运行的项目根', async () => {
   assert.equal(app.name, 'demo')
   assert.deepEqual(app.plugins, [], '新项目不应预装任何插件')
   assert.equal(app.framework, undefined, 'app.json 不保存框架版本范围')
-  assert.equal(app.ui.pages, true)
+  assert.deepEqual(app.ui, {
+    pages: true,
+    slots: ['header.right', 'activity.bottom'],
+    menus: ['activity'],
+    settings: true,
+  })
 
   const pkg = readJson(join(root, 'package.json'))
   assert.equal(pkg.private, true)
@@ -126,6 +131,12 @@ test('new 生成一个可运行的项目根', async () => {
   assert.ok(existsSync(join(root, 'plugins')))
   assert.ok(existsSync(join(root, 'data')))
   assert.ok(existsSync(join(root, '.cordis')))
+
+  // body 直接使用宿主的默认参考实现，同时保留项目自己的编辑点
+  const body = readFileSync(join(root, 'src', 'body.tsx'), 'utf8')
+  assert.match(body, /cordis-app\/ui/)
+  assert.match(body, /DefaultBody/)
+  assert.match(body, /export default function Body/)
 
   const server = readFileSync(join(root, 'server', 'index.js'), 'utf8')
   assert.match(server, /export default function apply/)

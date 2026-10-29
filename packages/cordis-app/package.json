@@ -23,6 +23,10 @@
       "types": "./lib/preset.d.ts",
       "default": "./lib/preset.js"
     },
+    "./ui": {
+      "types": "./lib/ui.d.ts",
+      "default": "./lib/ui.js"
+    },
     "./package.json": "./package.json"
   },
   "bin": {

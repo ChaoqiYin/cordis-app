@@ -65,6 +65,15 @@ export interface UiCapabilities {
 export type PluginUiRequirements = Partial<UiCapabilities>
 
 /**
+ * 插件 UI 需求与 body 能力的匹配分级。
+ *
+ * - `full`：插件声明的每个出口都能被 body 提供。
+ * - `backend-only`：body 已声明能力，但缺少部分出口；插件服务端仍可加载。
+ * - `incompatible`：body 完全没有声明能力，有 UI 需求的插件没有一个出口可用。
+ */
+export type UiCompatibility = 'full' | 'backend-only' | 'incompatible'
+
+/**
  * app.json —— 用户编辑的唯一应用清单。
  *
  * 不保存框架版本与插件版本范围：依赖的唯一真源是项目 `package.json`。
@@ -130,6 +139,13 @@ export interface InstallResult {
   /** 是否触发 worker 重启 */
   restarted: boolean
   reason: string
+  /**
+   * 插件 UI 需求与当前 body 能力的匹配结果。
+   *
+   * 由安装器用 `matchUiCapabilities` 计算；缺失能力只影响 UI 可用性，
+   * 不代表安装失败。字段暂时可选，安装器（#6）开始填充后即可视为必填。
+   */
+  uiCompatibility?: UiCompatibility
 }
 
 /** 统一错误载荷。 */

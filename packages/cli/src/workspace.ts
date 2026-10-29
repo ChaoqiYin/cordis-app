@@ -181,8 +181,8 @@ export function createProject(options: CreateProjectOptions): CreatedProject {
     plugins: [],
     ui: {
       pages: true,
-      slots: [],
-      menus: [],
+      slots: ['header.right', 'activity.bottom'],
+      menus: ['activity'],
       settings: true,
     },
   }
@@ -250,20 +250,17 @@ function packageNameOf(name: string): string {
 }
 
 const BODY_TEMPLATE = `import type { ReactElement } from 'react'
+import { DefaultBody } from 'cordis-app/ui'
 
 /**
  * 项目 body 入口。
  *
- * 布局、导航和项目页面都由项目自己决定；#5 会提供 \`cordis-app/ui\` 的出口组件，
- * 在那之前这里保持最小占位，保证项目可以直接启动后端。
+ * 默认转出框架的参考布局；布局、导航和项目页面都可以在这里替换。
+ * 自定义时请保留宿主出口：PluginPageOutlet、PluginSlot、PluginMenuTrigger、
+ * SettingsPanel，并让 app.json.ui 声明的能力与实际布局一致。
  */
 export default function Body(): ReactElement {
-  return (
-    <main>
-      <h1>Hello cordis-app</h1>
-      <p>项目 body 入口：src/body.tsx</p>
-    </main>
-  )
+  return <DefaultBody />
 }
 `
 
