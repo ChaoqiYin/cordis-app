@@ -1,7 +1,8 @@
 # 签名插件包（`.cordis-plugin`）
 
 打包应用不运行 npm，只接受经过签名校验的插件包。本文记录归档格式、内容 hash、
-签名载荷与密钥管理。项目模式仍然走 npm 安装，两者共用同一个事务与回滚框架。
+签名载荷与密钥管理。项目模式仍然走 npm 安装，两者共用同一个事务与回滚框架；
+区别只在 `InstallSource`，事实文件与回滚语义完全一致。
 
 ## 1. 归档格式
 
@@ -144,3 +145,26 @@ writeFileSync(`hello-plugin-${version}.cordis-plugin`, createTarGz(files))
 - 解压后有总大小上限（默认 256 MB），避免压缩炸弹。
 - 拒绝重复路径、符号链接、硬链接、设备文件与 FIFO。
 - UI 能力不匹配只产生警告并写入 `InstallResult.uiCompatibility`，不阻断安装。
+
+## 8. 与项目模式的关系
+
+| | 项目模式 | 打包模式 |
+| --- | --- | --- |
+| 安装来源 | npm（项目包管理器） | `.cordis-plugin` 签名包 |
+| 事实文件 | `package.json`、项目 lockfile、`app.json` | `<userData>/installed.json` |
+| 安装位置 | `<project>/node_modules` | `<userData>/plugins/<id>@<version>/` |
+| 可写数据 | `<project>/data` | `<userData>` |
+| 是否需要 npm | 是 | 否 |
+
+运行形态由进程配置（`mode: 'project' | 'packaged'`）决定，HTTP 请求不能切换来源，
+也不能指定任意下载地址。插件 UI 需求与项目 body 能力的匹配结果写入
+`InstallResult.uiCompatibility`（`full` / `backend-only` / `incompatible`），
+不阻断服务端安装。
+
+## 9. 不在范围内
+
+插件包格式只负责「可信地分发单个插件」。以下属于市场/发布服务，当前版本不实现：
+
+- 插件目录检索、上传、账户体系与审核流程
+- 自动更新与版本回滚策略
+- 托盘与跨平台外壳的实机验证
