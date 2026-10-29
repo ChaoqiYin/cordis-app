@@ -23,6 +23,14 @@ export const ENV_DATA = 'CORDIS_APP_DATA'
 export const ENV_RESOURCES = 'CORDIS_APP_RESOURCES'
 export const ENV_HANDSHAKE_PIPE = 'CORDIS_APP_HANDSHAKE'
 
+/**
+ * supervisor 注入 worker 的框架版本。
+ *
+ * 版本只有 `FRAMEWORK_VERSION` 一个真源；supervisor 把它随环境传下去，
+ * worker 的 manifest、健康检查与安装期 peer 校验都用这同一个值。
+ */
+export const ENV_VERSION = 'CORDIS_APP_VERSION'
+
 /** 免 token 的健康检查端点 */
 export const HEALTH_PATH = '/__health'
 

@@ -7,8 +7,7 @@
   "main": "./lib/index.js",
   "types": "./lib/index.d.ts",
   "bin": {
-    "cordis-app-cli": "./lib/cli.js",
-    "cordis-app": "./lib/cli.js"
+    "cordis-app-cli": "./lib/cli.js"
   },
   "exports": {
     ".": {

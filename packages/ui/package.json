@@ -5,10 +5,10 @@
   "license": "AGPL-3.0-only",
   "type": "module",
   "main": "./dist/shared/client.js",
-  "types": "./dist/shared/client.d.ts",
+  "types": "./dist/shared/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/shared/client.d.ts",
+      "types": "./dist/shared/index.d.ts",
       "default": "./dist/shared/client.js"
     },
     "./ui": "./dist/ui/",

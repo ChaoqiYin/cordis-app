@@ -9,7 +9,8 @@
     "node": ">=20.19.0"
   },
   "scripts": {
-    "build": "pnpm -r --filter \"./packages/**\" --filter \"./examples/**\" run build",
+    "version:sync": "node packages/cordis-app/scripts/sync-version.mjs",
+    "build": "pnpm version:sync && pnpm -r --filter \"./packages/**\" --filter \"./examples/**\" run build",
     "build:ui": "pnpm --filter @cordis-app/ui run build",
     "build:kernel": "pnpm --filter @cordis-app/kernel run build",
     "build:runtime": "pnpm --filter @cordis-app/runtime run build",

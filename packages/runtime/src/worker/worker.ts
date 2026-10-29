@@ -18,7 +18,9 @@ import {
   ENV_PORT,
   ENV_RESOURCES,
   ENV_TOKEN,
+  ENV_VERSION,
   EXIT_RESTART,
+  FRAMEWORK_VERSION,
   HEALTH_PATH,
   MANIFEST_PATH,
   RECONNECT_EVENT,
@@ -38,6 +40,11 @@ export interface WorkerOptions {
   token: string
   dataDir: string
   resourcesDir?: string
+  /**
+   * 框架版本。supervisor 通过环境注入；直接调用 startWorker 时缺省取
+   * `FRAMEWORK_VERSION`（同样来自聚合包 package.json 的构建期生成）。
+   */
+  version?: string
 }
 
 export interface WorkerHandle {
@@ -64,15 +71,17 @@ export function readWorkerOptions(env: NodeJS.ProcessEnv = process.env): WorkerO
     token,
     dataDir,
     resourcesDir: env[ENV_RESOURCES],
+    version: env[ENV_VERSION] ?? FRAMEWORK_VERSION,
   }
 }
 
 export async function startWorker(options: WorkerOptions): Promise<WorkerHandle> {
   const layout = resolveLayout(options.dataDir)
   const logger = createLoggerFactory({ level: 'info' })
+  const frameworkVersion = options.version ?? FRAMEWORK_VERSION
   const installer = new PluginInstaller({
     instanceDir: layout.instanceDir,
-    frameworkVersion: '1.0.0',
+    frameworkVersion,
   })
 
   // 上次安装/卸载若被中途打断，先还原磁盘再加载插件：否则会按「装了一半」
@@ -95,7 +104,7 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
   ctx.set('config', config)
 
   const failures: PluginFailure[] = []
-  let manifest: ClientManifest = { version: '1.0.0', plugins: {} }
+  let manifest: ClientManifest = { version: frameworkVersion, plugins: {} }
 
   // 内置插件顺序即中间件顺序：auth 必须排在 router / static 之前。
   kernel.plugin(builtin.server, { port: options.port })

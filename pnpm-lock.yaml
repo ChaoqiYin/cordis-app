@@ -17,9 +17,6 @@ importers:
 
   examples/hello-plugin:
     devDependencies:
-      '@cordis-app/kernel':
-        specifier: workspace:*
-        version: link:../../packages/kernel
       '@cordis-app/preset':
         specifier: workspace:*
         version: link:../../packages/preset
@@ -29,6 +26,9 @@ importers:
       '@types/react':
         specifier: ^19.3.0
         version: 19.3.0
+      cordis-app:
+        specifier: workspace:*
+        version: link:../../packages/cordis-app
       esbuild:
         specifier: ^0.28.2
         version: 0.28.2
@@ -51,6 +51,28 @@ importers:
       '@types/node':
         specifier: ^24.0.0
         version: 24.19.2
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+
+  packages/cordis-app:
+    dependencies:
+      '@cordis-app/cli':
+        specifier: workspace:*
+        version: link:../cli
+      '@cordis-app/kernel':
+        specifier: workspace:*
+        version: link:../kernel
+      '@cordis-app/preset':
+        specifier: workspace:*
+        version: link:../preset
+      '@cordis-app/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+      '@cordis-app/ui':
+        specifier: workspace:*
+        version: link:../ui
+    devDependencies:
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
