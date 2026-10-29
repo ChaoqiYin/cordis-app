@@ -1,7 +1,7 @@
 /**
  * static 内置插件：静态资源与插件前端资源分发。
  *
- * 路径前缀 `/__plugins/<plugin-id>/` 同时服务两件事：据此定位 node_modules 中的
+ * 路径前缀 `/__plugins/<包目录>/` 同时服务两件事：据此定位 node_modules 中的
  * 实际文件，以及让浏览器做缓存分区。卸载插件后该前缀返回 404，旧页面残留的
  * 请求不会打到别的插件上。
  */
@@ -9,7 +9,7 @@
 import { createReadStream, statSync } from 'node:fs'
 import { join } from 'node:path'
 import type { KernelContext, StaticService } from '@cordis-app/kernel'
-import { PLUGINS_PREFIX } from '@cordis-app/protocol'
+import { PLUGINS_PREFIX, SHARED_PREFIX } from '@cordis-app/protocol'
 import { mimeType, safeJoin, sendError } from './http-utils.js'
 
 export interface StaticOptions {
@@ -79,7 +79,7 @@ export function apply(ctx: KernelContext, config: StaticOptions) {
     const exact = files.get(view.pathname)
     if (exact && serveFile(view, exact)) return
 
-    // /__plugins/<id>/... → <pluginsDir>/<id>/<plugin.json 的 client 目录>/...
+    // /__plugins/<包目录>/... → <pluginsDir>/<包目录>/<plugin.json 的 client 目录>/...
     if (config.pluginsDir && view.pathname.startsWith(PLUGINS_PREFIX + '/')) {
       const rest = view.pathname.slice(PLUGINS_PREFIX.length + 1)
       const target = safeJoin(config.pluginsDir, rest)
@@ -88,8 +88,8 @@ export function apply(ctx: KernelContext, config: StaticOptions) {
       return
     }
 
-    if (config.sharedDir && view.pathname.startsWith('/__shared/')) {
-      const target = safeJoin(config.sharedDir, view.pathname.slice('/__shared/'.length))
+    if (config.sharedDir && view.pathname.startsWith(SHARED_PREFIX + '/')) {
+      const target = safeJoin(config.sharedDir, view.pathname.slice(SHARED_PREFIX.length + 1))
       if (target && serveFile(view, target)) return
     }
 

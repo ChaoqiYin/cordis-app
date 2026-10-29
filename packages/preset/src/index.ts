@@ -89,9 +89,5 @@ export function clientPreset(options: PresetOptions): BuildOptions {
   }
 }
 
-/** 按插件清单决定要构建哪些入口。 */
-export function presetFor(kind: 'server' | 'client', options: PresetOptions): BuildOptions {
-  return kind === 'server' ? serverPreset(options) : clientPreset(options)
-}
-
-export { SHARED_MODULES, CORE_PACKAGE, isShared, SHARED_PEER_RANGES } from './shared.js'
+export { SHARED_MODULES, CORE_PACKAGE, isShared } from './shared.js'
+export type { SharedModule } from './shared.js'

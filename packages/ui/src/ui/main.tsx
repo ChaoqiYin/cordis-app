@@ -17,13 +17,14 @@ import { createRoot } from 'react-dom/client'
 import type { ReactNode } from 'react'
 import './styles.css'
 import { App } from './App.js'
-import { connect, type Connection } from './connection.js'
+import { MANIFEST_PATH, type ClientManifest } from '@cordis-app/protocol/client'
 import {
   ClientRuntime,
   RuntimeContext,
   bootstrapToken,
-  fetchManifest,
+  connect,
   restoreAppearance,
+  type Connection,
 } from 'cordis-app/client'
 
 async function main(): Promise<void> {
@@ -76,7 +77,7 @@ async function main(): Promise<void> {
 }
 
 async function loadAllPlugins(runtime: ClientRuntime): Promise<void> {
-  const manifest = await fetchManifest(runtime.http)
+  const manifest = await runtime.http.get<ClientManifest>(MANIFEST_PATH, { retries: 3 })
   // 插件之间互不阻塞：一个失败不该让其他插件的页面也消失
   await Promise.all(Object.values(manifest.plugins).map((entry) => runtime.loadPlugin(entry)))
 }

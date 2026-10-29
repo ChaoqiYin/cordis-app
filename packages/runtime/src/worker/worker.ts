@@ -14,6 +14,7 @@ import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { createKernel, createLoggerFactory, ConfigStore, type KernelContext } from '@cordis-app/kernel'
 import {
+  ENV_DATA,
   ENV_PORT,
   ENV_RESOURCES,
   ENV_TOKEN,
@@ -21,11 +22,13 @@ import {
   HEALTH_PATH,
   MANIFEST_PATH,
   RECONNECT_EVENT,
+  resolveLayout,
   type ClientManifest,
   type PluginFailure,
   type WorkerMessage,
 } from '@cordis-app/protocol'
 import * as builtin from '../builtin/index.js'
+import { PluginInstaller } from '../plugin/installer.js'
 import { loadPlugins } from '../plugin/loader.js'
 import { sendJson } from '../builtin/http-utils.js'
 import { installRoutes } from './api.js'
@@ -35,7 +38,6 @@ export interface WorkerOptions {
   token: string
   dataDir: string
   resourcesDir?: string
-  instanceDir: string
 }
 
 export interface WorkerHandle {
@@ -53,7 +55,7 @@ export interface WorkerHandle {
 export function readWorkerOptions(env: NodeJS.ProcessEnv = process.env): WorkerOptions {
   const port = Number(env[ENV_PORT])
   const token = env[ENV_TOKEN] ?? ''
-  const dataDir = env.CORDIS_APP_DATA ?? ''
+  const dataDir = env[ENV_DATA] ?? ''
   if (!port || !token || !dataDir) {
     throw new Error('worker 必须由 supervisor 拉起（缺少端口 / token / 数据目录环境变量）')
   }
@@ -62,13 +64,29 @@ export function readWorkerOptions(env: NodeJS.ProcessEnv = process.env): WorkerO
     token,
     dataDir,
     resourcesDir: env[ENV_RESOURCES],
-    instanceDir: join(dataDir, 'instances', 'default'),
   }
 }
 
 export async function startWorker(options: WorkerOptions): Promise<WorkerHandle> {
+  const layout = resolveLayout(options.dataDir)
   const logger = createLoggerFactory({ level: 'info' })
-  const config = new ConfigStore({ filePath: join(options.instanceDir, 'config.json') })
+  const installer = new PluginInstaller({
+    instanceDir: layout.instanceDir,
+    frameworkVersion: '1.0.0',
+  })
+
+  // 上次安装/卸载若被中途打断，先还原磁盘再加载插件：否则会按「装了一半」
+  // 的 node_modules 启动，用户看到的是插件莫名消失或版本倒退。
+  try {
+    const recovered = await installer.recover()
+    if (recovered) {
+      logger.warn(`检测到中断的${recovered.action === 'install' ? '安装' : '卸载'}（${recovered.spec}），已回滚`)
+    }
+  } catch (error) {
+    logger.error('恢复中断的安装事务失败，node_modules 可能不一致:', error)
+  }
+
+  const config = new ConfigStore({ filePath: layout.config })
   const kernel = createKernel({ logger: logger('kernel') })
   const ctx = kernel.context as KernelContext
 
@@ -86,17 +104,17 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
   kernel.plugin(builtin.static, {
     uiDir: options.resourcesDir ? join(options.resourcesDir, 'ui') : undefined,
     sharedDir: options.resourcesDir ? join(options.resourcesDir, 'shared') : undefined,
-    pluginsDir: join(options.instanceDir, 'node_modules'),
+    pluginsDir: layout.nodeModulesDir,
   })
   kernel.plugin(builtin.ws, {})
-  kernel.plugin(builtin.storage, { root: join(options.instanceDir, 'data') })
+  kernel.plugin(builtin.storage, { root: layout.pluginDataDir })
 
   await kernel.ready()
 
   // 应用插件：先扫 node_modules，再逐个挂载。失败不阻断其他插件。
   const loaded = await loadPlugins({
     kernel,
-    nodeModulesDir: join(options.instanceDir, 'node_modules'),
+    nodeModulesDir: layout.nodeModulesDir,
     version: manifest.version,
     configFor: (id) => config.get(id) ?? {},
   })
@@ -130,8 +148,9 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
 
   installRoutes(ctx, {
     kernel,
-    instanceDir: options.instanceDir,
+    instanceDir: layout.instanceDir,
     dataDir: options.dataDir,
+    installer,
     config,
     getManifest: () => manifest,
     setManifest: (next) => (manifest = next),
@@ -183,9 +202,4 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
       kernel.dispose()
     },
   }
-}
-
-/** 供重启请求使用：发给自己一个 SIGTERM，走统一的优雅重启路径。 */
-export function requestRestart(): void {
-  process.kill(process.pid, 'SIGTERM')
 }

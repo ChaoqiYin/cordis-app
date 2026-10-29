@@ -357,13 +357,18 @@ export function normalizeShortcut(shortcut: string): string {
   return [...order.filter((m) => modifiers.has(m)), key].join('+')
 }
 
-/** 把 DOM 事件归一化成与 normalizeShortcut 同一形状。 */
+/**
+ * 把 DOM 事件归一化成与 normalizeShortcut 同一形状。
+ *
+ * 修饰键单独按下不算快捷键，返回空串——否则 Cmd 按下就会被当成一条绑定。
+ */
 export function shortcutFromEvent(event: KeyboardEvent): string {
   const modifiers: string[] = []
   if (event.ctrlKey) modifiers.push('ctrl')
   if (event.metaKey) modifiers.push('meta')
   if (event.altKey) modifiers.push('alt')
   if (event.shiftKey) modifiers.push('shift')
-  const key = event.key.length === 1 ? event.key.toLowerCase() : event.key.toLowerCase()
-  return [...modifiers, key].join('+')
+  const key = event.key.toLowerCase()
+  if (key === 'control' || key === 'meta' || key === 'alt' || key === 'shift') return ''
+  return normalizeShortcut([...modifiers, key].join('+'))
 }

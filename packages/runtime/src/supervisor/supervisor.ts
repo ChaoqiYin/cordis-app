@@ -19,6 +19,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
+  ENV_DATA,
   ENV_PORT,
   ENV_RESOURCES,
   ENV_TOKEN,
@@ -26,8 +27,11 @@ import {
   EXIT_RESTART,
   MAX_PORT_RETRIES,
   encodeHandshake,
+  handshakeOf,
+  resolveLayout,
   type HandshakeLine,
   type PluginFailure,
+  type RuntimeFile,
   type WorkerMessage,
 } from '@cordis-app/protocol'
 import { createLoggerFactory } from '@cordis-app/kernel'
@@ -249,14 +253,16 @@ export class Supervisor {
 
   /** runtime.json 是派生文件：握手是推送，它是拉取。两者内容一致。 */
   private writeRuntimeFile(line: HandshakeLine): void {
-    const file: Record<string, unknown> = {
-      port: line.port,
-      token: line.token,
+    // 就绪字段与握手共用同一份归一化逻辑，避免两边各写一半导致字段漂移
+    const readiness = handshakeOf(line)
+    const file: RuntimeFile = {
+      port: readiness.port,
+      token: readiness.token,
+      version: readiness.version,
       pid: process.pid,
-      version: line.version,
       startedAt: new Date().toISOString(),
     }
-    writeFileSync(join(this.options.dataDir, 'runtime.json'), JSON.stringify(file, null, 2))
+    writeFileSync(resolveLayout(this.options.dataDir).runtimeFile, JSON.stringify(file, null, 2))
   }
 }
 
@@ -268,16 +274,17 @@ export function buildWorkerEnv(input: {
   resourcesDir?: string
 }): NodeJS.ProcessEnv {
   const isWindows = process.platform === 'win32'
+  const layout = resolveLayout(input.dataDir)
   const base: NodeJS.ProcessEnv = isWindows
     ? // Windows 上 PATH 不能只留 bin/：系统 DLL 的查找依赖 System32 等目录。
       { ...process.env }
-    : { PATH: '', HOME: input.dataDir, TMPDIR: join(input.dataDir, 'tmp') }
+    : { PATH: '', HOME: input.dataDir, TMPDIR: layout.tmpDir }
 
   return {
     ...base,
     [ENV_PORT]: String(input.port),
     [ENV_TOKEN]: input.token,
-    CORDIS_APP_DATA: input.dataDir,
+    [ENV_DATA]: input.dataDir,
     ...(input.resourcesDir ? { [ENV_RESOURCES]: input.resourcesDir } : {}),
     // 用户 shell 里残留的调试或注入配置会污染 worker。
     NODE_OPTIONS: '',

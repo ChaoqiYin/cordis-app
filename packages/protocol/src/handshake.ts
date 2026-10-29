@@ -20,12 +20,3 @@ export function decodeHandshake(line: string): HandshakeLine | undefined {
   }
   return undefined
 }
-
-/** 从 stdout 文本流中提取握手行。用于测试与一次性读取。 */
-export function extractHandshake(text: string): HandshakeLine | undefined {
-  for (const line of text.split(/\r?\n/)) {
-    const payload = decodeHandshake(line)
-    if (payload) return payload
-  }
-  return undefined
-}

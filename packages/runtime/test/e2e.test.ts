@@ -75,7 +75,6 @@ async function withWorker(
     token,
     dataDir: fixture.dataDir,
     resourcesDir: fixture.resourcesDir,
-    instanceDir: fixture.instanceDir,
   })
   try {
     await fn({ port, token, base: `http://127.0.0.1:${port}`, handle })
@@ -172,7 +171,6 @@ test('未声明的核心 peer 会被发现阶段拒绝', async () => {
     token: generateToken(),
     dataDir: fixture.dataDir,
     resourcesDir: fixture.resourcesDir,
-    instanceDir: fixture.instanceDir,
   })
   try {
     assert.equal(handle.failures.length, 1)
@@ -198,7 +196,6 @@ test('一个插件失败不影响其他插件加载', async () => {
     token: generateToken(),
     dataDir: fixture.dataDir,
     resourcesDir: fixture.resourcesDir,
-    instanceDir: fixture.instanceDir,
   })
   try {
     assert.equal(Object.keys(handle.manifest.plugins).length, 1, 'demo 仍应加载成功')
@@ -244,7 +241,6 @@ test('/api/restart 需要 token，并要求 worker 走优雅重启', async () =>
     token,
     dataDir: fixture.dataDir,
     resourcesDir: fixture.resourcesDir,
-    instanceDir: fixture.instanceDir,
   })
 
   try {

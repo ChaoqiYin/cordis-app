@@ -12,8 +12,6 @@ import { WebSocketServer, type WebSocket } from 'ws'
 import type { KernelContext, WebSocketService, BroadcastMessage } from '@cordis-app/kernel'
 import type { Server } from 'node:http'
 
-export { RECONNECT_EVENT } from '@cordis-app/protocol'
-
 interface Client {
   socket: WebSocket
   channel: string

@@ -16,7 +16,8 @@ export { Registry, expandId, isFrameworkItem, normalizeShortcut, FRAMEWORK_MENU_
 export type { RegistrationWarning } from './registry.js'
 
 export { bootstrapToken, createHttp, HttpError, waitForHealthy } from './http.js'
-export { fetchManifest } from './manifest.js'
+export { browserTransport, connect } from './connection.js'
+export type { Connection, ConnectionState, Transport, TransportSocket } from './connection.js'
 export { restoreAppearance, applyAccent, applyTheme } from './appearance.js'
 export type { Theme } from './appearance.js'
 

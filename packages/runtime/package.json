@@ -23,16 +23,14 @@
   ],
   "scripts": {
     "build": "tsc -b tsconfig.json",
-    "typecheck": "tsc -b tsconfig.json --noEmit",
+    "typecheck": "tsc -b tsconfig.json",
     "test": "tsc -b tsconfig.json && node --test \"test/*.test.ts\""
   },
   "dependencies": {
     "@cordis-app/kernel": "workspace:*",
     "@cordis-app/protocol": "workspace:*",
     "semver": "^7.8.5",
-    "ws": "^8.22.0",
-    "yaml": "^2.9.1",
-    "chokidar": "^5.0.0"
+    "ws": "^8.22.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

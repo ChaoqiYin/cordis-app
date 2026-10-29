@@ -8,10 +8,10 @@
  * 在事件循环上绕远路。
  */
 
-import { existsSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync } from 'node:fs'
 import { spawn } from 'node:child_process'
-import { DEFAULT_SHARED_VERSIONS, PluginInstaller, Supervisor } from '@cordis-app/runtime'
+import { resolveLayout, waitForReady } from '@cordis-app/protocol'
+import { PluginInstaller, Supervisor, readPluginId } from '@cordis-app/runtime'
 import type { ParsedArgs } from './args.js'
 import { UsageError } from './args.js'
 import {
@@ -70,7 +70,7 @@ export async function commandNew(args: ParsedArgs, io: CommandIO): Promise<numbe
   // `--data` 指定数据目录时直接建在那里；否则在当前目录下建一个同名目录，
   // 免得把「新建应用」这个意图误写进用户的全局数据目录。
   const root = args.dataDir ? expandPath(args.dataDir) : expandPath(name)
-  const appJsonPath = join(root, 'instances', 'default', 'app.json')
+  const appJsonPath = resolveLayout(root).appJson
   if (existsSync(appJsonPath)) {
     io.err(`目录已存在且包含应用定义：${appJsonPath}`)
     io.err('换一个名字，或先删掉那个目录。')
@@ -173,10 +173,6 @@ async function makeInstaller(workspace: Workspace, io: CommandIO): Promise<Plugi
   return new PluginInstaller({
     instanceDir: workspace.instanceDir,
     frameworkVersion: io.frameworkVersion,
-    // 与设置页的 HTTP 安装接口共用同一份常量。少了它，凡是声明了 react
-    // peer 的插件都会在命令行安装时被判成「框架不共享该模块」——而设置页
-    // 却能装，两边行为不一致正是要避免的那类故障。
-    sharedVersions: DEFAULT_SHARED_VERSIONS,
   })
 }
 
@@ -227,11 +223,12 @@ export async function commandList(args: ParsedArgs, io: CommandIO): Promise<numb
   }
 
   const lock = readAppLock(workspace.appLockPath)
+  const nodeModulesDir = resolveLayout(workspace.dataDir).nodeModulesDir
   const rows = Object.entries(manifest.plugins).map(([name, range]) => ({
     name,
     range,
     version: lock?.plugins[name]?.version ?? '（未安装）',
-    id: readPluginId(workspace.instanceDir, name) ?? name,
+    id: readPluginId(nodeModulesDir, name) ?? name,
   }))
 
   if (args.json) {
@@ -250,15 +247,6 @@ export async function commandList(args: ParsedArgs, io: CommandIO): Promise<numb
     io.out(`  ${row.name.padEnd(width)}  ${row.version.padEnd(10)}  ${row.range}`)
   }
   return 0
-}
-
-function readPluginId(instanceDir: string, packageName: string): string | undefined {
-  try {
-    const path = join(instanceDir, 'node_modules', packageName, 'plugin.json')
-    return (JSON.parse(readFileSync(path, 'utf8')) as { id?: string }).id
-  } catch {
-    return undefined
-  }
 }
 
 // ---------------------------------------------------------------- restart
@@ -308,41 +296,26 @@ export async function commandRestart(args: ParsedArgs, io: CommandIO): Promise<n
 /**
  * 等待「旧进程已下线、新进程已就绪」。
  *
- * 必须分两段观察，不能只等第一次 200：
- *   1. 先等健康检查**失败**——旧 worker 关闭监听需要时间，在这之前探到的
- *      200 来自即将退出的旧进程，把它当成「重启完成」会立刻返回一个假成功。
- *   2. 再等它重新变成 200——这才是新 worker 完成全部插件加载的时刻
- *      （`markReady()` 之后才会返回 200）。
- *
- * 端口与 token 在重启前后不变，所以这里只需判断可达性。
+ * 两段式观察的规则由 protocol 的 waitForReady 统一实现：先等健康检查失败
+ * （旧 worker 关闭监听需要时间，之前的 200 来自即将退出的进程），再等它重新
+ * 变成 200（`markReady()` 之后才会返回 200）。这里只提供探测手段。
  */
 async function waitForRestart(port: number, timeoutMs = 30_000): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs
-  const probe = async (): Promise<boolean> => {
-    try {
-      const response = await fetch(`http://127.0.0.1:${port}/__health`, {
-        signal: AbortSignal.timeout(1000),
-      })
-      return response.ok
-    } catch {
-      // 重启窗口内连接会被拒绝，这是预期状态
-      return false
-    }
-  }
-
-  // 第一段：确认旧进程已经放手。给一个上限，避免极端情况下无限等待
-  const downDeadline = Math.min(deadline, Date.now() + 10_000)
-  while (Date.now() < downDeadline) {
-    if (!(await probe())) break
-    await new Promise((resolve) => setTimeout(resolve, 100))
-  }
-
-  // 第二段：等新进程把插件全部加载完
-  while (Date.now() < deadline) {
-    if (await probe()) return true
-    await new Promise((resolve) => setTimeout(resolve, 200))
-  }
-  return false
+  return waitForReady({
+    requireDownFirst: true,
+    timeoutMs,
+    probe: async () => {
+      try {
+        const response = await fetch(`http://127.0.0.1:${port}/__health`, {
+          signal: AbortSignal.timeout(1000),
+        })
+        return response.ok
+      } catch {
+        // 重启窗口内连接会被拒绝，这是预期状态
+        return false
+      }
+    },
+  })
 }
 
 /** 命令名 → 实现。`cli.ts` 只按这张表分发。 */

@@ -15,13 +15,14 @@
  */
 
 import { execFile } from 'node:child_process'
-import { existsSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import semver from 'semver'
 import {
   CORE_PACKAGE,
   SHARED_MODULES,
+  SHARED_PEER_RANGES,
   type AppLock,
   type AppManifest,
   type InstallResult,
@@ -31,8 +32,35 @@ import {
 
 const execFileAsync = promisify(execFile)
 
+/** 安装事务日志的文件名。放在实例根目录，不进 node_modules。 */
+const JOURNAL_NAME = '.install-journal.json'
+
 /** node_modules 的布局快照：解析键 → 解析到的真实路径。 */
 export type LayoutSnapshot = Map<string, string>
+
+/** 一次安装事务开始前的磁盘状态。恢复时据此把实例整体还原。 */
+interface JournalState {
+  /** 快照的 JSON 形式（Map 不能直接落盘） */
+  snapshot: Record<string, string>
+  /** 事务前的 app.json 原文；不存在时为 null */
+  appJson: string | null
+  /** 事务前的 app.lock 原文；不存在时为 null */
+  appLock: string | null
+}
+
+interface InstallJournal {
+  version: 1
+  action: 'install' | 'remove'
+  spec: string
+  startedAt: string
+  before: JournalState
+}
+
+/** recover() 的报告：它撤销了哪一次未完成的事务。 */
+export interface RecoveryResult {
+  action: 'install' | 'remove'
+  spec: string
+}
 
 export interface InstallerOptions {
   instanceDir: string
@@ -40,21 +68,8 @@ export interface InstallerOptions {
   frameworkVersion: string
   /** 自带 yarn.cjs 的路径；缺失时回退到系统 npm */
   yarnPath?: string
-  /** 框架共享的前端模块版本，用于 peer 交集判定 */
-  sharedVersions?: Partial<Record<(typeof SHARED_MODULES)[number], string>>
   /** 覆盖执行器，测试时注入 */
   run?: (command: string, args: string[], cwd: string) => Promise<void>
-}
-
-/**
- * 框架实际提供的共享模块版本。
- *
- * CLI 与 worker 的 HTTP 接口都从这里取，避免两处各写一份导致「命令行装得上、
- * 设置页装不上」。值必须与 ui 的构建产物一致，改动它等于改动框架前端。
- */
-export const DEFAULT_SHARED_VERSIONS: Partial<Record<(typeof SHARED_MODULES)[number], string>> = {
-  react: '^19.0.0',
-  'react-dom': '^19.0.0',
 }
 
 export class PluginInstaller {
@@ -152,24 +167,32 @@ export class PluginInstaller {
   }
 
   async install(spec: string): Promise<InstallResult> {
+    // 上一次事务若没走完（进程被杀、机器断电），先还原再叠加新的改动。
+    await this.recover()
     const before = this.snapshot()
     const wasPresent = this.isPresent(spec, before)
+    this.writeJournal({
+      version: 1,
+      action: 'install',
+      spec,
+      startedAt: new Date().toISOString(),
+      before: this.captureState(),
+    })
 
-    await this.runPackageManager(['add', spec])
-
-    const after = this.snapshot()
-
-    // 从这一行起，包管理器已经改过盘了。后续任何一步失败都必须撤回，
-    // 否则用户会停在「装了一半」的状态：node_modules 里有包、app.json 里没有
-    // 意图记录，CLI 的 list 与设置页于是各说各话。
-    let name: string | undefined
     try {
+      await this.runPackageManager(['add', spec])
+
+      const after = this.snapshot()
+
+      // 从这一行起，包管理器已经改过盘了。后续任何一步失败都必须撤回，
+      // 否则用户会停在「装了一半」的状态：node_modules 里有包、app.json 里没有
+      // 意图记录，CLI 的 list 与设置页于是各说各话。
       const moved = PluginInstaller.layoutChanged(before, after)
 
       // 装进来的包名不能从 spec 里猜：`file:../x`、tarball URL、`@scope/name@1`
       // 三种写法各自能推出什么不一样，而 npm 最终决定的是 patch 到的那个目录名。
       // 用布局 diff 找出「这次新增或改动的包」，是唯一可靠的来源。
-      name = this.resolveInstalledName(spec, before, after)
+      const name = this.resolveInstalledName(spec, before, after)
       const manifest = this.readPluginManifest(name)
       this.validateManifest(manifest)
       this.checkPeer(name)
@@ -179,6 +202,7 @@ export class PluginInstaller {
       const installed = this.readInstalledVersion(name)
       await this.updateLock()
       this.recordIntent(name, versionRangeOf(spec) ?? `^${installed}`)
+      this.clearJournal()
 
       return {
         id: manifest.id,
@@ -190,7 +214,7 @@ export class PluginInstaller {
             : '安装新插件，可直接挂载',
       }
     } catch (error) {
-      const note = await this.rollback(spec, name, wasPresent, before, after)
+      const note = await this.rollbackJournal()
       if (note) {
         // 回滚也失败了：真正的失败原因仍然要保留，磁盘状态的不一致也必须说出来
         throw new Error(`${(error as Error).message}；${note}`)
@@ -200,39 +224,58 @@ export class PluginInstaller {
   }
 
   /**
-   * 撤销一次失败的安装。
+   * 把一次中断的事务还原到开始前的状态。
    *
-   * 新装：把本次新增的插件包从 node_modules 里删掉。
-   * 升级：按 app.lock 里记录的版本装回去——此刻 lock 还没被这次失败覆盖，
-   * 正好是安装前的真相。
+   * 这是「事务日志」的全部意义：回滚曾经只在进程内失败时生效，进程一死
+   * （重启、断电、用户 kill），node_modules 改了一半、app.json 没写，下次启动
+   * 就会按残缺状态加载。现在日志先落盘，恢复只需读日志、比对布局、还原文件。
    *
-   * 只回滚到包管理器层面：传递依赖可能留下，但没有任何 plugin.json 会指向它们，
-   * 下次安装会自然复用或清理。相比把用户停在半安装状态，这个代价可以接受。
+   * 恢复步骤：
+   *   ① 本次新增的插件包从 node_modules 撤掉
+   *   ② 事务前存在、现在缺失/搬家/版本变了的顶层包，按日志里的 lock 装回
+   *   ③ app.json 与 app.lock 还原成事务前原文
+   *   ④ 删除日志
    *
-   * 返回值是「回滚失败」的说明；成功时返回 undefined。
+   * 任一步失败都保留日志，让下一次启动继续尝试；宁可反复报错，也不假装干净。
    */
-  private async rollback(
-    spec: string,
-    name: string | undefined,
-    wasPresent: boolean,
-    before: LayoutSnapshot,
-    after: LayoutSnapshot,
-  ): Promise<string | undefined> {
-    try {
-      if (!wasPresent) {
-        const targets = new Set(this.addedPluginNames(before, after))
-        if (name) targets.add(name)
-        for (const target of targets) {
-          await this.runPackageManager(['remove', target])
-        }
-        return undefined
-      }
+  async recover(): Promise<RecoveryResult | undefined> {
+    const journal = this.readJournal()
+    if (!journal) return undefined
 
-      const target = name ?? packageNameOf(spec)
-      const version = this.lockedVersion(target)
-      // 找不到锁定版本就无从恢复，但也不能因此掩盖原始错误
-      if (!version) return undefined
-      await this.runPackageManager(['add', `${target}@${version}`])
+    const before = new Map(Object.entries(journal.before.snapshot))
+    const current = this.snapshot()
+
+    // ① 新增的插件包（带 plugin.json 的顶层包），外加 spec 直接指向的那个包。
+    const added = new Set(this.addedPluginNames(before, current))
+    const target = packageNameOf(journal.spec)
+    if (!before.has(target) && current.has(target)) added.add(target)
+    for (const name of added) {
+      await this.runPackageManager(['remove', name])
+    }
+
+    // ② 事务前存在、现在不可用的顶层包：按事务前的 lock 装回。
+    const locked = parseLock(journal.before.appLock)
+    const afterCleanup = this.snapshot()
+    for (const [key, path] of before) {
+      if (key.includes('node_modules/')) continue
+      const name = packageNameFromKey(key)
+      const version = locked?.plugins?.[name]?.version
+      if (!version) continue
+      if (afterCleanup.get(key) === path && this.versionOf(path) === version) continue
+      await this.runPackageManager(['add', `${name}@${version}`])
+    }
+
+    // ③ 清单文件按原文还原，而不是重新推导——推导会把本次事务的痕迹带进来。
+    this.restoreFile(this.appJsonPath, journal.before.appJson)
+    this.restoreFile(this.appLockPath, journal.before.appLock)
+    this.clearJournal()
+    return { action: journal.action, spec: journal.spec }
+  }
+
+  /** 回滚当前日志描述的事务；失败时返回给人看的说明。 */
+  private async rollbackJournal(): Promise<string | undefined> {
+    try {
+      await this.recover()
       return undefined
     } catch (error) {
       return `回滚失败，node_modules 可能处于不一致状态：${(error as Error).message}`
@@ -246,28 +289,83 @@ export class PluginInstaller {
       .map(([key]) => packageNameFromKey(key))
   }
 
-  /** app.lock 里记录的版本。失败安装期间它仍是安装前的快照。 */
-  private lockedVersion(name: string): string | undefined {
+  private get appJsonPath(): string {
+    return join(this.options.instanceDir, 'app.json')
+  }
+
+  private get appLockPath(): string {
+    return join(this.options.instanceDir, 'app.lock')
+  }
+
+  private get journalPath(): string {
+    return join(this.options.instanceDir, JOURNAL_NAME)
+  }
+
+  private captureState(): JournalState {
+    return {
+      snapshot: Object.fromEntries(this.snapshot()),
+      appJson: readIfExists(this.appJsonPath),
+      appLock: readIfExists(this.appLockPath),
+    }
+  }
+
+  private writeJournal(journal: InstallJournal): void {
+    writeFileSync(this.journalPath, JSON.stringify(journal, null, 2) + '\n')
+  }
+
+  private readJournal(): InstallJournal | undefined {
     try {
-      const lock = JSON.parse(
-        readFileSync(join(this.options.instanceDir, 'app.lock'), 'utf8'),
-      ) as AppLock
-      return lock.plugins?.[name]?.version
+      const journal = JSON.parse(readFileSync(this.journalPath, 'utf8')) as InstallJournal
+      if (journal?.version !== 1 || !journal.before?.snapshot) return undefined
+      return journal
+    } catch {
+      return undefined
+    }
+  }
+
+  private clearJournal(): void {
+    rmSync(this.journalPath, { force: true })
+  }
+
+  private restoreFile(path: string, content: string | null): void {
+    if (content === null) rmSync(path, { force: true })
+    else writeFileSync(path, content)
+  }
+
+  private versionOf(packageDir: string): string | undefined {
+    try {
+      return (JSON.parse(readFileSync(join(packageDir, 'package.json'), 'utf8')) as { version?: string }).version
     } catch {
       return undefined
     }
   }
 
   async remove(spec: string): Promise<InstallResult> {
+    await this.recover()
     const name = packageNameOf(spec)
     const manifest = this.findManifest(name)
-    await this.runPackageManager(['remove', name])
-    await this.updateLock()
-    this.recordIntent(name, undefined)
-    return {
-      id: manifest?.id ?? name,
-      restarted: true,
-      reason: '卸载插件需重启 worker',
+    this.writeJournal({
+      version: 1,
+      action: 'remove',
+      spec: name,
+      startedAt: new Date().toISOString(),
+      before: this.captureState(),
+    })
+
+    try {
+      await this.runPackageManager(['remove', name])
+      await this.updateLock()
+      this.recordIntent(name, undefined)
+      this.clearJournal()
+      return {
+        id: manifest?.id ?? name,
+        restarted: true,
+        reason: '卸载插件需重启 worker',
+      }
+    } catch (error) {
+      const note = await this.rollbackJournal()
+      if (note) throw new Error(`${(error as Error).message}；${note}`)
+      throw error
     }
   }
 
@@ -367,10 +465,10 @@ export class PluginInstaller {
     for (const shared of SHARED_MODULES) {
       const range = peers[shared]
       if (!range) continue
-      const provided = this.options.sharedVersions?.[shared]
-      if (!provided) {
-        throw new Error(`插件要求 ${shared}@${range}，但框架不共享该模块`)
-      }
+      // 框架版本范围与协议层的共享模块表同源。省略范围的模块（如
+      // react-dom/client）由框架直接提供，没有可比较的版本承诺。
+      const provided = SHARED_PEER_RANGES[shared]
+      if (!provided) continue
       if (!semver.intersects(range, provided, { includePrerelease: true })) {
         throw new Error(`插件要求 ${shared}@${range}，框架提供 ${provided}，两者不兼容`)
       }
@@ -390,7 +488,7 @@ export class PluginInstaller {
    * 删掉——用户卸载了插件，`app.json` 却还写着它，下次启动又会尝试安装。
    */
   private async updateLock(): Promise<void> {
-    const lockPath = join(this.options.instanceDir, 'app.lock')
+    const lockPath = this.appLockPath
     const previous: AppLock = existsSync(lockPath)
       ? JSON.parse(readFileSync(lockPath, 'utf8'))
       : { lockfileVersion: 1, plugins: {} }
@@ -422,7 +520,7 @@ export class PluginInstaller {
 
   /** app.json 只列直接依赖；这里不臆造意图，只保证被删掉的包也离开清单。 */
   private syncAppJson(lock: AppLock): void {
-    const appPath = join(this.options.instanceDir, 'app.json')
+    const appPath = this.appJsonPath
     if (!existsSync(appPath)) return
     const app: AppManifest = JSON.parse(readFileSync(appPath, 'utf8'))
     const plugins = { ...app.plugins }
@@ -441,7 +539,7 @@ export class PluginInstaller {
    * 显式记录。撤销时传 undefined。
    */
   private recordIntent(name: string, range: string | undefined): void {
-    const appPath = join(this.options.instanceDir, 'app.json')
+    const appPath = this.appJsonPath
     if (!existsSync(appPath)) return
     const app: AppManifest = JSON.parse(readFileSync(appPath, 'utf8'))
     const plugins = { ...app.plugins }
@@ -513,5 +611,22 @@ function readdirSafe(dir: string): string[] {
     return readdirSync(dir)
   } catch {
     return []
+  }
+}
+
+function readIfExists(path: string): string | null {
+  try {
+    return readFileSync(path, 'utf8')
+  } catch {
+    return null
+  }
+}
+
+function parseLock(raw: string | null): AppLock | undefined {
+  if (raw === null) return undefined
+  try {
+    return JSON.parse(raw) as AppLock
+  } catch {
+    return undefined
   }
 }

@@ -16,7 +16,7 @@ import {
   type ReactNode,
 } from 'react'
 import type { ClientRuntime, MenuState } from './runtime.js'
-import { normalizeShortcut } from './registry.js'
+import { shortcutFromEvent } from './registry.js'
 import type { RegisteredMenuItem, RegisteredPage, RegisteredSettings, RegisteredSlot } from './types.js'
 
 /** 运行时由宿主注入；插件拿不到这个 Context，只能通过下面的 Hooks。 */
@@ -182,7 +182,7 @@ export function useShortcuts(): void {
       const tag = target.tagName
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable) return
     }
-    const action = runtime.registry.findActionByShortcut(shortcutOf(event))
+    const action = runtime.registry.findActionByShortcut(shortcutFromEvent(event))
     if (!action || action.disabled) return
     event.preventDefault()
     void Promise.resolve(action.action()).catch((error) =>
@@ -195,19 +195,6 @@ export function useShortcuts(): void {
     window.addEventListener('keydown', listener)
     return () => window.removeEventListener('keydown', listener)
   }, [])
-}
-
-/** 与 normalizeShortcut 同一形状：两者必须能直接比较。 */
-function shortcutOf(event: KeyboardEvent): string {
-  const modifiers: string[] = []
-  if (event.ctrlKey) modifiers.push('ctrl')
-  if (event.metaKey) modifiers.push('meta')
-  if (event.altKey) modifiers.push('alt')
-  if (event.shiftKey) modifiers.push('shift')
-  const key = event.key.toLowerCase()
-  // 单纯按修饰键不算快捷键
-  if (key === 'control' || key === 'meta' || key === 'alt' || key === 'shift') return ''
-  return normalizeShortcut([...modifiers, key].join('+'))
 }
 
 /** 插件是否已加载（用于依赖其他插件的组件做降级渲染）。 */

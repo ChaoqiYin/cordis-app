@@ -8,7 +8,7 @@
  */
 
 import axios, { type AxiosInstance } from 'axios'
-import { HEALTH_PATH, TOKEN_FRAGMENT_KEY } from '@cordis-app/protocol/client'
+import { HEALTH_PATH, TOKEN_FRAGMENT_KEY, waitForReady } from '@cordis-app/protocol/client'
 import type { HttpClient, RequestConfig } from './types.js'
 
 const TOKEN_STORAGE_KEY = 'cordis-app/token'
@@ -111,19 +111,20 @@ export function createHttp(token: string): HttpClient {
  * 轮询 /__health 直到服务恢复。
  *
  * 重启期间旧 WebSocket 连接随旧进程一起消失，前端此刻处于「不知道什么时候好」
- * 的盲区，所以用轮询而不是等重连。间隔 200ms，上限 30 秒。
+ * 的盲区，所以用轮询而不是等重连。等待节奏由 protocol 的 waitForReady 统一。
  */
 export async function waitForHealthy(options: { intervalMs?: number; timeoutMs?: number } = {}): Promise<boolean> {
-  const interval = options.intervalMs ?? 200
-  const deadline = Date.now() + (options.timeoutMs ?? 30_000)
-  while (Date.now() < deadline) {
-    try {
-      const res = await fetch(HEALTH_PATH, { cache: 'no-store' })
-      if (res.ok) return true
-    } catch {
-      // 服务还没起来，继续等
-    }
-    await new Promise((r) => setTimeout(r, interval))
-  }
-  return false
+  return waitForReady({
+    intervalMs: options.intervalMs,
+    timeoutMs: options.timeoutMs,
+    probe: async () => {
+      try {
+        const res = await fetch(HEALTH_PATH, { cache: 'no-store' })
+        return res.ok
+      } catch {
+        // 服务还没起来，继续等
+        return false
+      }
+    },
+  })
 }

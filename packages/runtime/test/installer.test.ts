@@ -43,7 +43,6 @@ function createFixture(): Fixture {
   const installer = new PluginInstaller({
     instanceDir,
     frameworkVersion: '1.0.0',
-    sharedVersions: { react: '^19.0.0', 'react-dom': '^19.0.0' },
     async run(_command, args) {
       calls.push(args)
       if (args[0] === 'add') {
@@ -89,6 +88,39 @@ function readApp(fixture: Fixture) {
 
 function readLock(fixture: Fixture) {
   return JSON.parse(readFileSync(join(fixture.instanceDir, 'app.lock'), 'utf8'))
+}
+
+const JOURNAL = '.install-journal.json'
+
+/** 直接落一份事务日志，模拟「上一次安装/卸载被进程死亡打断」。 */
+function writeJournal(
+  fixture: Fixture,
+  journal: {
+    action: 'install' | 'remove'
+    spec: string
+    snapshot?: Record<string, string>
+    appJson?: string | null
+    appLock?: string | null
+  },
+): void {
+  writeFileSync(
+    join(fixture.instanceDir, JOURNAL),
+    JSON.stringify({
+      version: 1,
+      action: journal.action,
+      spec: journal.spec,
+      startedAt: new Date().toISOString(),
+      before: {
+        snapshot: journal.snapshot ?? {},
+        appJson: journal.appJson === undefined ? readFileSync(join(fixture.instanceDir, 'app.json'), 'utf8') : journal.appJson,
+        appLock: journal.appLock ?? null,
+      },
+    }),
+  )
+}
+
+function journalExists(fixture: Fixture): boolean {
+  return existsSync(join(fixture.instanceDir, JOURNAL))
 }
 
 // ---------------------------------------------------------------- 安装
@@ -285,6 +317,61 @@ test('卸载不存在的插件不破坏清单', async () => {
   const result = await fixture.installer.remove('never-installed')
   assert.equal(result.id, 'never-installed')
   assert.equal(readApp(fixture).plugins.existing, '^1.0.0')
+})
+
+// ---------------------------------------------------------------- 事务恢复
+
+test('成功安装后不留下事务日志', async () => {
+  const fixture = createFixture()
+  fixture.queue.push(() => writePlugin(fixture, 'theme-picker'))
+  await fixture.installer.install('theme-picker')
+  assert.equal(journalExists(fixture), false)
+})
+
+test('恢复会撤掉上一次安装新增的插件包，并还原 app.json', async () => {
+  const fixture = createFixture()
+  writePlugin(fixture, 'half-installed', { version: '1.0.0' })
+  // 事务前 app.json 是空的，日志里记的就是它
+  writeJournal(fixture, { action: 'install', spec: 'half-installed' })
+
+  const result = await fixture.installer.recover()
+
+  assert.equal(result?.action, 'install')
+  assert.equal(result?.spec, 'half-installed')
+  assert.equal(existsSync(join(fixture.nodeModules, 'half-installed')), false, '残留包要被撤掉')
+  assert.deepEqual(readApp(fixture).plugins, {}, 'app.json 回到事务前')
+  assert.equal(journalExists(fixture), false, '恢复完成后删除日志')
+})
+
+test('恢复会把被中断卸载删掉的包按 lock 装回', async () => {
+  const fixture = createFixture()
+  const originalApp = readFileSync(join(fixture.instanceDir, 'app.json'), 'utf8')
+  const originalLock = JSON.stringify(
+    { lockfileVersion: 1, plugins: { keep: { version: '1.2.0', resolved: 'https://example.com/keep.tgz' } } },
+    null,
+    2,
+  )
+  writeJournal(fixture, {
+    action: 'remove',
+    spec: 'keep',
+    snapshot: { keep: join(fixture.nodeModules, 'keep') },
+    appJson: originalApp,
+    appLock: originalLock,
+  })
+  fixture.queue.push(() => writePlugin(fixture, 'keep', { version: '1.2.0' }))
+
+  const result = await fixture.installer.recover()
+
+  assert.equal(result?.action, 'remove')
+  assert.deepEqual(fixture.calls.at(-1), ['add', 'keep@1.2.0'], '按事务前的 lock 恢复版本')
+  assert.equal(readFileSync(join(fixture.instanceDir, 'app.lock'), 'utf8'), originalLock, 'lock 原文还原')
+  assert.equal(journalExists(fixture), false)
+})
+
+test('没有事务日志时 recover 是空操作', async () => {
+  const fixture = createFixture()
+  assert.equal(await fixture.installer.recover(), undefined)
+  assert.deepEqual(fixture.calls, [])
 })
 
 // ---------------------------------------------------------------- 布局快照

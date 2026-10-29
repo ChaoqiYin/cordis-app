@@ -22,7 +22,7 @@
   ],
   "scripts": {
     "build": "tsc -b tsconfig.json && node -e \"require('node:fs').chmodSync('lib/cli.js', 0o755)\"",
-    "typecheck": "tsc -b tsconfig.json --noEmit",
+    "typecheck": "tsc -b tsconfig.json",
     "test": "tsc -b tsconfig.json && node --test \"test/*.test.ts\""
   },
   "dependencies": {

@@ -31,7 +31,46 @@ export function resolveDataDir(cliFlag?: string, env?: NodeJS.ProcessEnv): strin
   return defaultDataDir()
 }
 
-/** 实例根目录。实例名固定为 default，`instances/` 这一层为目录整体迁移而保留。 */
-export function instanceDir(dataDir: string, name = 'default'): string {
-  return join(dataDir, 'instances', name)
+/** 实例名固定为 default。`instances/` 这一层为将来多实例预留。 */
+export const DEFAULT_INSTANCE = 'default'
+
+/**
+ * 数据目录的完整布局。
+ *
+ * 这是「数据目录长什么样」的唯一出处：supervisor、worker、CLI 都从这里取路径，
+ * 不再各自 `join(dataDir, 'instances', 'default', ...)`。少一处手写，就少一处
+ * 「CLI 装的插件 worker 看不到」式的漂移。
+ */
+export interface DataLayout {
+  /** 数据根目录（`--data` / `CORDIS_APP_DATA` / 平台默认） */
+  dataDir: string
+  /** 实例根目录：`instances/<name>` */
+  instanceDir: string
+  appJson: string
+  appLock: string
+  packageJson: string
+  config: string
+  /** 插件运行期数据的根目录（storage 内置插件按插件 id 分目录） */
+  pluginDataDir: string
+  nodeModulesDir: string
+  /** 正在运行的实例快照（supervisor 写入，CLI / 外壳拉取） */
+  runtimeFile: string
+  tmpDir: string
+}
+
+/** 按数据目录推导整套路径。纯函数：不读环境变量、不碰磁盘。 */
+export function resolveLayout(dataDir: string, name = DEFAULT_INSTANCE): DataLayout {
+  const instanceDir = join(dataDir, 'instances', name)
+  return {
+    dataDir,
+    instanceDir,
+    appJson: join(instanceDir, 'app.json'),
+    appLock: join(instanceDir, 'app.lock'),
+    packageJson: join(instanceDir, 'package.json'),
+    config: join(instanceDir, 'config.json'),
+    pluginDataDir: join(instanceDir, 'data'),
+    nodeModulesDir: join(instanceDir, 'node_modules'),
+    runtimeFile: join(dataDir, 'runtime.json'),
+    tmpDir: join(dataDir, 'tmp'),
+  }
 }

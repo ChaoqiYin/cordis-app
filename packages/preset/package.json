@@ -22,6 +22,7 @@
     "test": "tsc -b tsconfig.json && node --test \"test/*.test.ts\""
   },
   "dependencies": {
+    "@cordis-app/protocol": "workspace:*",
     "esbuild": "^0.28.2"
   },
   "devDependencies": {

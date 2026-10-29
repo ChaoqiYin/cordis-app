@@ -15,8 +15,9 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  instanceDir as instanceDirOf,
+  isRuntimeFile,
   resolveDataDir,
+  resolveLayout,
   type AppLock,
   type AppManifest,
   type RuntimeFile,
@@ -31,14 +32,13 @@ export interface Workspace {
 }
 
 export function openWorkspace(dataFlag?: string): Workspace {
-  const dataDir = resolveDataDir(dataFlag)
-  const instanceDir = instanceDirOf(dataDir)
+  const layout = resolveLayout(resolveDataDir(dataFlag))
   return {
-    dataDir,
-    instanceDir,
-    appJsonPath: join(instanceDir, 'app.json'),
-    appLockPath: join(instanceDir, 'app.lock'),
-    runtimeJsonPath: join(dataDir, 'runtime.json'),
+    dataDir: layout.dataDir,
+    instanceDir: layout.instanceDir,
+    appJsonPath: layout.appJson,
+    appLockPath: layout.appLock,
+    runtimeJsonPath: layout.runtimeFile,
   }
 }
 
@@ -78,7 +78,7 @@ export function readRuntimeFile(path: string): RuntimeFile | undefined {
   } catch {
     return undefined
   }
-  if (!file || typeof file.port !== 'number' || typeof file.pid !== 'number') return undefined
+  if (!isRuntimeFile(file)) return undefined
   if (!isProcessAlive(file.pid)) return undefined
   return file
 }
@@ -143,7 +143,8 @@ export interface CreatedApp {
  * 用户随后用 `add` 逐个装插件——这正好对应验收标准里的 5 分钟。
  */
 export function createApp(options: CreateAppOptions): CreatedApp {
-  const instanceDir = join(options.root, 'instances', 'default')
+  const layout = resolveLayout(options.root)
+  const instanceDir = layout.instanceDir
   mkdirSync(instanceDir, { recursive: true })
 
   const manifest: AppManifest = {
@@ -152,11 +153,11 @@ export function createApp(options: CreateAppOptions): CreatedApp {
     framework: `^${options.frameworkVersion}`,
     plugins: {},
   }
-  const appJsonPath = join(instanceDir, 'app.json')
+  const appJsonPath = layout.appJson
   writeFileSync(appJsonPath, JSON.stringify(manifest, null, 2) + '\n')
 
   // package.json 是派生物，但包管理器必须先看到它才知道往哪里装
-  const packageJsonPath = join(instanceDir, 'package.json')
+  const packageJsonPath = layout.packageJson
   writeFileSync(
     packageJsonPath,
     JSON.stringify(
@@ -171,7 +172,7 @@ export function createApp(options: CreateAppOptions): CreatedApp {
     ) + '\n',
   )
 
-  writeFileSync(join(instanceDir, 'app.lock'), JSON.stringify({ lockfileVersion: 1, plugins: {} }, null, 2) + '\n')
+  writeFileSync(layout.appLock, JSON.stringify({ lockfileVersion: 1, plugins: {} }, null, 2) + '\n')
 
   return { appJsonPath, packageJsonPath, instanceDir }
 }

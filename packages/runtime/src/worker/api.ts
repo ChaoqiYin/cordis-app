@@ -4,43 +4,47 @@
  * 两个入口（CLI 与 HTTP）走同一条实现——这里只是把它挂到路由上。
  */
 
-import { join } from 'node:path'
 import type { ConfigStore, Kernel, KernelContext } from '@cordis-app/kernel'
-import type { ClientManifest, PluginFailure } from '@cordis-app/protocol'
+import { resolveLayout, type ClientManifest, type PluginFailure } from '@cordis-app/protocol'
 import { parseJson, readBody, sendError, sendJson } from '../builtin/http-utils.js'
-import { DEFAULT_SHARED_VERSIONS, PluginInstaller } from '../plugin/installer.js'
+import { findPlugin, scanPlugins } from '../plugin/catalog.js'
+import type { PluginInstaller } from '../plugin/installer.js'
 
 export interface ApiOptions {
   kernel: Kernel
   instanceDir: string
   dataDir: string
+  /** 安装器由 worker 持有：启动恢复与设置页安装必须走同一个实例 */
+  installer: PluginInstaller
   config: ConfigStore
   getManifest(): ClientManifest
   setManifest(next: ClientManifest): void
   failures: PluginFailure[]
   /** 由 worker 注入：请求优雅重启 */
   requestRestart?: () => void
-  frameworkVersion?: string
 }
 
 export function installRoutes(ctx: KernelContext, options: ApiOptions): void {
-  const installer = new PluginInstaller({
-    instanceDir: options.instanceDir,
-    frameworkVersion: options.frameworkVersion ?? '1.0.0',
-    // 版本范围与 CLI 共用同一份常量，避免「命令行装得上、设置页装不上」
-    sharedVersions: DEFAULT_SHARED_VERSIONS,
-  })
+  const { installer } = options
+  const nodeModulesDir = resolveLayout(options.dataDir).nodeModulesDir
 
-  /** 插件列表：已加载的 + 加载失败的，设置页据此渲染。 */
+  /** 插件列表：已安装的全集（含只贡献服务端能力的），设置页据此渲染。 */
   ctx.router.get('/api/plugins', (_req, res) => {
     const manifest = options.getManifest()
+    const scan = scanPlugins(nodeModulesDir)
     sendJson(res, 200, {
-      plugins: Object.values(manifest.plugins).map((entry) => ({
-        id: entry.id,
-        displayName: entry.displayName,
-        files: entry.files,
-      })),
-      failures: options.failures,
+      plugins: scan.plugins.map((plugin) => {
+        const client = manifest.plugins[plugin.id]
+        return {
+          id: plugin.id,
+          // 两套身份都交给前端：展示与卸载各自需要不同的那个
+          packageName: plugin.packageName,
+          displayName: client?.displayName ?? plugin.manifest.displayName ?? plugin.id,
+          version: plugin.packageJson.version,
+          files: client?.files ?? [],
+        }
+      }),
+      failures: [...scan.failures, ...options.failures],
     })
   })
 
@@ -64,9 +68,15 @@ export function installRoutes(ctx: KernelContext, options: ApiOptions): void {
 
   ctx.router.delete('/api/plugins/:id', async (req, res, params) => {
     const id = params.id!
+    // 路径参数来自列表里的插件 id；安装器只认包名，必须在这里完成身份转换。
+    const plugin = findPlugin(scanPlugins(nodeModulesDir), id)
+    if (!plugin) {
+      sendError(res, 404, 'not_found', `未安装插件 ${id}`)
+      return
+    }
     try {
-      const result = await installer.remove(id)
-      options.config.delete(id)
+      const result = await installer.remove(plugin.packageName)
+      options.config.delete(plugin.id)
       sendJson(res, 200, result)
       options.requestRestart?.()
     } catch (error) {

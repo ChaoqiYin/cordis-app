@@ -41,25 +41,92 @@ export const RECONNECT_EVENT = 'server:reconnect'
 /** 前端建立 WebSocket 连接的路径。upgrade 本身不校验路径，这里只用于语义清晰。 */
 export const WS_PATH = '/__ws'
 
-/** 前端运行时与插件共同依赖的共享白名单。 */
-export const SHARED_MODULES = [
-  'react',
-  'react-dom',
-  'react-dom/client',
-  'react/jsx-runtime',
-  'cordis-app/client',
-] as const
+/**
+ * 单个共享模块的完整定义。
+ *
+ * 这张表是「哪些模块由框架提供」的唯一真源：浏览器路径、构建入口、peer 版本
+ * 范围都从它派生。宿主构建、import map、插件打包预设、安装期 peer 校验各自
+ * 需要其中一部分，但没有第二份答案。
+ */
+export interface SharedModuleDefinition {
+  /** 浏览器里的产物文件名。 */
+  readonly file: string
+  /** 构建入口：裸模块名，或 UI 包内的源文件路径。 */
+  readonly entry: string
+  /** 构建时需要标为 external 的其它共享模块。 */
+  readonly externals: readonly string[]
+  /** 框架提供的版本范围；省略表示框架共享该模块但不承诺具体版本。 */
+  readonly peerRange?: string
+}
 
-export type SharedModule = (typeof SHARED_MODULES)[number]
+/**
+ * 前端运行时与插件共同依赖的共享白名单。
+ *
+ * 顺序即 import map 的生成顺序；新增模块只需在这张表里加一行。
+ */
+const SHARED_MODULE_DEFINITIONS = {
+  'react': {
+    file: 'react.js',
+    entry: 'react',
+    externals: [],
+    peerRange: '^19.0.0',
+  },
+  'react-dom': {
+    file: 'react-dom.js',
+    entry: 'react-dom',
+    externals: ['react'],
+    peerRange: '^19.0.0',
+  },
+  'react-dom/client': {
+    file: 'react-dom-client.js',
+    entry: 'react-dom/client',
+    externals: ['react', 'react-dom'],
+  },
+  'react/jsx-runtime': {
+    file: 'jsx-runtime.js',
+    entry: 'react/jsx-runtime',
+    externals: ['react'],
+  },
+  'cordis-app/client': {
+    file: 'client.js',
+    entry: 'src/client/index.ts',
+    externals: ['react', 'react-dom', 'react-dom/client', 'react/jsx-runtime'],
+  },
+} as const satisfies Record<string, SharedModuleDefinition>
+
+export type SharedModule = keyof typeof SHARED_MODULE_DEFINITIONS
+
+/**
+ * 对外暴露的表。
+ *
+ * 值统一成 `SharedModuleDefinition`：`as const` 的联合类型里，没写 `peerRange`
+ * 的成员不存在该属性，直接下标访问会被拒绝。键保留字面量类型，值的形状放宽
+ * 到接口——这正是调用方需要的视图。
+ */
+export const SHARED_MODULE_TABLE: Record<SharedModule, SharedModuleDefinition> =
+  SHARED_MODULE_DEFINITIONS
+
+/** 共享模块的说明符列表。 */
+export const SHARED_MODULES = Object.keys(SHARED_MODULE_TABLE) as SharedModule[]
 
 /** 共享模块在浏览器里的实际路径。 */
-export const SHARED_MODULE_URLS: Record<SharedModule, string> = {
-  'react': `${SHARED_PREFIX}/react.js`,
-  'react-dom': `${SHARED_PREFIX}/react-dom.js`,
-  'react-dom/client': `${SHARED_PREFIX}/react-dom-client.js`,
-  'react/jsx-runtime': `${SHARED_PREFIX}/jsx-runtime.js`,
-  'cordis-app/client': `${SHARED_PREFIX}/client.js`,
-}
+export const SHARED_MODULE_URLS = Object.fromEntries(
+  SHARED_MODULES.map((name) => [name, `${SHARED_PREFIX}/${SHARED_MODULE_TABLE[name].file}`]),
+) as Record<SharedModule, string>
+
+/**
+ * 框架实际提供的共享模块版本范围。
+ *
+ * 安装阶段用它与插件的 peerDependencies 求交集：没有交集就硬失败，而不是把
+ * 问题留到运行时的 invalid hook call。与实际前端产物不一致时，这里就是唯一
+ * 需要改的地方。
+ */
+export const SHARED_PEER_RANGES = Object.fromEntries(
+  SHARED_MODULES.flatMap((name) => {
+    const range = SHARED_MODULE_TABLE[name].peerRange
+    return range ? [[name, range]] : []
+  }),
+) as Partial<Record<SharedModule, string>>
 
 /** 安装阶段必须强制校验的核心包 peer 版本范围。 */
 export const CORE_PACKAGE = 'cordis-app'
