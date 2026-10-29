@@ -9,8 +9,8 @@ import assert from 'node:assert/strict'
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { SHARED_MODULE_TABLE } from '@cordis-app/protocol'
-import { buildProject } from '../src/build/index.ts'
+import { SHARED_MODULE_TABLE, WS_PATH } from '@cordis-app/protocol'
+import { buildProject, devProxyConfig, swapIntoPlace } from '../src/build/index.ts'
 
 function createProject(): string {
   const root = mkdtempSync(join(tmpdir(), 'cordis-build-'))
@@ -72,6 +72,48 @@ test('build 产出发布布局，body 与 server 都来自项目源码', async (
   const server = readFileSync(result.serverEntry, 'utf8')
   assert.match(server, /apply/, '项目 server 入口应被打包成可 import 的 ESM')
   assert.doesNotMatch(server, /interface|: number/, 'TypeScript 类型应被剥离')
+})
+
+test('dev 代理的 WebSocket 路径与前端连接路径一致', () => {
+  const proxy = devProxyConfig('http://127.0.0.1:9000')
+
+  assert.deepEqual(
+    Object.keys(proxy).sort(),
+    ['/api', '/__health', '/__plugins', WS_PATH].sort(),
+    'WebSocket 必须代理到 WS_PATH，而不是另一条字面量路径',
+  )
+  assert.equal(proxy[WS_PATH]?.ws, true, `${WS_PATH} 必须启用 ws 代理`)
+  assert.equal(proxy['/api']?.ws, false)
+  assert.equal((proxy as Record<string, unknown>)['/ws'], undefined, '不保留 /ws 别名')
+})
+
+test('产物切换失败时把旧目录移回原位，而不是丢掉新旧两份', () => {
+  const calls: Array<[string, string]> = []
+  let renames = 0
+  let removed = false
+
+  assert.throws(
+    () =>
+      swapIntoPlace('/project/dist.tmp', '/project/dist', {
+        existsSync: () => true,
+        renameSync(from, to) {
+          calls.push([from, to])
+          renames += 1
+          // 第一次：旧产物 → 备份；第二次：staging → outDir 失败。
+          if (renames === 2) throw new Error('rename 失败')
+        },
+        rmSync() {
+          removed = true
+        },
+      }),
+    /rename 失败/,
+  )
+
+  assert.equal(calls.length, 3, '旧目录移出、切换失败、旧目录移回')
+  assert.equal(calls[0]![0], '/project/dist')
+  assert.match(calls[0]![1], /^\/project\/dist\.old-/)
+  assert.deepEqual(calls[2]!, [calls[0]![1], '/project/dist'], '失败后必须把备份移回原位')
+  assert.equal(removed, false, '切换失败时不能删除旧产物')
 })
 
 test('重复 build 幂等，不残留上一次的文件', async () => {

@@ -30,6 +30,7 @@ import { clientPreset, serverPreset } from '@cordis-app/preset'
 import {
   SHARED_MODULE_TABLE,
   SHARED_PREFIX,
+  WS_PATH,
   resolveProjectLayout,
   type AppManifest,
   type PluginManifest,
@@ -119,9 +120,10 @@ export async function buildProject(options: BuildProjectOptions): Promise<BuildR
     copyFileSync(layout.appJson, join(staging, 'app.json'))
     writePackageJson(layout.projectRoot, join(staging, 'package.json'))
 
-    // 原子切换：先移走旧目录，再改名。失败时旧目录已在 try 外被清理逻辑保护。
-    rmSync(outDir, { recursive: true, force: true })
-    renameSync(staging, outDir)
+    // 原子切换：旧目录先挪到同级备份，staging 改名成功后才删备份。
+    // 两段 rename 都不可能跨设备（同一父目录），因此失败时旧目录还在，
+    // 移回去即可——绝不能先 rmSync(outDir)，否则 rename 失败会同时失去新旧产物。
+    swapIntoPlace(staging, outDir)
   } catch (error) {
     rmSync(staging, { recursive: true, force: true })
     throw error
@@ -135,6 +137,52 @@ export async function buildProject(options: BuildProjectOptions): Promise<BuildR
     appJson: join(outDir, 'app.json'),
     packageJson: join(outDir, 'package.json'),
     plugins: builtPlugins,
+  }
+}
+
+/** 文件系统操作注入点；只为测试「切换失败也要保住旧产物」这一分支。 */
+export interface SwapOps {
+  existsSync(path: string): boolean
+  renameSync(from: string, to: string): void
+  rmSync(path: string, options: { recursive: boolean; force: boolean }): void
+}
+
+/**
+ * 用 staging 整体替换 outDir，失败时旧产物仍在原位。
+ *
+ * 先把旧目录 rename 到同级备份（不是删除），再把 staging rename 成 outDir。
+ * 两次 rename 都在同一父目录下，不会跨设备；第二次失败就把备份移回去。
+ */
+export function swapIntoPlace(
+  staging: string,
+  outDir: string,
+  ops: SwapOps = { existsSync, renameSync, rmSync },
+): void {
+  if (!ops.existsSync(outDir)) {
+    ops.renameSync(staging, outDir)
+    return
+  }
+
+  const backup = `${outDir}.old-${process.pid}-${Math.random().toString(36).slice(2, 8)}`
+  ops.renameSync(outDir, backup)
+  try {
+    ops.renameSync(staging, outDir)
+  } catch (error) {
+    try {
+      ops.renameSync(backup, outDir)
+    } catch (restoreError) {
+      throw new Error(
+        `构建产物切换失败，旧产物保留在 ${backup}，自动恢复也失败：${(restoreError as Error).message}`,
+        { cause: error },
+      )
+    }
+    throw error
+  }
+  // 新产物已经就位；清理备份失败不影响本次构建结果。
+  try {
+    ops.rmSync(backup, { recursive: true, force: true })
+  } catch {
+    // 备份目录留待下一次构建或人工清理。
   }
 }
 
@@ -543,12 +591,7 @@ export async function createProjectDevServer(
       fs: {
         allow: [shellDir, options.projectRoot, packageRoot],
       },
-      proxy: {
-        ...proxyFor('/api', workerOrigin),
-        ...proxyFor('/__plugins', workerOrigin),
-        ...proxyFor('/__health', workerOrigin),
-        ...proxyFor('/ws', workerOrigin),
-      },
+      proxy: devProxyConfig(workerOrigin),
     },
   })
 
@@ -648,12 +691,28 @@ function serveSharedModules(): Plugin {
   }
 }
 
+/**
+ * dev 服务器转发给 worker 的路径。
+ *
+ * WebSocket 路径必须来自 protocol 的 `WS_PATH`：前端连接的是 `/__ws`，dev
+ * 代理若写成别的路径，浏览器会连到 Vite 自己身上，worker 重启后的清单重拉
+ * 就永远等不到。
+ */
+export function devProxyConfig(target: string) {
+  return {
+    ...proxyFor('/api', target),
+    ...proxyFor('/__plugins', target),
+    ...proxyFor('/__health', target),
+    ...proxyFor(WS_PATH, target),
+  }
+}
+
 function proxyFor(prefix: string, target: string) {
   return {
     [prefix]: {
       target,
       changeOrigin: true,
-      ws: prefix === '/ws',
+      ws: prefix === WS_PATH,
       // auth 只接受 worker 自己的 origin；代理必须把浏览器的 Origin 换掉。
       configure(proxy: { on(event: 'proxyReq', listener: (req: { setHeader(name: string, value: string): void }) => void): void }) {
         proxy.on('proxyReq', (req) => req.setHeader('origin', target))

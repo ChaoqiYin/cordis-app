@@ -35,8 +35,14 @@ interface BundleSpec {
   peer?: Record<string, string>
   ui?: Record<string, unknown>
   pluginUi?: Record<string, unknown>
-  /** 在签名完成后篡改内容 */
+  /** 签名完成后篡改内容 */
   tamper?: boolean
+  /** 签名完成后改写 bundle.json 的 peer（不改内容文件与签名） */
+  tamperPeer?: Record<string, string>
+  /** 签名完成后改写 bundle.json 的 ui（不改内容文件与签名） */
+  tamperUi?: Record<string, unknown>
+  /** 用旧版（未覆盖 peer/ui）的载荷签名 */
+  legacySignature?: boolean
   /** 用另一把私钥签名 */
   signWith?: KeyObject
   omitBundle?: boolean
@@ -116,11 +122,22 @@ function makeBundle(env: Env, options: BundleSpec = {}): Buffer {
   const signer = options.signWith ?? env.privateKey
   const signature = sign(
     null,
-    bundleSignaturePayload({ id, version, hash }),
+    options.legacySignature
+      ? Buffer.from(`cordis-plugin-bundle-v1\n${id}\n${version}\n${hash}\n`, 'utf8')
+      : bundleSignaturePayload({
+          id,
+          version,
+          hash,
+          peer,
+          ...(options.ui ? { ui: options.ui } : {}),
+        }),
     signer,
   ).toString('base64')
 
   if (!options.omitBundle) {
+    // 篡改只改 bundle.json 的字段，不改任何内容文件：hash 不变，只有签名能发现。
+    const declaredPeer = options.tamperPeer ?? peer
+    const declaredUi = options.tamperUi ?? options.ui
     files.set(
       BUNDLE_FILE,
       Buffer.from(
@@ -130,8 +147,8 @@ function makeBundle(env: Env, options: BundleSpec = {}): Buffer {
           hash,
           signature,
           algorithm: 'ed25519',
-          peer,
-          ...(options.ui ? { ui: options.ui } : {}),
+          peer: declaredPeer,
+          ...(declaredUi ? { ui: declaredUi } : {}),
           builtAt: '2026-01-01T00:00:00.000Z',
         }),
       ),
@@ -282,6 +299,39 @@ test('签名与内容不匹配时拒绝安装', async () => {
   const env = createEnv()
   const other = generateKeyPairSync('ed25519').privateKey
   const spec = writeBundle(env.userDataDir, 'bad-sign', makeBundle(env, { signWith: other }))
+
+  await assert.rejects(() => env.source.install(spec), /签名校验失败/)
+  assert.deepEqual(pluginDirs(env), [])
+})
+
+test('签名覆盖 peer：安装前改写 bundle.json.peer 被拒绝', async () => {
+  const env = createEnv()
+  // 新 peer 仍然与当前框架兼容（否则会先撞上 peer 预检），只有签名能发现改写。
+  const spec = writeBundle(
+    env.userDataDir,
+    'tampered-peer',
+    makeBundle(env, { tamperPeer: { 'cordis-app': '^1.0.0', react: '^19.0.0' } }),
+  )
+
+  await assert.rejects(() => env.source.install(spec), /签名校验失败/)
+  assert.deepEqual(pluginDirs(env), [])
+})
+
+test('签名覆盖 ui：安装前改写 bundle.json.ui 被拒绝', async () => {
+  const env = createEnv()
+  const spec = writeBundle(
+    env.userDataDir,
+    'tampered-ui',
+    makeBundle(env, { ui: { pages: true }, tamperUi: { pages: false } }),
+  )
+
+  await assert.rejects(() => env.source.install(spec), /签名校验失败/)
+  assert.deepEqual(pluginDirs(env), [])
+})
+
+test('旧载荷（不覆盖 peer/ui）的签名不被接受', async () => {
+  const env = createEnv()
+  const spec = writeBundle(env.userDataDir, 'legacy-sign', makeBundle(env, { legacySignature: true }))
 
   await assert.rejects(() => env.source.install(spec), /签名校验失败/)
   assert.deepEqual(pluginDirs(env), [])

@@ -21,11 +21,13 @@ import { fileURLToPath } from 'node:url'
 import {
   ENV_DEV,
   ENV_LOCAL_PLUGINS,
+  ENV_MODE,
   ENV_PORT,
   ENV_PROJECT,
   ENV_RESOURCES,
   ENV_SERVER_ENTRY,
   ENV_TOKEN,
+  ENV_USER_PLUGINS,
   ENV_VERSION,
   EXIT_PORT_IN_USE,
   EXIT_RESTART,
@@ -37,6 +39,7 @@ import {
   type HandshakeLine,
   type PluginFailure,
   type RuntimeFile,
+  type RuntimeMode,
   type WorkerMessage,
 } from '@cordis-app/protocol'
 import { createLoggerFactory } from '@cordis-app/kernel'
@@ -55,6 +58,15 @@ export interface SupervisorOptions {
   serverEntry?: string
   /** 覆盖项目本地插件根；`dev` 指向构建出来的 .cordis/dev/plugins */
   localPluginsDir?: string
+  /**
+   * 打包形态的可写用户插件根。
+   *
+   * `cordis-app start` 指向项目可写数据目录下的 `plugins/`；worker 据此
+   * 推导用户数据根（`dirname(userPluginsDir)`）并启用签名插件包安装。
+   */
+  userPluginsDir?: string
+  /** 运行形态；缺省 `project`。打包形态只接受签名插件包。 */
+  mode?: RuntimeMode
   /** 开发模式：插件前端 URL 使用时间戳而不是内容 hash */
   dev?: boolean
   /** 覆盖 worker 路径，测试时注入 */
@@ -140,6 +152,8 @@ export class Supervisor {
           resourcesDir: this.options.resourcesDir,
           ...(this.options.serverEntry ? { serverEntry: this.options.serverEntry } : {}),
           ...(this.options.localPluginsDir ? { localPluginsDir: this.options.localPluginsDir } : {}),
+          ...(this.options.userPluginsDir ? { userPluginsDir: this.options.userPluginsDir } : {}),
+          ...(this.options.mode ? { mode: this.options.mode } : {}),
           ...(this.options.dev ? { dev: true } : {}),
           version: this.version,
         }),
@@ -295,6 +309,8 @@ export function buildWorkerEnv(input: {
   resourcesDir?: string
   serverEntry?: string
   localPluginsDir?: string
+  userPluginsDir?: string
+  mode?: RuntimeMode
   dev?: boolean
   /** 框架版本；由 supervisor 注入，worker 据此生成 manifest 与 peer 校验 */
   version: string
@@ -315,6 +331,8 @@ export function buildWorkerEnv(input: {
     ...(input.resourcesDir ? { [ENV_RESOURCES]: input.resourcesDir } : {}),
     ...(input.serverEntry ? { [ENV_SERVER_ENTRY]: input.serverEntry } : {}),
     ...(input.localPluginsDir ? { [ENV_LOCAL_PLUGINS]: input.localPluginsDir } : {}),
+    ...(input.userPluginsDir ? { [ENV_USER_PLUGINS]: input.userPluginsDir } : {}),
+    ...(input.mode ? { [ENV_MODE]: input.mode } : {}),
     ...(input.dev ? { [ENV_DEV]: '1' } : {}),
     // 用户 shell 里残留的调试或注入配置会污染 worker。
     NODE_OPTIONS: '',

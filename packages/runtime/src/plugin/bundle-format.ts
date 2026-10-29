@@ -13,7 +13,8 @@
  *   这样 tar 的条目顺序、时间戳与压缩参数都不影响 hash。
  *
  * 签名载荷：
- *   `cordis-plugin-bundle-v1\n<id>\n<version>\n<hash>\n`
+ *   `cordis-plugin-bundle-v1\n<id>\n<version>\n<hash>\n<peer>\n<ui>\n`
+ *   其中 `<peer>` 与 `<ui>` 是键排序后的确定性 JSON（ui 缺省为空串）。
  *   用 Ed25519 对这段 UTF-8 字节签名，`signature` 为 base64。
  */
 
@@ -99,12 +100,35 @@ export function computeBundleHash(files: ReadonlyMap<string, Uint8Array>): strin
   return `sha256:${digest.digest('hex')}`
 }
 
-/** 签名载荷。打包器与校验器必须使用同一个函数（或同一段字面量）。 */
-export function bundleSignaturePayload(bundle: Pick<BundleManifest, 'id' | 'version' | 'hash'>): Buffer {
+/**
+ * 签名载荷。打包器与校验器必须使用同一个函数（或同一段字面量）。
+ *
+ * 覆盖 id、版本、内容 hash、peer 与 ui：peer 决定安装期兼容性，ui 决定
+ * `uiCompatibility`。只签 hash 时，这两个字段可以在归档里被改写而不破坏签名。
+ * peer/ui 用键排序的稳定 JSON，保证同一个对象不同键顺序得到同一段字节。
+ */
+export function bundleSignaturePayload(
+  bundle: Pick<BundleManifest, 'id' | 'version' | 'hash' | 'peer' | 'ui'>,
+): Buffer {
+  const ui = bundle.ui === undefined ? '' : canonicalJson(bundle.ui)
   return Buffer.from(
-    `${BUNDLE_SIGNATURE_CONTEXT}\n${bundle.id}\n${bundle.version}\n${bundle.hash}\n`,
+    `${BUNDLE_SIGNATURE_CONTEXT}\n${bundle.id}\n${bundle.version}\n${bundle.hash}\n${canonicalJson(bundle.peer)}\n${ui}\n`,
     'utf8',
   )
+}
+
+/** 确定性 JSON：对象键递归排序，数组保持原顺序。 */
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item)).join(',')}]`
+  if (value !== null && typeof value === 'object') {
+    const record = value as Record<string, unknown>
+    return `{${Object.keys(record)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
+      .join(',')}}`
+  }
+  const serialized = JSON.stringify(value)
+  return serialized === undefined ? 'null' : serialized
 }
 
 /** 校验签名；失败抛出明确的安装错误。 */

@@ -132,7 +132,13 @@ function buildBundle(): TestBundle {
   const hash = computeBundleHash(files)
   const signature = sign(
     null,
-    bundleSignaturePayload({ id: 'hello', version: '1.0.0', hash }),
+    bundleSignaturePayload({
+      id: 'hello',
+      version: '1.0.0',
+      hash,
+      peer: { 'cordis-app': '^1.0.0' },
+      ui: PLUGIN_UI,
+    }),
     privateKey,
   ).toString('base64')
   const manifest: BundleManifest = {

@@ -15,9 +15,18 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { startWorker, readWorkerOptions } from '../lib/worker/worker.js'
 import { findFreePort, generateToken, buildWorkerEnv } from '../lib/supervisor/supervisor.js'
-import { PluginInstaller } from '../lib/plugin/installer.js'
+import { NpmInstallSource } from '../lib/plugin/npm-source.js'
 import { safeJoin } from '../lib/builtin/http-utils.js'
-import { ENV_PORT, ENV_PROJECT, ENV_TOKEN, ENV_VERSION, FRAMEWORK_VERSION, UI_CONTRACT_VERSION } from '@cordis-app/protocol'
+import {
+  ENV_MODE,
+  ENV_PORT,
+  ENV_PROJECT,
+  ENV_TOKEN,
+  ENV_USER_PLUGINS,
+  ENV_VERSION,
+  FRAMEWORK_VERSION,
+  UI_CONTRACT_VERSION,
+} from '@cordis-app/protocol'
 
 interface Fixture {
   projectRoot: string
@@ -260,19 +269,32 @@ test('worker 从 supervisor 构造的环境读取项目根与框架版本', () =
     [ENV_TOKEN]: 'token',
     [ENV_PROJECT]: '/tmp/project',
     [ENV_VERSION]: '2.3.4',
+    [ENV_MODE]: 'packaged',
+    [ENV_USER_PLUGINS]: '/tmp/project/data/plugins',
   })
   assert.equal(options.projectRoot, '/tmp/project')
   assert.equal(options.version, '2.3.4')
+  assert.equal(options.mode, 'packaged', '运行形态必须从环境进入 worker')
+  assert.equal(options.userPluginsDir, '/tmp/project/data/plugins')
 
   const env = buildWorkerEnv({
     port: 5140,
     token: 'token',
     projectRoot: '/tmp/project',
     version: '2.3.4',
+    mode: 'packaged',
+    userPluginsDir: '/tmp/project/data/plugins',
   })
   assert.equal(env[ENV_PROJECT], '/tmp/project', 'supervisor 必须把项目根随环境注入 worker')
   assert.equal(env[ENV_VERSION], '2.3.4', 'supervisor 必须把版本随环境注入 worker')
+  assert.equal(env[ENV_MODE], 'packaged', 'supervisor 必须把运行形态随环境注入 worker')
+  assert.equal(env[ENV_USER_PLUGINS], '/tmp/project/data/plugins')
   assert.equal(env.HOME, '/tmp/project', 'worker 的 HOME 指向项目根，插件落盘不会跑到仓库里')
+
+  assert.throws(
+    () => readWorkerOptions({ [ENV_PORT]: '1', [ENV_TOKEN]: 't', [ENV_PROJECT]: '/p', [ENV_MODE]: 'weird' }),
+    /未知运行形态/,
+  )
 })
 
 test('API 缺少 token 时 401，带上 token 后 200', async () => {
@@ -467,10 +489,10 @@ test('布局比对：搬家才需要重启，新增包不算', () => {
     ['demo', '/nm/demo'],
   ])
   const unchanged = new Map([...before, ['newbie', '/nm/newbie']])
-  assert.deepEqual(PluginInstaller.layoutChanged(before, unchanged), [])
+  assert.deepEqual(NpmInstallSource.layoutChanged(before, unchanged), [])
 
   const moved = new Map([...before, ['lodash', '/nm/demo/node_modules/lodash']])
-  assert.deepEqual(PluginInstaller.layoutChanged(before, moved), ['lodash'])
+  assert.deepEqual(NpmInstallSource.layoutChanged(before, moved), ['lodash'])
 })
 
 test('布局比对：包被降级到嵌套目录同样算搬家', () => {
@@ -484,7 +506,7 @@ test('布局比对：包被降级到嵌套目录同样算搬家', () => {
     ['demo', '/nm/demo'],
     ['demo/node_modules/lodash', '/nm/demo/node_modules/lodash'],
   ])
-  assert.deepEqual(PluginInstaller.layoutChanged(before, after).sort(), ['lodash'])
+  assert.deepEqual(NpmInstallSource.layoutChanged(before, after).sort(), ['lodash'])
 })
 
 test('/api/restart 需要 token，并要求 worker 走优雅重启', async () => {
@@ -555,6 +577,33 @@ test('四个根各放一个插件，都能加载并提供客户端资源', async
       [...ids].sort(),
     )
   }, fixture)
+})
+
+test('打包模式用户插件根生效，且不把项目源码插件根当成本地根', async () => {
+  const fixture = createFixture({ plugins: [] })
+  // 同名插件同时存在于构建产出的内置根与项目源码 plugins/：start 形态下
+  // 源码根已由 build 复制进内置根，再扫一遍只会产生重复 id failure。
+  writePluginAt(join(fixture.resourcesDir, 'plugins', 'same'), 'same', {
+    client: "export default 'builtin'",
+  })
+  writePluginAt(join(fixture.projectRoot, 'plugins', 'same'), 'same')
+  // 用户安装的插件仍然必须被发现。
+  writePluginAt(join(fixture.userPluginsDir, 'user-only'), 'user-only')
+
+  const handle = await startWorker({
+    port: await findFreePort(),
+    token: generateToken(),
+    projectRoot: fixture.projectRoot,
+    resourcesDir: fixture.resourcesDir,
+    userPluginsDir: fixture.userPluginsDir,
+    mode: 'packaged',
+  })
+  try {
+    assert.deepEqual(handle.failures, [], '内置与源码同名不应产生重复 id failure')
+    assert.deepEqual(Object.keys(handle.manifest.plugins).sort(), ['same', 'user-only'])
+  } finally {
+    await handle.close()
+  }
 })
 
 test('跨根重复 id 只产生一条失败，高优先级插件仍可用', async () => {
