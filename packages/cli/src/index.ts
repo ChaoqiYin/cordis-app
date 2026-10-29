@@ -4,11 +4,14 @@ export { parseArgs, UsageError, HELP_TEXT, type ParsedArgs, type CommandName } f
 export {
   COMMAND_HANDLERS,
   commandAdd,
+  commandBuild,
+  commandDev,
   commandList,
   commandNew,
   commandRemove,
   commandRestart,
   commandRun,
+  commandStart,
   defaultIO,
   type CommandIO,
 } from './commands.js'

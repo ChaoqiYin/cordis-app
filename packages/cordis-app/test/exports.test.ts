@@ -37,7 +37,7 @@ type _ClientTypes = ClientContext
 
 test('聚合包的子路径都能从消费者解析到真实文件', () => {
   assert.equal(packageJson.name, 'cordis-app')
-  for (const subpath of ['', '/client', '/server', '/preset', '/ui', '/package.json']) {
+  for (const subpath of ['', '/client', '/server', '/preset', '/ui', '/start', '/package.json']) {
     const resolved = fileURLToPath(import.meta.resolve(`cordis-app${subpath}`))
     assert.ok(existsSync(resolved), `cordis-app${subpath || ''} 应解析到存在的文件，实际为 ${resolved}`)
   }
@@ -87,6 +87,15 @@ test('cordis-app/ui 转出宿主组件，且不携带运行时重复实现', asy
   ]) {
     assert.ok(name in aggregate, `cordis-app/ui 应导出 ${name}`)
   }
+})
+
+test('cordis-app/start 转出 startApp 与错误类型', async () => {
+  const aggregate = await import('cordis-app/start')
+  const source = await import('@cordis-app/runtime')
+
+  assert.equal(aggregate.startApp, source.startApp)
+  assert.equal(aggregate.StartAppError, source.StartAppError)
+  assert.equal(typeof aggregate.startApp, 'function')
 })
 
 test('cordis-app/server 只提供类型，不携带运行时值', async () => {

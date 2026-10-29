@@ -27,7 +27,11 @@
       "types": "./lib/ui.d.ts",
       "default": "./lib/ui.js"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./start": {
+      "types": "./lib/start.d.ts",
+      "default": "./lib/start.js"
+    }
   },
   "bin": {
     "cordis-app": "./bin/cordis-app.js"
@@ -66,6 +70,7 @@
     "@cordis-app/kernel": "workspace:*",
     "@cordis-app/preset": "workspace:*",
     "@cordis-app/protocol": "workspace:*",
+    "@cordis-app/runtime": "workspace:*",
     "@cordis-app/ui": "workspace:*"
   },
   "devDependencies": {

@@ -7,7 +7,8 @@
  *   2. 收集前端清单（files + 服务端导出的初始状态）
  */
 
-import { existsSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type { Kernel, MountedPlugin } from '@cordis-app/kernel'
@@ -38,6 +39,8 @@ export async function loadPlugins(options: {
   ui?: UiCapabilities
   /** app.json.plugins：启用顺序。未列出的插件保持扫描顺序，仍然启用。 */
   order?: string[]
+  /** 开发模式：前端 URL 用时间戳而不是内容 hash。 */
+  dev?: boolean
   configFor(id: string): unknown
 }): Promise<LoadResult> {
   const failures: PluginFailure[] = [...options.scan.failures]
@@ -68,8 +71,9 @@ export async function loadPlugins(options: {
         entries[id] = {
           id,
           displayName: plugin.manifest.displayName ?? id,
-          // files 是「入口 + 预加载清单」：入口先发，其余交给浏览器预取
-          files: [pluginFileUrl(plugin, clientFile)],
+          // files 是「入口 + 预加载清单」：入口先发，其余交给浏览器预取。
+          // 版本参数让重建后的前端绕过浏览器 ESM 缓存；路径本身保持不变。
+          files: [pluginFileUrl(plugin, clientFile, clientVersion(clientFile, options.dev === true))],
           ...(plugin.manifest.ui ? { ui: plugin.manifest.ui } : {}),
           ...(data.has(id) ? { data: data.get(id) } : {}),
         }
@@ -121,4 +125,21 @@ function orderPlugins(plugins: InstalledPlugin[], order?: string[]): InstalledPl
 function resolveEntry(plugin: InstalledPlugin, relative: string): string | undefined {
   const path = resolve(plugin.root, relative)
   return existsSync(path) ? path : undefined
+}
+
+/**
+ * 前端入口的缓存键。
+ *
+ * 生产用内容 hash（构建产物变化才变），开发用时间戳（每次 worker 重启都变，
+ * 保证重建后的插件前端不被 ESM 缓存命中）。两者都不改变 `/__plugins/<id>`
+ * 的路径安全语义。
+ */
+export function clientVersion(filePath: string, dev: boolean): string {
+  if (dev) return String(Date.now())
+  try {
+    return createHash('sha256').update(readFileSync(filePath)).digest('hex').slice(0, 12)
+  } catch {
+    // 理论上不可达：调用前已经确认入口存在。退回时间戳比抛错更能保住启动。
+    return String(Date.now())
+  }
 }

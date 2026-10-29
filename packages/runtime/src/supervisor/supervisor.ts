@@ -19,9 +19,12 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
+  ENV_DEV,
+  ENV_LOCAL_PLUGINS,
   ENV_PORT,
   ENV_PROJECT,
   ENV_RESOURCES,
+  ENV_SERVER_ENTRY,
   ENV_TOKEN,
   ENV_VERSION,
   EXIT_PORT_IN_USE,
@@ -43,6 +46,17 @@ export interface SupervisorOptions {
   projectRoot: string
   /** 前端产物目录，交给 worker 的 static 插件分发 */
   resourcesDir?: string
+  /**
+   * 覆盖项目 server 入口。
+   *
+   * `cordis-app start` 用它指向构建产物 `dist/server/index.js`；缺省仍是
+   * 项目源码里的 `server/index.js`（`run` / `dev` 的形态）。
+   */
+  serverEntry?: string
+  /** 覆盖项目本地插件根；`dev` 指向构建出来的 .cordis/dev/plugins */
+  localPluginsDir?: string
+  /** 开发模式：插件前端 URL 使用时间戳而不是内容 hash */
+  dev?: boolean
   /** 覆盖 worker 路径，测试时注入 */
   workerPath?: string
   /** 覆盖版本号 */
@@ -124,6 +138,9 @@ export class Supervisor {
           token: this.token,
           projectRoot: this.options.projectRoot,
           resourcesDir: this.options.resourcesDir,
+          ...(this.options.serverEntry ? { serverEntry: this.options.serverEntry } : {}),
+          ...(this.options.localPluginsDir ? { localPluginsDir: this.options.localPluginsDir } : {}),
+          ...(this.options.dev ? { dev: true } : {}),
           version: this.version,
         }),
       })
@@ -276,6 +293,9 @@ export function buildWorkerEnv(input: {
   token: string
   projectRoot: string
   resourcesDir?: string
+  serverEntry?: string
+  localPluginsDir?: string
+  dev?: boolean
   /** 框架版本；由 supervisor 注入，worker 据此生成 manifest 与 peer 校验 */
   version: string
 }): NodeJS.ProcessEnv {
@@ -293,6 +313,9 @@ export function buildWorkerEnv(input: {
     [ENV_PROJECT]: input.projectRoot,
     [ENV_VERSION]: input.version,
     ...(input.resourcesDir ? { [ENV_RESOURCES]: input.resourcesDir } : {}),
+    ...(input.serverEntry ? { [ENV_SERVER_ENTRY]: input.serverEntry } : {}),
+    ...(input.localPluginsDir ? { [ENV_LOCAL_PLUGINS]: input.localPluginsDir } : {}),
+    ...(input.dev ? { [ENV_DEV]: '1' } : {}),
     // 用户 shell 里残留的调试或注入配置会污染 worker。
     NODE_OPTIONS: '',
     NODE_PATH: '',

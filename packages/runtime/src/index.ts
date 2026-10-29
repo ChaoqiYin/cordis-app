@@ -1,5 +1,16 @@
 /** runtime 的公共导出。 */
 
+export {
+  startApp,
+  StartAppError,
+  type AppEvents,
+  type AppExitEvent,
+  type AppHandle,
+  type SpawnSupervisor,
+  type SpawnSupervisorOptions,
+  type StartAppOptions,
+  type SupervisorChild,
+} from './start-app.js'
 export { Supervisor, findFreePort, generateToken, buildWorkerEnv } from './supervisor/supervisor.js'
 export { startWorker, readWorkerOptions, type WorkerHandle, type WorkerOptions } from './worker/worker.js'
 export {

@@ -31,6 +31,13 @@ export interface ProjectLayoutOptions {
   builtinPluginsDir?: string
   /** 可写的用户插件根（打包应用用户数据），当前不启用 */
   userPluginsDir?: string
+  /**
+   * 覆盖项目本地插件根。
+   *
+   * `cordis-app dev` 用它指向 `.cordis/dev/plugins`：开发时由 esbuild 现场
+   * 产出插件前端/服务端，源码目录保持干净。缺省仍是 `<project>/plugins`。
+   */
+  localPluginsDir?: string
 }
 
 /**
@@ -100,7 +107,7 @@ export function resolveProjectLayout(
     pagesDir: join(srcDir, 'pages'),
     serverDir,
     serverEntry: join(serverDir, 'index.js'),
-    localPluginsDir: join(root, 'plugins'),
+    localPluginsDir: options.localPluginsDir ?? join(root, 'plugins'),
     dataDir,
     config: join(dataDir, 'config.json'),
     cordisDir,

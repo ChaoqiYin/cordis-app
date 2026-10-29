@@ -1,0 +1,96 @@
+/**
+ * 项目构建的对外契约：目录布局、body 替换、共享模块与幂等。
+ *
+ * 断言只绑定 `build` 文档承诺的文件，不绑定 Vite 的内部文件名。
+ */
+
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { SHARED_MODULE_TABLE } from '@cordis-app/protocol'
+import { buildProject } from '../src/build/index.ts'
+
+function createProject(): string {
+  const root = mkdtempSync(join(tmpdir(), 'cordis-build-'))
+  mkdirSync(join(root, 'src'), { recursive: true })
+  mkdirSync(join(root, 'server'), { recursive: true })
+  mkdirSync(join(root, 'plugins', 'demo'), { recursive: true })
+
+  writeFileSync(
+    join(root, 'package.json'),
+    JSON.stringify({ name: 'demo-app', version: '0.1.0', private: true, type: 'module' }),
+  )
+  writeFileSync(
+    join(root, 'app.json'),
+    JSON.stringify({ name: 'demo-app', version: '0.1.0', plugins: ['demo'] }),
+  )
+  writeFileSync(
+    join(root, 'src', 'body.tsx'),
+    'export default function Body() { return null }\n',
+  )
+  writeFileSync(
+    join(root, 'server', 'index.ts'),
+    'const answer: number = 42\nexport default function apply() { return answer }\n',
+  )
+  writeFileSync(
+    join(root, 'plugins', 'demo', 'plugin.json'),
+    JSON.stringify({ id: 'demo', displayName: 'Demo', client: 'client.js', server: 'server.js' }),
+  )
+  writeFileSync(
+    join(root, 'plugins', 'demo', 'package.json'),
+    JSON.stringify({ name: 'demo-plugin', version: '0.0.1', peerDependencies: { 'cordis-app': '*' } }),
+  )
+  writeFileSync(join(root, 'plugins', 'demo', 'client.js'), 'export const marker = "demo"\n')
+  writeFileSync(join(root, 'plugins', 'demo', 'server.js'), 'export default function apply() {}\n')
+  return root
+}
+
+test('build 产出发布布局，body 与 server 都来自项目源码', async () => {
+  const root = createProject()
+  const result = await buildProject({ projectRoot: root })
+
+  assert.equal(result.projectRoot, root)
+  assert.ok(existsSync(join(result.outDir, 'app.json')))
+  assert.ok(existsSync(join(result.outDir, 'package.json')))
+  assert.ok(existsSync(join(result.resourcesDir, 'ui', 'index.html')))
+  assert.ok(existsSync(result.serverEntry))
+
+  // 共享模块清单只有协议一份；构建必须逐个落盘。
+  for (const definition of Object.values(SHARED_MODULE_TABLE)) {
+    assert.ok(
+      existsSync(join(result.resourcesDir, 'shared', definition.file)),
+      `缺少共享模块 ${definition.file}`,
+    )
+  }
+
+  assert.ok(existsSync(join(result.resourcesDir, 'plugins', 'demo', 'plugin.json')))
+  assert.ok(existsSync(join(result.resourcesDir, 'plugins', 'demo', 'client.js')))
+  assert.ok(existsSync(join(result.resourcesDir, 'plugins', 'demo', 'server.js')))
+
+  const server = readFileSync(result.serverEntry, 'utf8')
+  assert.match(server, /apply/, '项目 server 入口应被打包成可 import 的 ESM')
+  assert.doesNotMatch(server, /interface|: number/, 'TypeScript 类型应被剥离')
+})
+
+test('重复 build 幂等，不残留上一次的文件', async () => {
+  const root = createProject()
+  const first = await buildProject({ projectRoot: root })
+  const stale = join(first.resourcesDir, 'ui', 'stale.txt')
+  writeFileSync(stale, 'stale')
+
+  const second = await buildProject({ projectRoot: root })
+  assert.equal(second.outDir, first.outDir)
+  assert.equal(existsSync(stale), false)
+  assert.ok(existsSync(join(second.resourcesDir, 'ui', 'index.html')))
+})
+
+test('缺少 body 时构建失败，且不留下可运行目录', async () => {
+  const root = createProject()
+  const { rmSync } = await import('node:fs')
+  rmSync(join(root, 'src', 'body.tsx'))
+
+  await assert.rejects(() => buildProject({ projectRoot: root }), /body/)
+  assert.equal(existsSync(join(root, 'dist')), false)
+})

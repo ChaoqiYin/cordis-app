@@ -23,6 +23,12 @@ export const ENV_TOKEN = 'CORDIS_APP_TOKEN'
 export const ENV_PROJECT = 'CORDIS_APP_PROJECT'
 export const ENV_RESOURCES = 'CORDIS_APP_RESOURCES'
 export const ENV_HANDSHAKE_PIPE = 'CORDIS_APP_HANDSHAKE'
+/** 覆盖项目 server 入口：`cordis-app start` 指向打包后的 dist/server/index.js */
+export const ENV_SERVER_ENTRY = 'CORDIS_APP_SERVER_ENTRY'
+/** 覆盖项目本地插件根：`cordis-app dev` 指向 .cordis/dev/plugins */
+export const ENV_LOCAL_PLUGINS = 'CORDIS_APP_LOCAL_PLUGINS'
+/** 开发模式：插件前端 URL 使用时间戳而不是内容 hash。 */
+export const ENV_DEV = 'CORDIS_APP_DEV'
 
 /**
  * supervisor 注入 worker 的框架版本。

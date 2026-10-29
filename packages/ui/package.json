@@ -17,7 +17,11 @@
       "default": "./dist/host/index.js"
     },
     "./shared": "./dist/shared/",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./build": {
+      "types": "./dist/build/index.d.ts",
+      "default": "./dist/build/index.js"
+    }
   },
   "files": [
     "dist"
@@ -25,10 +29,13 @@
   "scripts": {
     "dev": "vite",
     "build:host": "node scripts/build-host.mjs && tsc -p tsconfig.host.json",
-    "build": "node scripts/build-shared.mjs && vite build && tsc -p tsconfig.lib.json && pnpm build:host",
-    "pretypecheck": "pnpm --filter @cordis-app/protocol build && pnpm build:host",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "pretest": "pnpm --filter @cordis-app/protocol build && pnpm build:host",
+    "build:shared": "node scripts/build-shared.mjs",
+    "build:shell": "node scripts/stage-shell.mjs",
+    "build:build": "tsc -p tsconfig.build.json",
+    "build": "pnpm build:shared && vite build && tsc -p tsconfig.lib.json && pnpm build:host && pnpm build:shell && pnpm build:build",
+    "pretypecheck": "pnpm --filter @cordis-app/protocol build && pnpm build:host && pnpm build:shell",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.build.json --noEmit",
+    "pretest": "pnpm --filter @cordis-app/protocol build && pnpm build:host && pnpm build:shared && pnpm build:shell",
     "test": "node --import ./test/register-loader.mjs --test \"test/*.test.ts\""
   },
   "peerDependencies": {
@@ -36,17 +43,18 @@
     "react-dom": "^19.0.0"
   },
   "dependencies": {
+    "@cordis-app/preset": "workspace:*",
     "@cordis-app/protocol": "workspace:*",
-    "axios": "^1.21.0"
+    "@vitejs/plugin-react": "^5.2.0",
+    "axios": "^1.21.0",
+    "esbuild": "^0.28.2",
+    "vite": "^7.3.7"
   },
   "devDependencies": {
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
-    "@vitejs/plugin-react": "^5.2.0",
-    "esbuild": "^0.28.2",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
-    "typescript": "^5.9.3",
-    "vite": "^7.3.7"
+    "typescript": "^5.9.3"
   }
 }

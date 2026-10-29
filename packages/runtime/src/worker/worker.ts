@@ -18,9 +18,12 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { createKernel, createLoggerFactory, ConfigStore, type KernelContext } from '@cordis-app/kernel'
 import {
+  ENV_DEV,
+  ENV_LOCAL_PLUGINS,
   ENV_PORT,
   ENV_PROJECT,
   ENV_RESOURCES,
+  ENV_SERVER_ENTRY,
   ENV_TOKEN,
   ENV_VERSION,
   EXIT_RESTART,
@@ -49,6 +52,12 @@ export interface WorkerOptions {
   /** 项目根。所有路径都从它推导。 */
   projectRoot: string
   resourcesDir?: string
+  /** 覆盖项目 server 入口；缺省为 `<project>/server/index.js` */
+  serverEntry?: string
+  /** 覆盖项目本地插件根；`dev` 指向现场构建的 `.cordis/dev/plugins` */
+  localPluginsDir?: string
+  /** 开发模式：插件前端 URL 使用时间戳而不是内容 hash */
+  dev?: boolean
   /** 打包形态的只读内置插件根；缺省时从 `resourcesDir/plugins` 推导 */
   builtinPluginsDir?: string
   /** 打包形态的可写用户插件根；项目模式通常没有 */
@@ -84,6 +93,9 @@ export function readWorkerOptions(env: NodeJS.ProcessEnv = process.env): WorkerO
     token,
     projectRoot,
     resourcesDir: env[ENV_RESOURCES],
+    ...(env[ENV_SERVER_ENTRY] ? { serverEntry: env[ENV_SERVER_ENTRY] } : {}),
+    ...(env[ENV_LOCAL_PLUGINS] ? { localPluginsDir: env[ENV_LOCAL_PLUGINS] } : {}),
+    ...(env[ENV_DEV] === '1' ? { dev: true } : {}),
     version: env[ENV_VERSION] ?? FRAMEWORK_VERSION,
   }
 }
@@ -92,6 +104,7 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
   const layout = resolveProjectLayout(options.projectRoot, {
     ...(options.builtinPluginsDir ? { builtinPluginsDir: options.builtinPluginsDir } : {}),
     ...(options.userPluginsDir ? { userPluginsDir: options.userPluginsDir } : {}),
+    ...(options.localPluginsDir ? { localPluginsDir: options.localPluginsDir } : {}),
   })
   const logger = createLoggerFactory({ level: 'info' })
   const frameworkVersion = options.version ?? FRAMEWORK_VERSION
@@ -169,9 +182,10 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
 
   await kernel.ready()
 
-  // 项目后端入口固定为 server/index.js：内置插件之后、应用插件之前。
+  // 项目后端入口固定为 server/index.js（`start` 可覆盖为构建产物）：
+  // 内置插件之后、应用插件之前。
   try {
-    await applyProjectServer(ctx, layout.serverEntry)
+    await applyProjectServer(ctx, options.serverEntry ?? layout.serverEntry)
   } catch (error) {
     // 内置插件已经启动监听。启动失败必须把 socket 关掉，否则调用方拿到
     // 拒绝后进程仍然活着，测试与 supervisor 都会被一个「失败的 worker」拖住。
@@ -190,6 +204,7 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
     kernel,
     scan,
     version: manifest.version,
+    ...(options.dev ? { dev: true } : {}),
     ...(app?.ui ? { ui: app.ui } : {}),
     ...(enabledOrder ? { order: enabledOrder } : {}),
     configFor: (id) => config.get(id) ?? {},
