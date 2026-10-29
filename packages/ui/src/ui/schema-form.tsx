@@ -4,10 +4,10 @@
  * 不引入表单库：需要覆盖的类型有限（string / number / boolean / union / array /
  * object），而表单库会要求把 schema 翻译成它自己的形状，等于维护两套描述。
  * 直接读 schema 的 `type` 与 `meta` 反而是最短路径——这也正是选 schemastery
- * 的理由（架构文档 8.1）。
+ * 的理由。
  *
  * 两段式提交：控件改的是本地草稿，点「保存」才写回。原因是配置变更会触发
- * 插件 restart（架构文档 8.3），逐字符保存等于逐字符重启。
+ * 插件 restart，逐字符保存等于逐字符重启。
  */
 
 import { useMemo, useState, type ReactNode } from 'react'

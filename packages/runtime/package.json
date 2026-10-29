@@ -2,7 +2,7 @@
   "name": "@cordis-app/runtime",
   "version": "1.0.0",
   "description": "Host process: supervisor, worker, built-in plugins, HTTP, handshake",
-  "license": "AGPL-3.0-or-later",
+  "license": "AGPL-3.0-only",
   "type": "module",
   "main": "./lib/index.js",
   "types": "./lib/index.d.ts",

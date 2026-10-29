@@ -23,7 +23,7 @@ hello-plugin/
 - **服务端入口**导出 `name` / `inject` / `apply`，还可以导出 `data`——它会随
   前端清单一起送到浏览器，省掉一次请求。
 - **前端入口**默认导出 `activate(ctx)`，在入口处调用一次命令式 API 注册扩展点；
-  组件内部只用 Hooks（架构文档 5.3）。
+  组件内部只用 Hooks。
 - `react` 与 `cordis-app/client` 在构建时是 external，浏览器经 import map 拿到
   框架提供的那一份实例。插件**不得**自带第二份 React。
 - `cordis-app` 只在 `import type` 里出现，构建后被擦除；运行时代码由 worker 提供。

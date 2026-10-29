@@ -1,7 +1,7 @@
 /**
  * WebSocket 连接与重连。
  *
- * 架构文档 6.3 的链路：
+ * 重连链路：
  *   worker 关闭监听 → 广播 server:reconnect → 前端进入等待态 → 轮询 /__health
  *   → 服务恢复后重连
  *

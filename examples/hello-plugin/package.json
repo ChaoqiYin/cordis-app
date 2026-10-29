@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "description": "最小可用插件示例：一个服务端路由 + 一个前端页面",
-  "license": "AGPL-3.0-or-later",
+  "license": "AGPL-3.0-only",
   "type": "module",
   "main": "./lib/server.js",
   "scripts": {

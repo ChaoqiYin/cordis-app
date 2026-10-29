@@ -16,7 +16,7 @@ import (
 //
 // 嵌入保证「外壳 + UI」作为一个不可分割的版本单元分发：不会出现外壳升级了、
 // 磁盘上的 UI 还是旧的。释放到磁盘则是因为前端必须由 worker 的 static 插件
-// 从目录里读——外壳不监听端口、不提供 HTTP，无从代劳（架构文档 11.1）。
+// 从目录里读——外壳不监听端口、不提供 HTTP，无从代劳。
 //
 //go:embed all:resources
 var embeddedResources embed.FS

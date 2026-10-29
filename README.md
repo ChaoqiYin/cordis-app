@@ -36,7 +36,6 @@
 ```
 
 它只出现在 supervisor 的 stdout 上；worker 通过 IPC 报告就绪，其 stdout 被吞掉。
-完整设计见 [架构文档](./cordis-app-architecture.md)。
 
 ## 仓库结构
 
@@ -93,7 +92,7 @@ pnpm build:shell      # 产出 dist/cordis-app
 ```
 
 开发态（仓库内运行）不裁剪环境、不释放内嵌资源；正式安装布局下，外壳会把内嵌的 UI
-释放到 `resources/ui/`，并按架构文档 11.6 隔离子进程环境。
+释放到 `resources/ui/`，并按固定规则隔离子进程环境（不继承用户 shell 的调试变量与家目录）。
 
 ## 常用命令
 
@@ -129,7 +128,7 @@ CLI 子命令：
 
 ## 当前状态
 
-已完成架构文档 14.1 的第一段（端到端闭环）：
+已完成 v1 的第一段（端到端闭环）：
 
 - 三进程模型、握手协议、退出码 75 的重启链路
 - 内核、内置插件、React UI 骨架与五个扩展点
@@ -142,9 +141,25 @@ CLI 子命令：
 - 托盘与自动更新属于第二段，尚未实现
 - `cordis-app` 核心包尚未作为 npm 包发布，仓库内以路径映射解析
 
+## 参考与致谢
+
+Go 外壳的进程管理参考了 [Koishi Desktop](https://github.com/koishijs/koishi-desktop)
+（AGPL-3.0）的实现与设计，具体包括：
+
+- 启动并托管一个外部长驻 Node 进程，从它的 stdout 读取启动信息
+- 同时消费 stdout 与 stderr，避免管道缓冲区写满把子进程卡死
+- 按平台回收整棵进程树（Windows Job Object / Unix 进程组）
+- 用退出码而不是日志文本判断「重启 worker」还是「退出」
+- 单实例锁，以及第二次启动时唤起已有窗口
+- 显式构造子进程环境，不继承用户 shell 的调试与路径配置
+
+上述部分在 cordis-app 中是**按本项目协议与目录布局重写的实现**，并非逐字复制；
+重写日期 2026-10-29。上游版权归 Koishi Desktop 项目及其贡献者所有，许可证为
+AGPL-3.0。
+
 ## 许可证
 
-[AGPL-3.0-or-later](./LICENSE)。
+[GNU Affero General Public License v3.0](./LICENSE)（AGPL-3.0，仅此版本）。
 
 **插件作者使用框架 API 不构成衍生作品**：插件只需声明
 `peerDependencies: { "cordis-app": "^1.0.0" }`，可以按自己的许可证分发。

@@ -175,7 +175,7 @@ async function makeInstaller(workspace: Workspace, io: CommandIO): Promise<Plugi
     frameworkVersion: io.frameworkVersion,
     // 与设置页的 HTTP 安装接口共用同一份常量。少了它，凡是声明了 react
     // peer 的插件都会在命令行安装时被判成「框架不共享该模块」——而设置页
-    // 却能装，两边行为不一致正是架构文档 5.6 要避免的那类故障。
+    // 却能装，两边行为不一致正是要避免的那类故障。
     sharedVersions: DEFAULT_SHARED_VERSIONS,
   })
 }
@@ -269,7 +269,7 @@ function readPluginId(instanceDir: string, packageName: string): string | undefi
  * 走 HTTP 而不是信号：supervisor 的 pid 在 runtime.json 里，但向它发信号是
  * 「终止整个应用」的意思。真正该被重启的是 worker，而只有 supervisor 知道
  * 什么时候重新 fork 它——所以请求发给 worker 的 `/api/restart`，由它走
- * 「关监听 → 通知客户端 → exit(75)」那条既有路径（架构文档 6.3）。
+ * 「关监听 → 通知客户端 → exit(75)」那条既有路径。
  */
 export async function commandRestart(args: ParsedArgs, io: CommandIO): Promise<number> {
   const workspace = openWorkspace(args.dataDir)
@@ -312,7 +312,7 @@ export async function commandRestart(args: ParsedArgs, io: CommandIO): Promise<n
  *   1. 先等健康检查**失败**——旧 worker 关闭监听需要时间，在这之前探到的
  *      200 来自即将退出的旧进程，把它当成「重启完成」会立刻返回一个假成功。
  *   2. 再等它重新变成 200——这才是新 worker 完成全部插件加载的时刻
- *      （`markReady()` 之后才会返回 200，见架构文档 6.3）。
+ *      （`markReady()` 之后才会返回 200）。
  *
  * 端口与 token 在重启前后不变，所以这里只需判断可达性。
  */

@@ -1,7 +1,7 @@
 /**
  * 插件安装。
  *
- * 安装流程（架构文档 6.5）：
+ * 安装流程：
  *   ① 校验插件清单
  *   ② peerDependencies 与框架白名单比对
  *   ③ 记录安装前的 node_modules 布局
@@ -66,7 +66,7 @@ export class PluginInstaller {
    * 键是「从实例根出发的解析路径」而不是包名，因为同一个包可以在不同层级
    * 各有一份（`node_modules/lodash` 与 `node_modules/demo/node_modules/lodash`）。
    * 只按包名记录会把这些互相覆盖，而「依赖被提升 / 被降级到嵌套目录」正是
-   * 架构文档 5.5 要抓的那种搬家——漏掉它，重启判定就形同虚设。
+   * 布局比对要抓的那种搬家——漏掉它，重启判定就形同虚设。
    *
    * 递归深度到 3 层：再深的位置对已加载模块不再有影响，而全量递归会在
    * 大项目上变得很慢。
@@ -118,8 +118,9 @@ export class PluginInstaller {
    * 判定布局是否变化。
    *
    * diff 的对象是「已加载模块的依赖是否换了落点」，不是「装了哪些新包」——
-   * 新增一个此前不存在的顶层包不会影响任何已加载的模块，不必重启
-   * （架构文档 5.5）。会触发重启的三种情况：
+   * 新增一个此前不存在的顶层包不会影响任何已加载的模块，不必重启。
+   *
+   * 会触发重启的三种情况：
    *
    *   1. 原有包的路径变了（重新提升 / 降到别处）
    *   2. 原有包消失了（卸载或被降级到嵌套目录）
@@ -160,7 +161,7 @@ export class PluginInstaller {
 
     // 从这一行起，包管理器已经改过盘了。后续任何一步失败都必须撤回，
     // 否则用户会停在「装了一半」的状态：node_modules 里有包、app.json 里没有
-    // 意图记录，CLI 的 list 与设置页于是各说各话（架构文档 6.5 的可回滚要求）。
+    // 意图记录，CLI 的 list 与设置页于是各说各话。
     let name: string | undefined
     try {
       const moved = PluginInstaller.layoutChanged(before, after)
@@ -274,7 +275,7 @@ export class PluginInstaller {
    * 判断这个包是否已经在 node_modules 里。
    *
    * 「已存在」意味着它可能已经被 worker 加载过、代码进了 require.cache，
-   * 因此安装后必须重启（架构文档 6.4）。
+   * 因此安装后必须重启。
    */
   private isPresent(spec: string, layout: LayoutSnapshot): boolean {
     const name = packageNameOf(spec)
@@ -337,7 +338,7 @@ export class PluginInstaller {
   }
 
   /**
-   * peer 冲突在安装阶段硬失败（架构文档 5.6）。
+   * peer 冲突在安装阶段硬失败。
    *
    * 框架前端的 React 只有一份，第二个实例必然导致 hooks 崩溃；把问题推迟到
    * 运行时，用户看到的是玄学故障而不是一句明确提示。

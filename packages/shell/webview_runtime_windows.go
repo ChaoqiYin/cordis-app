@@ -16,7 +16,7 @@ const (
 // webViewUnavailable 在 Windows 上必须查运行时。
 //
 // 与 macOS / Linux 不同，WebView2 是独立可再分发组件：老机器上可能没装，
-// 而 cgo 链接成功不代表运行时可用（架构文档 2.3 的降级路径）。
+// 而 cgo 链接成功不代表运行时可用。
 func webViewUnavailable() bool {
 	return !hasWebView2Runtime()
 }

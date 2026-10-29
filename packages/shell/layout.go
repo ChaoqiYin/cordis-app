@@ -19,11 +19,11 @@ type layout struct {
 	nodeBin      string
 	supervisorJS string
 	// packaged 表示这是「有 bin/ 目录的正式安装布局」而非仓库内 go run。
-	// 它决定两件事：是否释放内嵌 UI、是否裁掉用户环境的 PATH（架构文档 11.1 / 11.6）。
+	// 它决定两件事：是否释放内嵌 UI、是否裁掉用户环境的 PATH。
 	packaged bool
 }
 
-// discoverLayout 解析安装目录布局（架构文档 10.1）：
+// discoverLayout 解析安装目录布局：
 //
 //	<install-dir>/
 //	├── cordis-app[.exe]
@@ -105,10 +105,10 @@ func discoverLayout(dataFlag, resourcesFlag string) (layout, error) {
 	}, nil
 }
 
-// defaultDataDir 与 protocol 包的 defaultDataDir 保持一致（架构文档 3.2）。
+// defaultDataDir 与 protocol 包的 defaultDataDir 保持一致。
 //
 // 这不是重复实现：外壳必须在启动 supervisor 之前就知道数据目录，才能加锁。
-// 两个值的唯一真源是架构文档里的那张表，任何一侧改动都要同时改另一侧。
+// 两处实现必须保持同一条解析规则，任何一侧改动都要同时改另一侧。
 func defaultDataDir() string {
 	switch runtime.GOOS {
 	case "windows":

@@ -2,7 +2,7 @@
  * 前端 HTTP 封装（基于 axios 的一层薄壳）。
  *
  * token 的注入点只有这一个：插件不必自己拼 Authorization 头，
- * 未来加固时也不需要改每个插件（架构文档 5.2）。
+ * 未来加固时也不需要改每个插件。
  *
  * 另外承担重启期间的等待：`/__health` 不通时自动重试，而不是把 503 抛给插件。
  */
@@ -111,7 +111,7 @@ export function createHttp(token: string): HttpClient {
  * 轮询 /__health 直到服务恢复。
  *
  * 重启期间旧 WebSocket 连接随旧进程一起消失，前端此刻处于「不知道什么时候好」
- * 的盲区，所以用轮询而不是等重连（架构文档 6.3）。间隔 200ms，上限 30 秒。
+ * 的盲区，所以用轮询而不是等重连。间隔 200ms，上限 30 秒。
  */
 export async function waitForHealthy(options: { intervalMs?: number; timeoutMs?: number } = {}): Promise<boolean> {
   const interval = options.intervalMs ?? 200

@@ -11,7 +11,7 @@ import (
 //
 // 这样外壳要停止它时可以 `kill(-pgid)` 一次性覆盖 supervisor 与它 fork 出来的
 // worker。Unix 没有 Job Object 那种「父进程死了子进程跟着死」的内核保证，
-// 进程组是这里唯一能用的等价物（架构文档 2.3）。
+// 进程组是这里唯一能用的等价物。
 func setProcessGroup(cmd *exec.Cmd) {
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
@@ -45,7 +45,7 @@ func attachToJob(*exec.Cmd) {}
 
 // binPath 在 Unix 上只留 bin/：解析到的 node、包管理器必须是随包分发的那一份。
 //
-// 副作用是插件调用 git、ffmpeg 之类的外部命令会失败。这是刻意的（架构文档 11.6）：
+// 副作用是插件调用 git、ffmpeg 之类的外部命令会失败。这是刻意的：
 // 让「依赖系统已安装工具」在开发期暴露，而不是在另一台机器上才崩。
 func binPath(binDir, _ string) string {
 	return binDir

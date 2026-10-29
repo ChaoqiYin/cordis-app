@@ -5,7 +5,7 @@
  * 无法设置自定义请求头。
  *
  * 「即将重连」通知是重启链路的一部分：worker 关闭监听后先广播它，
- * 前端随即进入等待态并轮询 /__health（架构文档 6.3）。
+ * 前端随即进入等待态并轮询 /__health。
  */
 
 import { WebSocketServer, type WebSocket } from 'ws'

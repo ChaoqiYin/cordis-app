@@ -140,7 +140,7 @@ func killProcessTree(cmd *exec.Cmd) {
 // binPath 在 Windows 上前置 bin/、保留原有目录。
 //
 // 系统 DLL 的查找依赖 System32 等目录，清空会让 node 甚至外壳自身启动失败。
-// 这个差异是平台事实，不是设计取舍（架构文档 11.6）。
+// 这个差异是平台事实，不是设计取舍。
 func binPath(binDir, original string) string {
 	if original == "" {
 		return binDir

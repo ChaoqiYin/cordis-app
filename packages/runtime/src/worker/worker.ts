@@ -103,7 +103,7 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
   failures.push(...loaded.failures)
   manifest = loaded.client
 
-  // 配置变更 → 按新配置重载该插件（架构文档 8.3）。
+  // 配置变更 → 按新配置重载该插件。
   //
   // 只重启一个插件，不重启 worker：其他插件的状态、页面的 WebSocket 都不受影响。
   // 这也是为什么设置面板逐个插件保存，而不是整份配置一起提交。

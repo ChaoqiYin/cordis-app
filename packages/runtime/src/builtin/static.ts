@@ -3,7 +3,7 @@
  *
  * 路径前缀 `/__plugins/<plugin-id>/` 同时服务两件事：据此定位 node_modules 中的
  * 实际文件，以及让浏览器做缓存分区。卸载插件后该前缀返回 404，旧页面残留的
- * 请求不会打到别的插件上（架构文档 7.4）。
+ * 请求不会打到别的插件上。
  */
 
 import { createReadStream, statSync } from 'node:fs'

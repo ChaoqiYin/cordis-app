@@ -8,7 +8,7 @@ type envVars struct {
 	values []string
 }
 
-// homeVars 把家目录与临时目录重定向到数据目录（架构文档 11.6）。
+// homeVars 把家目录与临时目录重定向到数据目录。
 //
 // Unix 上真正起作用的是 HOME 与三个 XDG_*；XDG_* 必须一起改，否则插件写的
 // 配置仍会落到 ~/.config 下，与 HOME 的改动互相矛盾。

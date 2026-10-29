@@ -50,7 +50,7 @@ function common(options: PresetOptions, browser: boolean): BuildOptions {
  * 服务端入口的构建配置。
  *
  * `packages: 'external'` 让所有 npm 依赖留在 node_modules 里由 Node 解析——
- * 包括多版本共存的情况（架构文档 5.4 ①）。插件作者不需要关心哪些该 external，
+ * 包括多版本共存的情况。插件作者不需要关心哪些该 external，
  * 也不会因为打包进 lodash 而在另一个插件需要不同版本时冲突。
  *
  * 例外是 `cordis-app`：它是 peerDependency，由框架提供，必须 external 且

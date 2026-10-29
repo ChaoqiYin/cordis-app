@@ -10,7 +10,7 @@ type envVars struct {
 	values []string
 }
 
-// homeVars 把用户目录与临时目录重定向到数据目录（架构文档 11.6）。
+// homeVars 把用户目录与临时目录重定向到数据目录。
 //
 // Windows 上没有 HOME 这个概念——node 与绝大多数插件读的是 USERPROFILE 与
 // APPDATA/LOCALAPPDATA。写 HOME 只会得到一个「看起来配了、实际没生效」的环境。

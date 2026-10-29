@@ -2,7 +2,7 @@
  * 配置持久化。
  *
  * 单一 config.json 位于实例根目录，写入采用原子替换（tmp → rename）。
- * 为什么单一文件而非一插件一文件，见架构文档 8.2。
+ * 为什么单一文件而非一插件一文件：一次写入只涉及一个文件，原子替换与备份都更简单。
  */
 
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'

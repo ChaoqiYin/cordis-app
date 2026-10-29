@@ -146,8 +146,7 @@ export class ClientRuntime {
    * 加载一个插件的前端入口。
    *
    * `files` 的第一项是入口，其余是预加载清单：入口先 import，剩余的交给
-   * `modulepreload` 让浏览器提前拉取，避免打开页面时再等一次网络
-   * （架构文档 7.4）。
+   * `modulepreload` 让浏览器提前拉取，避免打开页面时再等一次网络。
    */
   async loadPlugin(entry: ClientPluginEntry): Promise<LoadedPlugin> {
     const id = entry.id
@@ -235,7 +234,7 @@ export class ClientRuntime {
  * 上下文工厂。
  *
  * 所有注册调用都返回 `() => void` 并绑定在作用域上：插件卸载时页面、菜单、
- * 设置项全部自动消失，作者不需要写清理代码（架构文档 7.1）。
+ * 设置项全部自动消失，作者不需要写清理代码。
  */
 function createContextFor(
   runtime: ClientRuntime,

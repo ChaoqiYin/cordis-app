@@ -1,5 +1,5 @@
 /**
- * 前端共享模块白名单（架构文档 5.4）。
+ * 前端共享模块白名单。
  *
  * 这张表必须与 UI 侧 shared-modules.mjs、index.html 的 import map 完全一致：
  * 插件 bundle 把这里列的模块标为 external，浏览器经 import map 解析到框架提供
@@ -20,7 +20,7 @@ export const SHARED_MODULES = [
 export type SharedModule = (typeof SHARED_MODULES)[number]
 
 /**
- * 服务端核心包。插件必须声明为 peerDependency（架构文档 5.4 ②）。
+ * 服务端核心包。插件必须声明为 peerDependency。
  *
  * 框架核心包持有服务注册表与事件总线，第二份会让插件各自正常但彼此失联。
  */
@@ -34,7 +34,7 @@ export function isShared(specifier: string): boolean {
 /**
  * 前端共享模块的版本约束。
  *
- * 框架前端的 React 只有一份，第二个实例必然导致 hooks 崩溃（架构文档 5.6）。
+ * 框架前端的 React 只有一份，第二个实例必然导致 hooks 崩溃。
  * 安装阶段比对这些范围，不兼容就硬失败——把问题推迟到运行时会表现为玄学故障。
  */
 export const SHARED_PEER_RANGES: Record<string, string> = {

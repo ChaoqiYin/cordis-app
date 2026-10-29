@@ -2,7 +2,7 @@
   "name": "@cordis-app/protocol",
   "version": "1.0.0",
   "description": "Shared contracts between the shell, supervisor, worker, CLI and web UI",
-  "license": "AGPL-3.0-or-later",
+  "license": "AGPL-3.0-only",
   "type": "module",
   "main": "./lib/index.js",
   "types": "./lib/index.d.ts",

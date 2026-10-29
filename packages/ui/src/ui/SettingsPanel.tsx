@@ -5,7 +5,7 @@
  *   1. 插件通过 `ctx.settings({ schema })` 注册的 schema —— 由框架自动生成表单
  *   2. 插件通过 `ctx.settings({ component })` 注册的自定义组件
  *
- * 自动生成的存在理由见架构文档 8.1：schemastery 的 `role()` 提供 UI 元数据，
+ * 自动生成的存在理由：schemastery 的 `role()` 提供 UI 元数据，
  * 声明的类型决定控件类型。这要求我们直接读 schema 的结构而不是实例化表单库。
  *
  * 插件管理（安装 / 卸载）也在这里——它是框架自己的设置分组，不是插件贡献的。
@@ -58,7 +58,7 @@ export function SettingsPanel(): ReactNode {
     void reload()
   }, [reload])
 
-  /** 保存单个插件配置：写入 config.json 后由服务端重启该插件（架构文档 8.3）。 */
+  /** 保存单个插件配置：写入 config.json 后由服务端重启该插件。 */
   const save = async (pluginId: string, value: unknown) => {
     setBusy(pluginId)
     try {

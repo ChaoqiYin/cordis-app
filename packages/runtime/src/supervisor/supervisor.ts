@@ -1,7 +1,7 @@
 /**
  * supervisor —— 唯一稳定的、能持有跨重启状态的一层。
  *
- * 只做五件事（架构文档 2.1）：
+ * 只做五件事：
  *   1. 分配端口与 token
  *   2. fork worker
  *   3. 转发 worker 的日志
@@ -95,7 +95,7 @@ export class Supervisor {
   /** 分配端口与 token，然后 fork worker。返回最终监听端口。 */
   async start(): Promise<HandshakeLine> {
     if (this.options.port) {
-      // 用户显式指定的端口：冲突就失败，不偷偷换一个（架构文档 6.2 的例外）
+      // 用户显式指定的端口：冲突就失败，不偷偷换一个
       this.port = this.options.port
       this.portRetries = MAX_PORT_RETRIES
     } else {
@@ -122,7 +122,7 @@ export class Supervisor {
       this.child = child
 
       // 必须同时消费 stdout 与 stderr：只读 stdout 会让 worker 阻塞在 write() 上，
-      // 表现为「应用卡死但不报错」（架构文档 6.1 的 pipe 陷阱）。
+      // 表现为「应用卡死但不报错」。
       child.stdout?.on('data', (chunk: Buffer) => this.forward('worker', chunk, 'stdout'))
       let stderrTail = ''
       child.stderr?.on('data', (chunk: Buffer) => {
@@ -260,7 +260,7 @@ export class Supervisor {
   }
 }
 
-/** 子进程环境变量由框架显式构造，不继承用户的 shell（架构文档 11.6）。 */
+/** 子进程环境变量由框架显式构造，不继承用户的 shell。 */
 export function buildWorkerEnv(input: {
   port: number
   token: string

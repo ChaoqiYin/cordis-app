@@ -3,7 +3,7 @@
  *
  * 结构是固定的一层：活动栏（左侧图标）+ 内容区（顶部插槽 + 页面）+ 右键菜单。
  * 页面与插槽全部来自注册表，宿主自己不认识任何插件——这就是「装一个插件就出现
- * 入口、卸载后干净消失」的落点（架构文档 14.2 的验收项）。
+ * 入口、卸载后干净消失」的落点。
  */
 
 import { Component, useEffect, type ComponentType, type ErrorInfo, type ReactNode } from 'react'
@@ -114,7 +114,7 @@ function NotFound(props: { path: string; hasPages: boolean }): ReactNode {
   )
 }
 
-/** 具名插槽。框架预置几个位置，插件往其中挂组件（架构文档 5.3）。 */
+/** 具名插槽。框架预置几个位置，插件往其中挂组件。 */
 function SlotArea(props: { name: string; className?: string }): ReactNode {
   const slots = useSlots(props.name)
   if (slots.length === 0) return null

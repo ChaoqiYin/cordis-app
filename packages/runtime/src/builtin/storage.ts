@@ -4,7 +4,7 @@
  * 单独成插件而不是塞进内核：内核只保证「配置能持久化」，用户数据
  * （上传的文件、缓存、数据库）的存放策略属于应用决策。默认实现把数据放在
  * `instances/default/data/<plugin-id>/`，应用可以换成走对象存储的实现，
- * 插件代码不变（架构文档 4.3）。
+ * 插件代码不变。
  */
 
 import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'

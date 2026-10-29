@@ -2,7 +2,7 @@
   "name": "@cordis-app/preset",
   "version": "1.0.0",
   "description": "Plugin build preset: esbuild configuration and the shared-module external whitelist",
-  "license": "AGPL-3.0-or-later",
+  "license": "AGPL-3.0-only",
   "type": "module",
   "main": "./lib/index.js",
   "types": "./lib/index.d.ts",

@@ -2,7 +2,7 @@
  * server 内置插件：HTTP 服务、端口监听、就绪标志、中间件链。
  *
  * 「就绪」的定义是完整就绪：HTTP 已监听 **且** 插件已加载完。
- * 页面重连后立刻请求接口就不会打到未初始化的服务（架构文档 6.3）。
+ * 页面重连后立刻请求接口就不会打到未初始化的服务。
  */
 
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http'

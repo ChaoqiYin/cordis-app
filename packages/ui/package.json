@@ -2,7 +2,7 @@
   "name": "@cordis-app/ui",
   "version": "1.0.0",
   "description": "React web UI skeleton: layout, five extension points, settings panel",
-  "license": "AGPL-3.0-or-later",
+  "license": "AGPL-3.0-only",
   "type": "module",
   "main": "./dist/shared/client.js",
   "types": "./dist/shared/client.d.ts",

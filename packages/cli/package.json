@@ -2,7 +2,7 @@
   "name": "@cordis-app/cli",
   "version": "1.0.0",
   "description": "Command line: new / add / remove / run / restart",
-  "license": "AGPL-3.0-or-later",
+  "license": "AGPL-3.0-only",
   "type": "module",
   "main": "./lib/index.js",
   "types": "./lib/index.d.ts",

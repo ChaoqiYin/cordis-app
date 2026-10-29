@@ -1,7 +1,7 @@
 /**
  * hello 插件的前端入口。
  *
- * 边界规则（架构文档 5.3）：命令式 API 只在入口处调用一次用于注册；组件内部
+ * 边界规则：命令式 API 只在入口处调用一次用于注册；组件内部
  * 一律用 Hooks。所以 `ctx.page` 在 activate 里调用，页面组件里只用
  * `usePluginData` 与普通 React Hooks。
  *

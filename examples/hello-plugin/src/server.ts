@@ -7,7 +7,7 @@
  *   - `export const data` 把初始状态随清单一起送到前端，省掉一次「我是谁」请求
  *
  * 注意这里只有 `import type`：框架的运行时代码由 worker 提供，插件不得自带
- * 第二份（架构文档 5.4 ②）。类型在构建时被擦除，产物里不会留下这条导入。
+ * 第二份。类型在构建时被擦除，产物里不会留下这条导入。
  */
 
 import type { KernelContext } from '@cordis-app/kernel'

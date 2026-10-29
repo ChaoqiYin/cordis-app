@@ -1,8 +1,7 @@
 /**
  * 面向插件作者的 React 绑定。
  *
- * 命令式 API 负责注册，Hooks 负责在组件内读取状态。两者的分界线是架构文档
- * 5.3 的规则：命令式只在插件入口调用一次，组件里一律用 Hooks 或 `<Slot>`。
+ * 命令式 API 负责注册，Hooks 负责在组件内读取状态。两者的分界线是：命令式只在插件入口调用一次，组件里一律用 Hooks 或 `<Slot>`。
  */
 
 import {
@@ -98,7 +97,7 @@ export function useMenuItems(menuId: string | null): RegisteredMenuItem[] {
   return useSyncExternalStore(subscribe, read, read)
 }
 
-/** 执行菜单项对应的行为。行为按完整 id 配对，见架构文档 7.2。 */
+/** 执行菜单项对应的行为。行为按完整 id 配对。 */
 export function useMenuAction(): (id: string) => void {
   const runtime = useRuntime()
   return useCallback(

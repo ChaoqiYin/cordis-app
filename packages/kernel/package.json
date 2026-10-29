@@ -2,7 +2,7 @@
   "name": "@cordis-app/kernel",
   "version": "1.0.0",
   "description": "cordis adapter layer and the Kernel interface. The only package that depends on cordis.",
-  "license": "AGPL-3.0-or-later",
+  "license": "AGPL-3.0-only",
   "type": "module",
   "main": "./lib/index.js",
   "types": "./lib/index.d.ts",

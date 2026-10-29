@@ -117,8 +117,7 @@ function collect(
  * 核心包必须声明为 peerDependencies。
  *
  * 框架核心包持有服务注册表与事件总线，出现第二份会导致插件各自正常、
- * 彼此失联——这是最难排查的一类问题，所以在安装/加载时强制校验
- * （架构文档 5.4 ②）。
+ * 彼此失联——这是最难排查的一类问题，所以在安装/加载时强制校验。
  */
 export function validatePeer(packageJson: PackageJsonLike): string | undefined {
   const peers = packageJson.peerDependencies ?? {}

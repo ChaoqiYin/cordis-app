@@ -23,7 +23,7 @@ const handshakePrefix = "@@CORDIS_APP@@"
 // stopGrace 是「请它退出」与「强行杀掉」之间的等待时间。
 const stopGrace = 5 * time.Second
 
-// handshake 是 supervisor 写到 stdout 的那一行 JSON（架构文档 6.1）。
+// handshake 是 supervisor 写到 stdout 的那一行 JSON。
 type handshake struct {
 	Ready   bool   `json:"ready"`
 	Port    int    `json:"port"`
@@ -46,7 +46,7 @@ type address struct {
 
 // supervisor 持有子进程与它的输出管道。
 //
-// 关键约束（架构文档 6.1 的 pipe 陷阱）：stdout 与 stderr 都必须被持续消费。
+// 关键约束：stdout 与 stderr 都必须被持续消费。
 // 只读 stdout 会让 supervisor 的日志把管道缓冲区写满，表现为「应用卡死但不报错」。
 type supervisor struct {
 	cmd *exec.Cmd
@@ -134,7 +134,7 @@ func startSupervisor(l layout) (*supervisor, error) {
 	return s, nil
 }
 
-// supervisorEnv 构造子进程环境（架构文档 11.6），不继承用户的 shell。
+// supervisorEnv 构造子进程环境，不继承用户的 shell。
 //
 // 开发环境不走 PATH 裁剪：`go run` 时 node 本来就来自 PATH，裁掉它会连
 // supervisor 都起不来。裁剪只对正式安装生效，那里有随包分发的 node。
@@ -154,7 +154,7 @@ func supervisorEnv(l layout) []string {
 		env = filterEnv(env, "PATH")
 		env = append(env, "PATH="+binPath(filepath.Join(l.installDir, "bin"), original))
 
-		// 重定向家目录与临时目录，避免插件把状态写进用户主目录（架构文档 11.6）。
+		// 重定向家目录与临时目录，避免插件把状态写进用户主目录。
 		// 具体是哪些变量由平台决定——写 HOME 在 Windows 上毫无作用。
 		extra := homeVars(l.dataDir)
 		env = filterEnv(env, extra.keys...)

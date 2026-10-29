@@ -20,7 +20,7 @@ import type {
 } from './types.js'
 
 /**
- * 菜单项 id 的展开规则（架构文档 7.2）：
+ * 菜单项 id 的展开规则：
  *   `.reset`     → `<plugin-id>/reset`   相对 id
  *   `@separator` → 原样保留，框架所有
  *   `my-item`    → 原样保留，跨插件引用
@@ -40,7 +40,7 @@ export function isFrameworkItem(id: string): boolean {
  *
  * 插件可以在自己的菜单里**放置**这些项（决定位置与是否出现），但它们的
  * 外观由这张表决定——这就是「不能注册、覆盖或删除」的落点：`ctx.menu()`
- * 里写的 label 对 `@` 项一律无效。架构文档 7.2 的示例正是这样用的：
+ * 里写的 label 对 `@` 项一律无效。典型的用法正是这样：
  *
  *   ctx.menu('activity', [{ id: '.reset' }, { id: '@separator' }, { id: '.about' }])
  */
