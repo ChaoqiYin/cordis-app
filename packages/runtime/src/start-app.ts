@@ -12,12 +12,14 @@
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import {
+  ENV_VERSION,
   EXIT_PORT_IN_USE,
   EXIT_RESTART,
   HANDSHAKE_PREFIX,
   decodeHandshake,
   type HandshakeLine,
   type PluginFailure,
+  type RuntimeMode,
 } from '@cordis-app/protocol'
 
 /** supervisor 子进程的最小结构；测试可以注入一个假的实现。 */
@@ -51,6 +53,13 @@ export interface StartAppOptions {
   serverEntry?: string
   /** 覆盖项目本地插件根；`cordis-app dev` 指向现场构建的 `.cordis/dev/plugins` */
   localPluginsDir?: string
+  /**
+   * 打包形态的可写用户插件根；`cordis-app start` 指向项目可写数据目录下的
+   * `plugins/`。worker 用 `dirname(userPluginsDir)` 作为用户数据根。
+   */
+  userPluginsDir?: string
+  /** 运行形态；缺省 `project`。打包形态只接受签名插件包。 */
+  mode?: RuntimeMode
   /** 固定端口；缺省由 supervisor 找空闲端口 */
   port?: number
   /** 框架版本覆盖（测试/嵌入场景） */
@@ -151,10 +160,9 @@ export async function startApp(options: StartAppOptions): Promise<AppHandle> {
   if (options.resourcesDir) args.push('--resources', options.resourcesDir)
   if (options.serverEntry) args.push('--server-entry', options.serverEntry)
   if (options.localPluginsDir) args.push('--local-plugins', options.localPluginsDir)
+  if (options.userPluginsDir) args.push('--user-plugins', options.userPluginsDir)
+  if (options.mode) args.push('--mode', options.mode)
   if (options.dev) args.push('--dev')
-  if (options.version) {
-    // supervisor 没有 --version 参数；版本通过环境注入，避免再造一个真源。
-  }
 
   const emitExit = (event: AppExitEvent): void => {
     lastExit = event
@@ -171,7 +179,8 @@ export async function startApp(options: StartAppOptions): Promise<AppHandle> {
         cwd: options.projectRoot,
         env: {
           ...process.env,
-          ...(options.version ? { CORDIS_APP_VERSION: options.version } : {}),
+          // supervisor 没有 --version 参数；版本通过环境注入，避免再造一个真源。
+          ...(options.version ? { [ENV_VERSION]: options.version } : {}),
         },
         stdio: ['ignore', 'pipe', 'pipe'],
       })
@@ -303,6 +312,24 @@ export async function startApp(options: StartAppOptions): Promise<AppHandle> {
     })
   }
 
+  /**
+   * 所有并发 stop/restart 共享同一次等待。
+   *
+   * 若第二个 stop() 自己再调一次 stopChild()，会重复发 SIGTERM、重复挂 exit
+   * 监听；若它看到 child 已被置空就立即 resolve，又会在第一个 stop() 仍等待
+   * 时提前返回。缓存 Promise 让两边的「已停止」是同一个事实。
+   */
+  let stopPromise: Promise<void> | undefined
+  const stopChildShared = (): Promise<void> => {
+    if (!stopPromise) {
+      const pending = stopChild().finally(() => {
+        if (stopPromise === pending) stopPromise = undefined
+      })
+      stopPromise = pending
+    }
+    return stopPromise
+  }
+
   const handle: AppHandle = {
     get url() {
       return state ? accessUrl(state.port, state.token) : ''
@@ -314,19 +341,15 @@ export async function startApp(options: StartAppOptions): Promise<AppHandle> {
       return state?.port ?? 0
     },
     async stop() {
-      if (stopping) {
-        // 幂等：另一个 stop() 可能还在等子进程退出，这里直接等同一份状态。
-        if (child) await stopChild()
-        return
-      }
+      // 幂等：重复或并发的 stop() 等的是同一个子进程退出。
       stopping = true
-      await stopChild()
+      await stopChildShared()
     },
     async restart() {
       if (restarting) return
       restarting = true
       try {
-        await stopChild()
+        await stopChildShared()
         const payload = await launch()
         state = payload
       } finally {
@@ -336,11 +359,21 @@ export async function startApp(options: StartAppOptions): Promise<AppHandle> {
     async restartWorker() {
       const current = state
       if (!current) throw new StartAppError('应用尚未就绪，无法重启 worker', { kind: 'startup' })
-      const response = await fetch(`http://127.0.0.1:${current.port}/api/restart`, {
-        method: 'POST',
-        headers: { authorization: `Bearer ${current.token}` },
-        signal: AbortSignal.timeout(5_000),
-      })
+      let response: Response
+      try {
+        response = await fetch(`http://127.0.0.1:${current.port}/api/restart`, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${current.token}` },
+          signal: AbortSignal.timeout(5_000),
+        })
+      } catch (error) {
+        // AbortSignal 的超时、连接被拒都统一成 StartAppError，调用方只按
+        // `kind` 分支，不需要认识 DOMException / TimeoutError。
+        throw new StartAppError(`重启 worker 失败：${(error as Error).message}`, {
+          kind: 'startup',
+          cause: error,
+        })
+      }
       if (!response.ok) {
         throw new StartAppError(`重启 worker 失败：HTTP ${response.status}`, { kind: 'startup' })
       }

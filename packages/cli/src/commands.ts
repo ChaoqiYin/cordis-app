@@ -13,7 +13,6 @@ import { join } from 'node:path'
 import { spawn } from 'node:child_process'
 import {
   FRAMEWORK_VERSION,
-  resolveProjectLayout,
   waitForReady,
   type PluginFailure,
 } from '@cordis-app/protocol'
@@ -180,10 +179,7 @@ function startSupervisor(
       onReady(line) {
         const url = accessUrl(line.port, line.token)
         io.out(url)
-        if (line.failures.length > 0) {
-          io.err(`有 ${line.failures.length} 个插件加载失败：`)
-          for (const failure of line.failures) io.err(`  ${failure.id}: ${failure.reason}`)
-        }
+        if (line.failures.length > 0) printFailures(line.failures, io)
         if (args.open) io.openBrowser?.(url)
       },
     })
@@ -315,12 +311,17 @@ export async function commandBuild(args: ParsedArgs, io: CommandIO): Promise<num
  * 项目根不变（data/、.cordis/ 仍按项目定位），只把 resources 与 server 入口
  * 覆盖到 dist/。产物缺失时直接失败，而不是悄悄回退到源码入口——那会让
  * 「start 跑的是源码」这种错误在部署后才暴露。
+ *
+ * 这是打包形态：内置插件是构建产出的 `dist/resources/plugins`，用户插件装在
+ * 可写数据目录 `<project>/data/plugins`（`<userData>/plugins`），安装只接受
+ * 签名插件包；项目源码插件根不会再被当成本地根扫描，避免与内置产物重复。
  */
 export async function commandStart(args: ParsedArgs, io: CommandIO): Promise<number> {
   const workspace = openWorkspace(args.projectDir)
   if (!requireApp(workspace, io)) return 1
 
-  const distDir = resolveProjectLayout(workspace.projectRoot).distDir
+  const layout = workspace.layout
+  const distDir = layout.distDir
   const resourcesDir = args.resourcesDir ? expandPath(args.resourcesDir) : join(distDir, 'resources')
   const serverEntry = join(distDir, 'server', 'index.js')
   const appJson = join(distDir, 'app.json')
@@ -343,6 +344,10 @@ export async function commandStart(args: ParsedArgs, io: CommandIO): Promise<num
       projectRoot: workspace.projectRoot,
       resourcesDir,
       serverEntry,
+      mode: 'packaged',
+      // 与 runtime 的约定一致：用户插件根是 `<userData>/plugins`，
+      // worker 以 dirname 推导 bundle 安装事实与事务日志的位置。
+      userPluginsDir: join(layout.dataDir, 'plugins'),
       ...(args.port ? { port: args.port } : {}),
     })
   } catch (error) {

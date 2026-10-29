@@ -14,6 +14,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PluginInstaller } from '../lib/plugin/installer.js'
+import { NpmInstallSource } from '../lib/plugin/npm-source.js'
 
 interface Fixture {
   projectRoot: string
@@ -498,13 +499,21 @@ test('没有事务日志时 recover 是空操作', async () => {
 
 // ---------------------------------------------------------------- 布局快照
 
+/** 布局快照只属于 npm 来源；这里直接构造来源，避免把它的实现细节挂回事务层。 */
+function npmSourceOf(fixture: Fixture): NpmInstallSource {
+  return new NpmInstallSource({
+    projectRoot: fixture.projectRoot,
+    frameworkVersion: '1.0.0',
+  })
+}
+
 test('布局快照跳过点目录与无 package.json 的目录', () => {
   const fixture = createFixture()
   writePlugin(fixture, 'demo')
   mkdirSync(join(fixture.nodeModules, '.bin'), { recursive: true })
   mkdirSync(join(fixture.nodeModules, 'empty'), { recursive: true })
 
-  const layout = fixture.installer.snapshot()
+  const layout = npmSourceOf(fixture).snapshot()
   assert.deepEqual([...layout.keys()], ['demo'])
 })
 
@@ -512,6 +521,6 @@ test('scoped 包在快照里的名字带作用域', () => {
   const fixture = createFixture()
   writePlugin(fixture, '@scope/plugin-foo')
 
-  const layout = fixture.installer.snapshot()
+  const layout = npmSourceOf(fixture).snapshot()
   assert.deepEqual([...layout.keys()], ['@scope/plugin-foo'])
 })

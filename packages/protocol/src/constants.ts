@@ -27,8 +27,19 @@ export const ENV_HANDSHAKE_PIPE = 'CORDIS_APP_HANDSHAKE'
 export const ENV_SERVER_ENTRY = 'CORDIS_APP_SERVER_ENTRY'
 /** 覆盖项目本地插件根：`cordis-app dev` 指向 .cordis/dev/plugins */
 export const ENV_LOCAL_PLUGINS = 'CORDIS_APP_LOCAL_PLUGINS'
+/**
+ * worker 的运行形态：`project`（缺省，npm 安装）或 `packaged`（只接受签名插件包）。
+ *
+ * 运行形态是进程配置，HTTP 请求不能切换它。
+ */
+export const ENV_MODE = 'CORDIS_APP_MODE'
+/** 打包模式的用户插件根。安装器把 `<userData>/plugins` 作为可写安装目录。 */
+export const ENV_USER_PLUGINS = 'CORDIS_APP_USER_PLUGINS'
 /** 开发模式：插件前端 URL 使用时间戳而不是内容 hash。 */
 export const ENV_DEV = 'CORDIS_APP_DEV'
+
+/** worker 运行形态。项目模式走 npm，打包模式只接受签名插件包。 */
+export type RuntimeMode = 'project' | 'packaged'
 
 /**
  * supervisor 注入 worker 的框架版本。

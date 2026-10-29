@@ -100,6 +100,15 @@ test('stop 幂等，只向同一个子进程发一次终止信号', async () => 
   assert.deepEqual(fake.children[0]!.killed, ['SIGTERM'])
 })
 
+test('并发 stop 共享同一次等待，只发一次终止信号', async () => {
+  const fake = fakeSpawn()
+  const app = await startApp({ ...baseOptions, spawn: fake.spawn })
+
+  await Promise.all([app.stop(), app.stop(), app.stop()])
+
+  assert.deepEqual(fake.children[0]!.killed, ['SIGTERM'])
+})
+
 test('restart 先停后起，并暴露新的端口与 token', async () => {
   const payloads = [handshake({ port: 4001, token: 'one' }), handshake({ port: 4002, token: 'two' })]
   const children: FakeChild[] = []
@@ -178,6 +187,44 @@ test('start 形态把 resources 与 server 入口传给 supervisor', async () =>
     '--server-entry',
     '/p/dist/server/index.js',
   ])
+  await app.stop()
+})
+
+test('startApp 把 packaged 形态与用户插件根传给 supervisor', async () => {
+  const fake = fakeSpawn()
+  const app = await startApp({
+    ...baseOptions,
+    spawn: fake.spawn,
+    mode: 'packaged',
+    userPluginsDir: '/user/data/plugins',
+  })
+  assert.deepEqual(fake.calls[0]!.slice(1), [
+    '--project',
+    baseOptions.projectRoot,
+    '--user-plugins',
+    '/user/data/plugins',
+    '--mode',
+    'packaged',
+  ])
+  await app.stop()
+})
+
+test('restartWorker 连接失败也返回 StartAppError 并保留 cause', async () => {
+  // 端口 1 上不会有 worker；fetch 会立刻被拒绝。关键是调用方拿到的是
+  // StartAppError（kind=startup），而不是底层 DOMException / TimeoutError。
+  const fake = fakeSpawn(handshake({ port: 1 }))
+  const app = await startApp({ ...baseOptions, spawn: fake.spawn })
+
+  await assert.rejects(
+    () => app.restartWorker(),
+    (error: unknown) => {
+      assert.ok(error instanceof StartAppError)
+      assert.equal(error.kind, 'startup')
+      assert.match(error.message, /重启 worker 失败/)
+      assert.ok(error.cause instanceof Error)
+      return true
+    },
+  )
   await app.stop()
 })
 

@@ -12,8 +12,14 @@ import assert from 'node:assert/strict'
 import { mkdirSync, mkdtempSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { Supervisor } from '../lib/supervisor/supervisor.js'
-import { decodeHandshake, FRAMEWORK_VERSION } from '@cordis-app/protocol'
+import { Supervisor, buildWorkerEnv } from '../lib/supervisor/supervisor.js'
+import { readSupervisorArgs } from '../lib/supervisor/args.js'
+import {
+  decodeHandshake,
+  ENV_MODE,
+  ENV_USER_PLUGINS,
+  FRAMEWORK_VERSION,
+} from '@cordis-app/protocol'
 
 interface Fixture {
   projectRoot: string
@@ -36,6 +42,32 @@ function createFixture(): Fixture {
   )
   return { projectRoot, resourcesDir }
 }
+
+test('运行形态与用户插件根从 supervisor 参数传到 worker 环境', () => {
+  const args = readSupervisorArgs([
+    '--project',
+    '/projects/demo',
+    '--mode',
+    'packaged',
+    '--user-plugins',
+    '/projects/demo/data/plugins',
+  ])
+  assert.equal(args.mode, 'packaged')
+  assert.equal(args.userPluginsDir, '/projects/demo/data/plugins')
+
+  const env = buildWorkerEnv({
+    port: 5140,
+    token: 'token',
+    projectRoot: '/projects/demo',
+    version: '1.0.0',
+    mode: args.mode,
+    userPluginsDir: args.userPluginsDir,
+  })
+  assert.equal(env[ENV_MODE], 'packaged')
+  assert.equal(env[ENV_USER_PLUGINS], '/projects/demo/data/plugins')
+
+  assert.throws(() => readSupervisorArgs(['--mode', 'weird']), /未知运行形态/)
+})
 
 test('握手行只出现在 stdout，格式可解析', async () => {
   const fixture = createFixture()

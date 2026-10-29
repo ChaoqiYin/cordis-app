@@ -138,7 +138,7 @@ menus、settings 四个出口全部保留的写法。
 - `ui` 声明插件需要的 UI 出口；`capabilities` 声明安全能力，两者不混用。
 - `package.json` 必须把 `cordis-app` 写进 `peerDependencies`。
 
-`react`、`react-dom`、`cordis-app/client` 等共享模块由框架提供同一份实例，插件
+`react`、`react-dom`、`cordis-app/client` 等共享模块由框架提供，整个应用只有一份；插件
 构建时保持 external，不得自带第二份 React。完整示例见
 [examples/hello-plugin](./examples/hello-plugin)。
 

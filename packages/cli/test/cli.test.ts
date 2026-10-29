@@ -434,6 +434,12 @@ test('start 用 dist 的 resources 与 server 入口启动，而不是源码入�
   assert.equal(options?.projectRoot, root)
   assert.equal(options?.resourcesDir, join(root, 'dist', 'resources'))
   assert.equal(options?.serverEntry, join(root, 'dist', 'server', 'index.js'))
+  assert.equal(options?.mode, 'packaged', 'start 运行的是构建产物，安装来源应为签名插件包')
+  assert.equal(
+    options?.userPluginsDir,
+    join(root, 'data', 'plugins'),
+    '用户插件根是 <userData>/plugins，userData 仍是项目可写数据目录',
+  )
   assert.ok(fake.out.includes(app.url))
 })
 

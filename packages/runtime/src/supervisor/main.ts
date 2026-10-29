@@ -12,6 +12,8 @@ const supervisor = new Supervisor({
   ...(options.resourcesDir ? { resourcesDir: options.resourcesDir } : {}),
   ...(options.serverEntry ? { serverEntry: options.serverEntry } : {}),
   ...(options.localPluginsDir ? { localPluginsDir: options.localPluginsDir } : {}),
+  ...(options.userPluginsDir ? { userPluginsDir: options.userPluginsDir } : {}),
+  ...(options.mode ? { mode: options.mode } : {}),
   ...(options.dev ? { dev: true } : {}),
 })
 

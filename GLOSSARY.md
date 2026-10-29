@@ -84,6 +84,17 @@ body 暴露给插件的 UI 扩展点：pages（`PluginPageOutlet`）、slots
 项目模式快照 `package.json`、项目 lockfile、`app.json`；打包模式快照
 `installed.json` 并由来源撤销目录移动。
 
+**事务日志（`install-journal.json`）**
+`<project>/.cordis/install-journal.json`，打包模式写在
+`<userData>/.cordis/install-journal.json`。来源动手前落盘，记录来源、动作、
+规格、事实文件原文与来源自己的事务前状态；回滚成功后删除。进程被强杀后，
+下一次启动据此恢复。
+
+**启动 doctor**
+worker 启动前的兼容性检查：项目 `package.json` 声明的 `cordis-app` 版本必须与
+当前框架兼容（缺失只告警，不兼容是硬错误），插件还要校验 `cordis-app` 与共享
+模块的 peer 范围。检查在监听端口之前完成，避免留下半启动的 worker。
+
 **插件包（`.cordis-plugin`）**
 tar.gz 归档，包含 `plugin.json`、`package.json`、server/client 产物与
 `bundle.json`。内容 hash 排除 `bundle.json` 自身；签名为 Ed25519，覆盖

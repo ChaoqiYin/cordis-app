@@ -41,17 +41,27 @@ server 与 client 入口（路径由 plugin.json 指向）
 
 ## 3. 签名载荷
 
-签名对象是下面这段 UTF-8 字节（注意结尾换行）：
+签名对象是下面这段 UTF-8 字节（注意每行结尾的换行）：
 
 ```
-cordis-plugin-bundle-v1\n<id>\n<version>\n<hash>\n
+cordis-plugin-bundle-v1
+<id>
+<version>
+<hash>
+<peer 的规范化 JSON>
+<ui 的规范化 JSON（缺省为空行）>
 ```
 
-使用 Ed25519 对载荷做 `sign(null, payload, privateKey)`，把结果编码为 base64 写入
-`bundle.json.signature`。校验时用可信公钥做 `verify(null, payload, publicKey, signature)`。
+`peer` 与 `ui` 使用确定性 JSON：对象键按字典序递归排序，数组保持原顺序；
+`ui` 缺省时该行为空字符串。使用 Ed25519 对载荷做
+`sign(null, payload, privateKey)`，把结果编码为 base64 写入
+`bundle.json.signature`。校验时用可信公钥做
+`verify(null, payload, publicKey, signature)`。
 
-签名覆盖 id、版本与内容 hash：替换任一文件、换版本号或把包挪给另一个 id 都会
-导致校验失败。
+签名覆盖 id、版本、内容 hash、peer 范围与 UI 需求：替换任一文件、换版本号、
+把包挪给另一个 id、或改写 `bundle.json` 里的 `peer`/`ui` 都会导致校验失败。
+`hash` 本身不覆盖 `bundle.json`，所以 `peer`/`ui` 的完整性由签名而不是 hash
+保证。
 
 ## 4. 生成密钥
 
@@ -91,13 +101,14 @@ for (const name of ['plugin.json', 'package.json', 'server.js', 'client.js']) {
 const id = 'hello-plugin'
 const version = '1.0.0'
 const peer = { 'cordis-app': '^1.0.0' }
+const ui = { pages: true }
 
 const hash = computeBundleHash(files)
-const payload = bundleSignaturePayload({ id, version, hash })
+const payload = bundleSignaturePayload({ id, version, hash, peer, ui })
 const privateKey = createPrivateKey(readFileSync('private.pem'))
 const signature = sign(null, payload, privateKey).toString('base64')
 
-const bundle = { id, version, hash, signature, algorithm: 'ed25519', peer }
+const bundle = { id, version, hash, signature, algorithm: 'ed25519', peer, ui }
 files.set('bundle.json', Buffer.from(JSON.stringify(bundle, null, 2)))
 
 writeFileSync(`hello-plugin-${version}.cordis-plugin`, createTarGz(files))

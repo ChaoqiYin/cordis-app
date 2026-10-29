@@ -22,11 +22,13 @@ import {
   ENV_BUNDLE_PUBLIC_KEY,
   ENV_DEV,
   ENV_LOCAL_PLUGINS,
+  ENV_MODE,
   ENV_PORT,
   ENV_PROJECT,
   ENV_RESOURCES,
   ENV_SERVER_ENTRY,
   ENV_TOKEN,
+  ENV_USER_PLUGINS,
   ENV_VERSION,
   EXIT_RESTART,
   FRAMEWORK_VERSION,
@@ -38,6 +40,7 @@ import {
   type AppManifest,
   type ClientManifest,
   type PluginFailure,
+  type RuntimeMode,
   type WorkerMessage,
 } from '@cordis-app/protocol'
 import * as builtin from '../builtin/index.js'
@@ -77,7 +80,7 @@ export interface WorkerOptions {
    * 运行形态。项目模式（缺省）用 npm 安装；打包模式只接受签名插件包。
    * 这是进程配置，不接受 HTTP 请求切换。
    */
-  mode?: 'project' | 'packaged'
+  mode?: RuntimeMode
   /** bundle 安装配置 */
   bundle?: WorkerBundleOptions
   /**
@@ -108,6 +111,10 @@ export function readWorkerOptions(env: NodeJS.ProcessEnv = process.env): WorkerO
   if (!port || !token || !projectRoot) {
     throw new Error('worker 必须由 supervisor 拉起（缺少端口 / token / 项目根环境变量）')
   }
+  const rawMode = env[ENV_MODE]
+  if (rawMode !== undefined && rawMode !== 'project' && rawMode !== 'packaged') {
+    throw new Error(`未知运行形态：${rawMode}（只支持 project / packaged）`)
+  }
   return {
     port,
     token,
@@ -115,6 +122,8 @@ export function readWorkerOptions(env: NodeJS.ProcessEnv = process.env): WorkerO
     resourcesDir: env[ENV_RESOURCES],
     ...(env[ENV_SERVER_ENTRY] ? { serverEntry: env[ENV_SERVER_ENTRY] } : {}),
     ...(env[ENV_LOCAL_PLUGINS] ? { localPluginsDir: env[ENV_LOCAL_PLUGINS] } : {}),
+    ...(env[ENV_USER_PLUGINS] ? { userPluginsDir: env[ENV_USER_PLUGINS] } : {}),
+    ...(rawMode ? { mode: rawMode as RuntimeMode } : {}),
     ...(env[ENV_DEV] === '1' ? { dev: true } : {}),
     version: env[ENV_VERSION] ?? FRAMEWORK_VERSION,
   }
@@ -129,17 +138,20 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
   const logger = createLoggerFactory({ level: 'info' })
   const frameworkVersion = options.version ?? FRAMEWORK_VERSION
 
-  // 四个根按优先级扫描一次：builtin > local > dependency > user。
-  // loader、静态服务与 /api/plugins 共用这次结果（API 在安装/卸载后重新扫描）。
+  // 运行形态决定安装来源：项目模式跑 npm，打包应用只接受签名插件包。
+  // 来源是进程配置，HTTP 请求不能切换它，也不能指定任意下载地址。
+  const packaged = options.mode === 'packaged'
+
   const builtinPluginsDir =
     options.builtinPluginsDir ??
     (options.resourcesDir ? join(options.resourcesDir, 'plugins') : undefined)
   const userPluginsDir = options.userPluginsDir ?? layout.userPluginsDir
   const userDataDir = userPluginsDir ? dirname(userPluginsDir) : undefined
+  // 打包形态的 local 根是「项目源码插件」，产物已经进了 resources/plugins；
+  // 再扫项目根只会让同一批插件以「内置 + 本地」重复出现。只有显式传入时
+  // 才启用 local 根（例如测试或特殊部署），项目模式保持原有默认。
+  const localPluginsDir = options.localPluginsDir ?? (packaged ? undefined : layout.localPluginsDir)
 
-  // 运行形态决定安装来源：项目模式跑 npm，打包应用只接受签名插件包。
-  // 来源是进程配置，HTTP 请求不能切换它，也不能指定任意下载地址。
-  const packaged = options.mode === 'packaged'
   if (packaged && !userDataDir) {
     throw new Error('打包模式必须提供 userPluginsDir（可写用户插件根）')
   }
@@ -191,11 +203,11 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
     throw new Error(projectCheck.reason ?? '项目 cordis-app 依赖与当前框架版本不兼容')
   }
 
-  // 四个根按优先级扫描一次：builtin > local > dependency > user。
-  // loader、静态服务与 /api/plugins 共用这次结果（API 在安装/卸载后重新扫描）。
+  // 四个根按优先级扫描一次（builtin > local > dependency > user）。loader、
+  // 静态服务与 /api/plugins 共用这次结果；API 在安装/卸载后重新扫描。
   const pluginRoots: PluginRoot[] = [
     ...(builtinPluginsDir ? [{ kind: 'builtin' as const, dir: builtinPluginsDir }] : []),
-    { kind: 'local', dir: layout.localPluginsDir },
+    ...(localPluginsDir ? [{ kind: 'local' as const, dir: localPluginsDir }] : []),
     { kind: 'dependency', dir: layout.nodeModulesDir },
     ...(userPluginsDir ? [{ kind: 'user' as const, dir: userPluginsDir }] : []),
   ]

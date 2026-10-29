@@ -21,15 +21,15 @@ export function resolveProjectRoot(
 }
 
 /**
- * 打包根的预留选项。
+ * 打包根的选项。
  *
- * 项目模式本身只需要项目根；打包应用还会从只读的内置插件根与可写的用户插件根
- * 发现插件（#4/#6/#7）。这里先把字段留出来，避免后续改动布局类型。
+ * 项目模式只需要项目根；打包应用还会从只读的内置插件根与可写的用户插件根
+ * 发现插件。字段可选：缺省时不产生对应路径，项目模式的布局与以前完全一致。
  */
 export interface ProjectLayoutOptions {
-  /** 只读的内置插件根（打包产物），当前不启用 */
+  /** 只读的内置插件根（打包产物，通常是 `<resourcesDir>/plugins`） */
   builtinPluginsDir?: string
-  /** 可写的用户插件根（打包应用用户数据），当前不启用 */
+  /** 可写的用户插件根（打包应用用户数据，通常是 `<userData>/plugins`） */
   userPluginsDir?: string
   /**
    * 覆盖项目本地插件根。
@@ -81,9 +81,9 @@ export interface ProjectLayout {
   distDir: string
   /** 项目依赖根 */
   nodeModulesDir: string
-  /** 打包只读内置插件根（#4/#6/#7 预留） */
+  /** 打包只读内置插件根（打包形态由 resources/plugins 推导） */
   builtinPluginsDir?: string
-  /** 打包可写用户插件根（#4/#6/#7 预留） */
+  /** 打包可写用户插件根（打包形态为 `<userData>/plugins`） */
   userPluginsDir?: string
 }
 
