@@ -57,6 +57,14 @@ export interface UiCapabilities {
 }
 
 /**
+ * 插件在 `plugin.json` 里声明的 UI 需求。
+ *
+ * 是 `UiCapabilities` 的 partial：插件只写自己依赖的出口，未写的表示不关心。
+ * #4 只负责把这份声明带到前端清单，#5 才做 body 能力匹配。
+ */
+export type PluginUiRequirements = Partial<UiCapabilities>
+
+/**
  * app.json —— 用户编辑的唯一应用清单。
  *
  * 不保存框架版本与插件版本范围：依赖的唯一真源是项目 `package.json`。
@@ -85,6 +93,8 @@ export interface PluginManifest {
   server?: string
   /** 前端入口，可选 */
   client?: string
+  /** UI 出口需求；只做声明，v1 不因此阻断服务端加载 */
+  ui?: PluginUiRequirements
   /** 能力声明，仅用于安装 UI 展示，运行时不拦截 */
   capabilities?: PluginCapability[]
 }
@@ -94,7 +104,13 @@ export type PluginCapability = 'fs:read' | 'fs:write' | 'net' | 'process' | 'sto
 /** 前端启动时拉取的插件清单。 */
 export interface ClientManifest {
   version: string
+  /** body 宿主契约版本，插件/市场据此判断 UI 兼容性 */
+  uiContractVersion: number
+  /** body 声明的能力，来自 app.json.ui */
+  ui?: UiCapabilities
   plugins: Record<string, ClientPluginEntry>
+  /** 扫描、doctor 与加载阶段的失败记录；前端无需再额外请求 */
+  failures?: PluginFailure[]
 }
 
 export interface ClientPluginEntry {
@@ -102,6 +118,8 @@ export interface ClientPluginEntry {
   displayName?: string
   /** 入口 + 预加载清单，全部为同源绝对路径 */
   files: string[]
+  /** 插件声明的 UI 出口需求 */
+  ui?: PluginUiRequirements
   /** 服务端在加载时导出的初始状态 */
   data?: unknown
 }

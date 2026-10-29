@@ -17,11 +17,13 @@ import { startWorker, readWorkerOptions } from '../lib/worker/worker.js'
 import { findFreePort, generateToken, buildWorkerEnv } from '../lib/supervisor/supervisor.js'
 import { PluginInstaller } from '../lib/plugin/installer.js'
 import { safeJoin } from '../lib/builtin/http-utils.js'
-import { ENV_PORT, ENV_PROJECT, ENV_TOKEN, ENV_VERSION, FRAMEWORK_VERSION } from '@cordis-app/protocol'
+import { ENV_PORT, ENV_PROJECT, ENV_TOKEN, ENV_VERSION, FRAMEWORK_VERSION, UI_CONTRACT_VERSION } from '@cordis-app/protocol'
 
 interface Fixture {
   projectRoot: string
   resourcesDir: string
+  /** 打包形态的用户插件根；默认不创建 */
+  userPluginsDir: string
 }
 
 interface FixtureOptions {
@@ -29,6 +31,10 @@ interface FixtureOptions {
   enabled?: string[]
   /** node_modules 下要生成的插件 id；默认只有 demo */
   plugins?: string[]
+  /** 项目 package.json 的 dependencies；默认不写 cordis-app（只产生 warning） */
+  dependencies?: Record<string, string>
+  /** 项目 app.json 的 ui 能力 */
+  ui?: Record<string, unknown>
   /** 项目后端入口内容；null 表示不生成 server/index.js */
   server?: string | null
 }
@@ -56,12 +62,27 @@ function createFixture(options: FixtureOptions = {}): Fixture {
   const pluginIds = options.plugins ?? ['demo']
   writeFileSync(
     join(projectRoot, 'package.json'),
-    JSON.stringify({ name: 'test', version: '1.0.0', private: true, type: 'module' }, null, 2),
+    JSON.stringify(
+      {
+        name: 'test',
+        version: '1.0.0',
+        private: true,
+        type: 'module',
+        ...(options.dependencies ? { dependencies: options.dependencies } : {}),
+      },
+      null,
+      2,
+    ),
   )
   writeFileSync(
     join(projectRoot, 'app.json'),
     JSON.stringify(
-      { name: 'test', version: '1.0.0', plugins: options.enabled ?? pluginIds },
+      {
+        name: 'test',
+        version: '1.0.0',
+        plugins: options.enabled ?? pluginIds,
+        ...(options.ui ? { ui: options.ui } : {}),
+      },
       null,
       2,
     ),
@@ -74,19 +95,42 @@ function createFixture(options: FixtureOptions = {}): Fixture {
 
   for (const id of pluginIds) writePlugin(projectRoot, id)
 
-  return { projectRoot, resourcesDir }
+  return { projectRoot, resourcesDir, userPluginsDir: join(projectRoot, 'user-plugins') }
 }
 
-function writePlugin(projectRoot: string, id: string): void {
-  const pluginDir = join(projectRoot, 'node_modules', id)
+function writePlugin(
+  projectRoot: string,
+  id: string,
+  options: { peer?: Record<string, string>; ui?: Record<string, unknown>; client?: string } = {},
+): void {
+  writePluginAt(join(projectRoot, 'node_modules', id), id, options)
+}
+
+/** 在任意插件根下写一个最小可加载插件。 */
+function writePluginAt(
+  pluginDir: string,
+  id: string,
+  options: { peer?: Record<string, string>; ui?: Record<string, unknown>; client?: string } = {},
+): void {
   mkdirSync(pluginDir, { recursive: true })
   writeFileSync(
     join(pluginDir, 'package.json'),
-    JSON.stringify({ name: id, version: '1.0.0', peerDependencies: { 'cordis-app': '^1.0.0' }, type: 'module' }),
+    JSON.stringify({
+      name: id,
+      version: '1.0.0',
+      peerDependencies: options.peer ?? { 'cordis-app': '^1.0.0' },
+      type: 'module',
+    }),
   )
   writeFileSync(
     join(pluginDir, 'plugin.json'),
-    JSON.stringify({ id, displayName: `插件 ${id}`, server: './index.js', client: './client.js' }),
+    JSON.stringify({
+      id,
+      displayName: `插件 ${id}`,
+      server: './index.js',
+      client: './client.js',
+      ...(options.ui ? { ui: options.ui } : {}),
+    }),
   )
   writeFileSync(
     join(pluginDir, 'index.js'),
@@ -104,7 +148,7 @@ export function apply(ctx) {
 }
 ${id === 'demo' ? "export const data = { accent: '#4f7cff' }\n" : ''}`,
   )
-  writeFileSync(join(pluginDir, 'client.js'), 'export default () => {}')
+  writeFileSync(join(pluginDir, 'client.js'), options.client ?? 'export default () => {}')
 }
 
 async function withWorker(
@@ -124,6 +168,7 @@ async function withWorker(
     token,
     projectRoot: fixture.projectRoot,
     resourcesDir: fixture.resourcesDir,
+    userPluginsDir: fixture.userPluginsDir,
   })
   try {
     await fn({ port, token, base: `http://127.0.0.1:${port}`, projectRoot: fixture.projectRoot, handle })
@@ -411,6 +456,7 @@ test('/api/restart 需要 token，并要求 worker 走优雅重启', async () =>
     token,
     projectRoot: fixture.projectRoot,
     resourcesDir: fixture.resourcesDir,
+    userPluginsDir: fixture.userPluginsDir,
   })
 
   try {
@@ -422,4 +468,119 @@ test('/api/restart 需要 token，并要求 worker 走优雅重启', async () =>
   } finally {
     await handle.close()
   }
+})
+
+test('前端清单带 UI 契约版本、body 能力、插件 UI 需求与失败记录', async () => {
+  const ui = { pages: true, slots: ['header.right'], menus: ['activity'], settings: true }
+  const fixture = createFixture({ plugins: [], ui })
+  writePluginAt(join(fixture.projectRoot, 'node_modules', 'withui'), 'withui', {
+    ui: { pages: true, slots: ['header.right'] },
+  })
+
+  await withWorker(async ({ base, token }) => {
+    const manifest = await (
+      await fetch(`${base}/__plugins`, { headers: { authorization: `Bearer ${token}` } })
+    ).json()
+
+    assert.equal(manifest.uiContractVersion, UI_CONTRACT_VERSION)
+    assert.deepEqual(manifest.ui, ui, 'body 能力来自 app.json，随清单下发')
+    assert.deepEqual(manifest.plugins.withui.ui, { pages: true, slots: ['header.right'] })
+    assert.deepEqual(manifest.failures, [], '清单本身要带上前端可读的失败记录')
+  }, fixture)
+})
+
+test('四个根各放一个插件，都能加载并提供客户端资源', async () => {
+  const fixture = createFixture({ plugins: [] })
+  writePluginAt(join(fixture.resourcesDir, 'plugins', 'builtin-one'), 'builtin-one')
+  writePluginAt(join(fixture.projectRoot, 'plugins', 'local-one'), 'local-one')
+  writePluginAt(join(fixture.projectRoot, 'node_modules', 'dep-one'), 'dep-one')
+  writePluginAt(join(fixture.userPluginsDir, 'user-one'), 'user-one')
+  const ids = ['builtin-one', 'local-one', 'dep-one', 'user-one']
+
+  await withWorker(async ({ base, token, handle }) => {
+    assert.deepEqual(Object.keys(handle.manifest.plugins).sort(), [...ids].sort())
+
+    for (const id of ids) {
+      const res = await fetch(`${base}/__plugins/${id}/client.js`)
+      assert.equal(res.status, 200, `${id} 的客户端资源应可从 /__plugins/<id>/ 取到`)
+      assert.match(await res.text(), /export default/)
+    }
+
+    // /api/plugins 与启动扫描使用同一套发现逻辑
+    const list = await (
+      await fetch(`${base}/api/plugins`, { headers: { authorization: `Bearer ${token}` } })
+    ).json()
+    assert.deepEqual(
+      list.plugins.map((plugin: { id: string }) => plugin.id).sort(),
+      [...ids].sort(),
+    )
+  }, fixture)
+})
+
+test('跨根重复 id 只产生一条失败，高优先级插件仍可用', async () => {
+  const fixture = createFixture({ plugins: [] })
+  writePluginAt(join(fixture.resourcesDir, 'plugins', 'dup'), 'dup', {
+    client: "export default 'builtin'",
+  })
+  writePluginAt(join(fixture.projectRoot, 'plugins', 'dup'), 'dup', {
+    client: "export default 'local'",
+  })
+  writePluginAt(join(fixture.projectRoot, 'node_modules', 'dup'), 'dup', {
+    client: "export default 'dependency'",
+  })
+
+  await withWorker(async ({ base, handle }) => {
+    assert.equal(handle.failures.length, 1, '同一个 id 的跨根冲突只报一条')
+    assert.equal(handle.failures[0]!.id, 'dup')
+    assert.match(handle.failures[0]!.reason, /内置插件/)
+    assert.deepEqual(Object.keys(handle.manifest.plugins), ['dup'])
+
+    const res = await fetch(`${base}/__plugins/dup/client.js`)
+    assert.equal(res.status, 200)
+    assert.match(await res.text(), /builtin/, '静态资源也必须解析到高优先级的内置插件')
+  }, fixture)
+})
+
+test('不兼容的 cordis-app peer 在启动时失败并给出可读原因', async () => {
+  const fixture = createFixture({ plugins: [] })
+  writePluginAt(join(fixture.projectRoot, 'node_modules', 'too-old'), 'too-old', {
+    peer: { 'cordis-app': '^0.9.0' },
+  })
+
+  await withWorker(async ({ handle }) => {
+    assert.equal(handle.failures.length, 1)
+    assert.equal(handle.failures[0]!.id, 'too-old')
+    assert.match(handle.failures[0]!.reason, /\^0\.9\.0/)
+    assert.ok(
+      handle.failures[0]!.reason.includes(FRAMEWORK_VERSION),
+      '失败原因必须同时给出当前框架版本',
+    )
+    assert.deepEqual(Object.keys(handle.manifest.plugins), [], '不兼容插件不进入前端清单')
+  }, fixture)
+})
+
+test('项目 cordis-app 依赖不兼容时启动失败并给出清晰原因', async () => {
+  const fixture = createFixture({ plugins: [], dependencies: { 'cordis-app': '^0.9.0' } })
+  const port = await findFreePort()
+
+  await assert.rejects(
+    () =>
+      startWorker({
+        port,
+        token: generateToken(),
+        projectRoot: fixture.projectRoot,
+        resourcesDir: fixture.resourcesDir,
+        userPluginsDir: fixture.userPluginsDir,
+      }),
+    /cordis-app@\^0\.9\.0.*不兼容/,
+  )
+})
+
+test('项目依赖 doctor 覆盖手工安装（未走 CLI）的插件', async () => {
+  const fixture = createFixture({ plugins: [], dependencies: { 'cordis-app': '^1.0.0' } })
+  writePluginAt(join(fixture.projectRoot, 'node_modules', 'manual'), 'manual')
+
+  await withWorker(async ({ handle }) => {
+    assert.deepEqual(Object.keys(handle.manifest.plugins), ['manual'])
+  }, fixture)
 })

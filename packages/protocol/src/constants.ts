@@ -44,6 +44,14 @@ export const PLUGINS_PREFIX = '/__plugins'
 /** 插件背板上报与前端拉取的清单端点 */
 export const MANIFEST_PATH = '/__plugins'
 
+/**
+ * body 宿主契约版本。
+ *
+ * 插件与市场用它判断 UI 需求能否被当前应用理解。v1 只做协议字段，
+ * 真正的能力匹配在 #5 实现。
+ */
+export const UI_CONTRACT_VERSION = 1
+
 /** worker 关闭监听前向所有 WebSocket 客户端广播的事件名。前端据此进入等待态。 */
 export const RECONNECT_EVENT = 'server:reconnect'
 
