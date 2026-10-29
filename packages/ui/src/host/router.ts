@@ -15,11 +15,17 @@ type Listener = () => void
 
 const listeners = new Set<Listener>()
 
+/** SSR 与 Node 测试没有 window：路由退化为「永远在 /」。 */
+function hasWindow(): boolean {
+  return typeof window !== 'undefined'
+}
+
 function notify(): void {
   for (const listener of listeners) listener()
 }
 
 export function currentPath(): string {
+  if (!hasWindow()) return '/'
   const path = window.location.pathname
   return path === '/' ? '/' : path.replace(/\/+$/, '') || '/'
 }
@@ -32,6 +38,8 @@ export function subscribePath(listener: Listener): () => void {
 }
 
 export function navigate(to: string, options: { replace?: boolean } = {}): void {
+  // 服务端渲染与 Node 测试里没有 history；导航是纯浏览器行为，安全 no-op。
+  if (!hasWindow()) return
   if (to === currentPath()) return
   if (options.replace) window.history.replaceState(null, '', to)
   else window.history.pushState(null, '', to)
@@ -46,8 +54,9 @@ export function usePath(): string {
   return useSyncExternalStore(subscribePath, currentPath, () => '/')
 }
 
-/** 浏览器前进/后退。整个应用只挂一次。 */
+/** 浏览器前进/后退。整个应用只挂一次；SSR 下返回 no-op。 */
 export function installHistoryListener(): () => void {
+  if (!hasWindow()) return () => {}
   const onPop = () => notify()
   window.addEventListener('popstate', onPop)
   return () => window.removeEventListener('popstate', onPop)

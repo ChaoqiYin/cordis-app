@@ -6,10 +6,11 @@
  * 都在 commands.ts 里，因此这里可以保持「读一遍就懂」的长度。
  */
 
+import { realpathSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { FRAMEWORK_VERSION } from '@cordis-app/protocol'
 import { parseArgs, UsageError, HELP_TEXT } from './args.js'
 import { COMMAND_HANDLERS, defaultIO, type CommandIO } from './commands.js'
-
-const VERSION = '1.0.0'
 
 export async function main(argv: string[], io: CommandIO = defaultIO): Promise<number> {
   let parsed
@@ -26,7 +27,7 @@ export async function main(argv: string[], io: CommandIO = defaultIO): Promise<n
   }
 
   if (parsed.showVersion) {
-    io.out(VERSION)
+    io.out(FRAMEWORK_VERSION)
     return 0
   }
 
@@ -50,9 +51,21 @@ export async function main(argv: string[], io: CommandIO = defaultIO): Promise<n
   }
 }
 
-// 作为 bin 运行时才执行；被测试 import 时不触发
-const isEntry = process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href
-if (isEntry || process.env.CORDIS_APP_CLI_FORCE_MAIN) {
+// 作为 bin 运行时才执行；被测试 import 时不触发。
+// 包管理器生成的 bin shim 指向 node_modules 里的符号链接，因此不能直接比较
+// argv[1] 与 import.meta.url 的字符串——先 realpath 再比，否则经 .bin 调用时
+// 会静默什么都不做。
+function isEntryPoint(): boolean {
+  const script = process.argv[1]
+  if (!script) return false
+  try {
+    return realpathSync(script) === fileURLToPath(import.meta.url)
+  } catch {
+    return false
+  }
+}
+
+if (isEntryPoint() || process.env.CORDIS_APP_CLI_FORCE_MAIN) {
   main(process.argv.slice(2)).then(
     (code) => process.exit(code),
     (error) => {

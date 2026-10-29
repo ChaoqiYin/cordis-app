@@ -7,8 +7,7 @@
   "main": "./lib/index.js",
   "types": "./lib/index.d.ts",
   "bin": {
-    "cordis-app-cli": "./lib/cli.js",
-    "cordis-app": "./lib/cli.js"
+    "cordis-app-cli": "./lib/cli.js"
   },
   "exports": {
     ".": {
@@ -27,10 +26,13 @@
   },
   "dependencies": {
     "@cordis-app/protocol": "workspace:*",
-    "@cordis-app/runtime": "workspace:*"
+    "@cordis-app/runtime": "workspace:*",
+    "@cordis-app/ui": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
     "typescript": "^5.9.3"
   }
 }

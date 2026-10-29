@@ -1,5 +1,7 @@
+export * from './version.js'
 export * from './constants.js'
 export * from './types.js'
+export * from './capabilities.js'
 export * from './handshake.js'
 export * from './paths.js'
 export * from './readiness.js'

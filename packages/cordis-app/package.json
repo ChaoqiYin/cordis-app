@@ -1,0 +1,79 @@
+{
+  "name": "cordis-app",
+  "version": "1.0.0",
+  "description": "Plugin-based application framework: aggregate package for client, server, presets and the CLI",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "main": "./lib/index.js",
+  "types": "./lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "types": "./lib/client.d.ts",
+      "default": "./lib/client.js"
+    },
+    "./server": {
+      "types": "./lib/server.d.ts",
+      "default": "./lib/server.js"
+    },
+    "./preset": {
+      "types": "./lib/preset.d.ts",
+      "default": "./lib/preset.js"
+    },
+    "./ui": {
+      "types": "./lib/ui.d.ts",
+      "default": "./lib/ui.js"
+    },
+    "./package.json": "./package.json",
+    "./start": {
+      "types": "./lib/start.d.ts",
+      "default": "./lib/start.js"
+    }
+  },
+  "bin": {
+    "cordis-app": "./bin/cordis-app.js"
+  },
+  "files": [
+    "lib",
+    "bin"
+  ],
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ChaoqiYin/cordis-app.git"
+  },
+  "homepage": "https://github.com/ChaoqiYin/cordis-app#readme",
+  "bugs": {
+    "url": "https://github.com/ChaoqiYin/cordis-app/issues"
+  },
+  "keywords": [
+    "cordis",
+    "plugin",
+    "application-framework"
+  ],
+  "scripts": {
+    "build": "tsc -b tsconfig.json && node -e \"require('node:fs').chmodSync('bin/cordis-app.js', 0o755)\"",
+    "typecheck": "tsc -b tsconfig.json && tsc -p tsconfig.test.json",
+    "test": "tsc -b tsconfig.json && node --test \"test/*.test.ts\"",
+    "version:sync": "node scripts/sync-version.mjs"
+  },
+  "dependencies": {
+    "@cordis-app/cli": "workspace:*",
+    "@cordis-app/kernel": "workspace:*",
+    "@cordis-app/preset": "workspace:*",
+    "@cordis-app/protocol": "workspace:*",
+    "@cordis-app/runtime": "workspace:*",
+    "@cordis-app/ui": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}

@@ -19,9 +19,61 @@ export const MAX_PORT_RETRIES = 5
 /** supervisor 注入 worker 的环境变量名 */
 export const ENV_PORT = 'CORDIS_APP_PORT'
 export const ENV_TOKEN = 'CORDIS_APP_TOKEN'
-export const ENV_DATA = 'CORDIS_APP_DATA'
+/** supervisor 注入 worker 的项目根 */
+export const ENV_PROJECT = 'CORDIS_APP_PROJECT'
 export const ENV_RESOURCES = 'CORDIS_APP_RESOURCES'
 export const ENV_HANDSHAKE_PIPE = 'CORDIS_APP_HANDSHAKE'
+/** 覆盖项目 server 入口：`cordis-app start` 指向打包后的 dist/server/index.js */
+export const ENV_SERVER_ENTRY = 'CORDIS_APP_SERVER_ENTRY'
+/**
+ * 覆盖应用清单路径：`cordis-app start` 指向 `dist/app.json`。
+ *
+ * 打包布局把 app.json 和前端/服务端产物放在一起；worker 必须用这同一份
+ * 清单决定启用顺序、UI 能力与安装期兼容性，不能回头读源码根。
+ */
+export const ENV_APP_JSON = 'CORDIS_APP_APP_JSON'
+/** 覆盖项目本地插件根：`cordis-app dev` 指向 .cordis/dev/plugins */
+export const ENV_LOCAL_PLUGINS = 'CORDIS_APP_LOCAL_PLUGINS'
+/**
+ * worker 的运行形态：`project`（缺省，npm 安装）或 `packaged`（只接受签名插件包）。
+ *
+ * 运行形态是进程配置，HTTP 请求不能切换它。
+ */
+export const ENV_MODE = 'CORDIS_APP_MODE'
+/** 打包模式的用户插件根。安装器把 `<userData>/plugins` 作为可写安装目录。 */
+export const ENV_USER_PLUGINS = 'CORDIS_APP_USER_PLUGINS'
+/** 开发模式：插件前端 URL 使用时间戳而不是内容 hash。 */
+export const ENV_DEV = 'CORDIS_APP_DEV'
+
+/** worker 运行形态。项目模式走 npm，打包模式只接受签名插件包。 */
+export type RuntimeMode = 'project' | 'packaged'
+
+/**
+ * 解析运行形态。
+ *
+ * supervisor 的参数与 worker 的环境变量都走这里：两处各写一份 if 判断，
+ * 迟早会出现一处接受拼写错误、另一处拒绝的漂移。
+ */
+export function parseRuntimeMode(value: string | undefined): RuntimeMode | undefined {
+  if (value === undefined) return undefined
+  if (value === 'project' || value === 'packaged') return value
+  throw new Error(`未知运行形态：${value}（只支持 project / packaged）`)
+}
+
+/**
+ * supervisor 注入 worker 的框架版本。
+ *
+ * 版本只有 `FRAMEWORK_VERSION` 一个真源；supervisor 把它随环境传下去，
+ * worker 的 manifest、健康检查与安装期 peer 校验都用这同一个值。
+ */
+export const ENV_VERSION = 'CORDIS_APP_VERSION'
+
+/**
+ * 打包应用安装签名插件包时使用的可信公钥。
+ *
+ * 未配置时 bundle 安装一律被拒绝——安全默认是「不信任」，不是「跳过校验」。
+ */
+export const ENV_BUNDLE_PUBLIC_KEY = 'CORDIS_APP_BUNDLE_PUBLIC_KEY'
 
 /** 免 token 的健康检查端点 */
 export const HEALTH_PATH = '/__health'
@@ -34,6 +86,14 @@ export const PLUGINS_PREFIX = '/__plugins'
 
 /** 插件背板上报与前端拉取的清单端点 */
 export const MANIFEST_PATH = '/__plugins'
+
+/**
+ * body 宿主契约版本。
+ *
+ * 插件与市场用它判断 UI 需求能否被当前应用理解。v1 只做协议字段，
+ * 真正的能力匹配在 #5 实现。
+ */
+export const UI_CONTRACT_VERSION = 1
 
 /** worker 关闭监听前向所有 WebSocket 客户端广播的事件名。前端据此进入等待态。 */
 export const RECONNECT_EVENT = 'server:reconnect'

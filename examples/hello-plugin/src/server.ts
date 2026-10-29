@@ -10,7 +10,7 @@
  * 第二份。类型在构建时被擦除，产物里不会留下这条导入。
  */
 
-import type { KernelContext } from '@cordis-app/kernel'
+import type { KernelContext } from 'cordis-app/server'
 
 /** 与 plugin.json 的 id 一致。存储目录、清单键、前端 usePluginData 都按它索引。 */
 const ID = 'hello'
