@@ -27,6 +27,8 @@ export async function loadPlugins(options: {
   kernel: Kernel
   nodeModulesDir: string
   version: string
+  /** app.json.plugins：启用顺序。未列出的插件保持扫描顺序，仍然启用。 */
+  order?: string[]
   configFor(id: string): unknown
 }): Promise<LoadResult> {
   const { plugins, failures } = scanPlugins(options.nodeModulesDir)
@@ -34,7 +36,7 @@ export async function loadPlugins(options: {
   const data = new Map<string, unknown>()
   const entries: Record<string, ClientPluginEntry> = {}
 
-  for (const plugin of plugins) {
+  for (const plugin of orderPlugins(plugins, options.order)) {
     const id = plugin.id
     try {
       if (plugin.manifest.server) {
@@ -84,6 +86,15 @@ export function toDefinition(mod: any, fallbackName: string) {
     return { ...mod, name: mod.name ?? fallbackName }
   }
   throw new Error('插件没有导出 apply 函数')
+}
+
+/** 按 app.json.plugins 的启用顺序排列；未列出的插件排在后面。 */
+function orderPlugins(plugins: InstalledPlugin[], order?: string[]): InstalledPlugin[] {
+  if (!order || order.length === 0) return plugins
+  const rank = new Map(order.map((id, index) => [id, index]))
+  return [...plugins].sort(
+    (a, b) => (rank.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.id) ?? Number.MAX_SAFE_INTEGER),
+  )
 }
 
 function resolveEntry(plugin: InstalledPlugin, relative: string): string | undefined {

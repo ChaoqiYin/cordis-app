@@ -1,44 +1,50 @@
 /**
- * CLI 眼中的磁盘布局。
+ * CLI 眼中的项目布局与项目文件读写。
  *
- * 数据目录的解析顺序与 worker 完全一致，且直接复用 protocol 的实现——
- * 命令行与 worker 若在这一层各写一份，`CORDIS_APP_DATA` 就会在一处生效、
- * 在另一处被忽略，症状是「CLI 装的插件在界面上看不到」。
+ * 路径推导全部复用 protocol 的 `resolveProjectLayout`——命令行与 worker 若在
+ * 这一层各写一份，就会出现「CLI 装的插件 worker 看不到」。
  *
- * CLI 只碰三类文件：
- *   - `instances/default/app.json`    用户表达意图
- *   - `instances/default/app.lock`    安装事实（由 runtime 写入）
- *   - `runtime.json`                  正在运行的实例（由 supervisor 写入）
+ * CLI 只碰这些文件：
+ *   - `package.json`   依赖唯一真源（包管理器读写）
+ *   - `app.json`       应用身份与启用顺序
+ *   - `.cordis/runtime.json` 正在运行的项目（由 supervisor 写入）
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   isRuntimeFile,
-  resolveDataDir,
-  resolveLayout,
-  type AppLock,
+  resolveProjectLayout,
+  resolveProjectRoot,
   type AppManifest,
+  type ProjectLayout,
   type RuntimeFile,
 } from '@cordis-app/protocol'
 
+/** 新项目的初始版本号。框架版本由 app.json 之外的 package.json 约束。 */
+const PROJECT_VERSION = '0.1.0'
+
 export interface Workspace {
-  dataDir: string
-  instanceDir: string
+  projectRoot: string
+  layout: ProjectLayout
   appJsonPath: string
-  appLockPath: string
+  packageJsonPath: string
   runtimeJsonPath: string
+  nodeModulesDir: string
+  configPath: string
 }
 
-export function openWorkspace(dataFlag?: string): Workspace {
-  const layout = resolveLayout(resolveDataDir(dataFlag))
+export function openWorkspace(projectFlag?: string): Workspace {
+  const layout = resolveProjectLayout(resolveProjectRoot(projectFlag))
   return {
-    dataDir: layout.dataDir,
-    instanceDir: layout.instanceDir,
+    projectRoot: layout.projectRoot,
+    layout,
     appJsonPath: layout.appJson,
-    appLockPath: layout.appLock,
+    packageJsonPath: layout.packageJson,
     runtimeJsonPath: layout.runtimeFile,
+    nodeModulesDir: layout.nodeModulesDir,
+    configPath: layout.config,
   }
 }
 
@@ -47,17 +53,30 @@ export function readAppManifest(path: string): AppManifest | undefined {
   if (!existsSync(path)) return undefined
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf8'))
-    if (!parsed || typeof parsed !== 'object') return undefined
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined
     return parsed as AppManifest
   } catch {
     return undefined
   }
 }
 
-export function readAppLock(path: string): AppLock | undefined {
+/** 项目 package.json 中 CLI 关心的字段。 */
+export interface ProjectPackageJson {
+  name?: string
+  version?: string
+  private?: boolean
+  type?: string
+  scripts?: Record<string, string>
+  dependencies?: Record<string, string>
+  devDependencies?: Record<string, string>
+}
+
+export function readProjectPackage(path: string): ProjectPackageJson | undefined {
   if (!existsSync(path)) return undefined
   try {
-    return JSON.parse(readFileSync(path, 'utf8')) as AppLock
+    const parsed = JSON.parse(readFileSync(path, 'utf8'))
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined
+    return parsed as ProjectPackageJson
   } catch {
     return undefined
   }
@@ -67,8 +86,7 @@ export function readAppLock(path: string): AppLock | undefined {
  * 读 runtime.json 并确认进程还活着。
  *
  * runtime.json 是派生文件，进程被强杀时会残留。只检查文件存在会把「上一个
- * 实例留下的尸体」当成正在运行，于是 `run` 拒绝启动、`restart` 去连一个
- * 不存在的端口。pid 存活检查是让这个文件可信的唯一手段。
+ * 项目留下的尸体」当成正在运行。pid 存活检查是让这个文件可信的唯一手段。
  */
 export function readRuntimeFile(path: string): RuntimeFile | undefined {
   if (!existsSync(path)) return undefined
@@ -105,11 +123,11 @@ export function accessUrl(port: number, token: string): string {
  * 三种部署形态都要能跑：
  *   - 随 CLI 包分发：`<cli 包>/resources/ui`
  *   - 仓库内开发：`packages/ui/dist/ui`
- *   - 安装目录：`<install>/resources/ui`
+ *   - 项目构建产物：`<project>/dist/ui`
  *
  * 找不到不是错误——`new` / `add` / `remove` 完全不碰 UI，只有 `run` 需要它。
  */
-export function findResourcesDir(dataDir?: string): string | undefined {
+export function findResourcesDir(projectRoot?: string): string | undefined {
   const here = dirname(fileURLToPath(import.meta.url))
   const candidates = [
     // lib/ → 包根 → resources/
@@ -117,64 +135,92 @@ export function findResourcesDir(dataDir?: string): string | undefined {
     // 仓库内：packages/cli/lib → packages/ui/dist
     join(here, '..', '..', 'ui', 'dist'),
     join(here, '..', '..', '..', 'resources'),
-    // 安装目录：外壳把 UI 释放到数据目录旁边
-    ...(dataDir ? [join(dataDir, 'resources')] : []),
+    // 项目自己的构建产物（#7 的 build 约定）
+    ...(projectRoot ? [join(projectRoot, 'dist'), join(projectRoot, 'resources')] : []),
   ]
   return candidates.find((dir) => existsSync(join(dir, 'ui', 'index.html')))
 }
 
-export interface CreateAppOptions {
+export interface CreateProjectOptions {
   name: string
   root: string
   frameworkVersion: string
 }
 
-export interface CreatedApp {
+export interface CreatedProject {
+  projectRoot: string
   appJsonPath: string
   packageJsonPath: string
-  instanceDir: string
+  bodyEntry: string
+  serverEntry: string
 }
 
 /**
- * 创建一个新应用。
+ * 创建一个可运行的项目根。
  *
- * 只写两份清单，不装任何插件：`cordis-app new` 的价值是「从零到能跑」，
- * 而不是「从零到有一堆示例代码」。空应用启动即得到完整的框架 UI，
- * 用户随后用 `add` 逐个装插件——这正好对应验收标准里的 5 分钟。
+ * 只写文件，不联网、不执行包管理器：`new` 的价值是「从零到能启动后端」，
+ * 依赖安装交给用户自己的包管理器（或后续的 add 命令）。
  */
-export function createApp(options: CreateAppOptions): CreatedApp {
-  const layout = resolveLayout(options.root)
-  const instanceDir = layout.instanceDir
-  mkdirSync(instanceDir, { recursive: true })
+export function createProject(options: CreateProjectOptions): CreatedProject {
+  const layout = resolveProjectLayout(options.root)
+  mkdirSync(options.root, { recursive: true })
+  for (const dir of [
+    layout.srcDir,
+    layout.pagesDir,
+    layout.serverDir,
+    layout.localPluginsDir,
+    layout.dataDir,
+    layout.cordisDir,
+  ]) {
+    mkdirSync(dir, { recursive: true })
+  }
 
   const manifest: AppManifest = {
     name: options.name,
-    version: '1.0.0',
-    framework: `^${options.frameworkVersion}`,
-    plugins: {},
+    version: PROJECT_VERSION,
+    plugins: [],
+    ui: {
+      pages: true,
+      slots: [],
+      menus: [],
+      settings: true,
+    },
   }
-  const appJsonPath = layout.appJson
-  writeFileSync(appJsonPath, JSON.stringify(manifest, null, 2) + '\n')
+  writeJson(layout.appJson, manifest)
+  writeJson(layout.packageJson, {
+    name: packageNameOf(options.name),
+    version: PROJECT_VERSION,
+    private: true,
+    type: 'module',
+    scripts: {
+      dev: 'cordis-app dev',
+      build: 'cordis-app build',
+      start: 'cordis-app start',
+    },
+    dependencies: {
+      'cordis-app': `^${options.frameworkVersion}`,
+      react: '^19.0.0',
+      'react-dom': '^19.0.0',
+    },
+  })
 
-  // package.json 是派生物，但包管理器必须先看到它才知道往哪里装
-  const packageJsonPath = layout.packageJson
-  writeFileSync(
-    packageJsonPath,
-    JSON.stringify(
-      {
-        name: `${options.name}-instance`,
-        private: true,
-        version: '1.0.0',
-        type: 'module',
-      },
-      null,
-      2,
-    ) + '\n',
-  )
+  writeFileSync(layout.bodyEntry, BODY_TEMPLATE)
+  writeFileSync(join(layout.pagesDir, 'Home.tsx'), HOME_PAGE_TEMPLATE)
+  writeFileSync(layout.serverEntry, SERVER_ENTRY_TEMPLATE)
+  writeFileSync(join(layout.projectRoot, '.gitignore'), GITIGNORE)
 
-  writeFileSync(layout.appLock, JSON.stringify({ lockfileVersion: 1, plugins: {} }, null, 2) + '\n')
+  // 空目录在 git 中不存在；放一个占位文件，让用户 clone 后目录结构完整。
+  for (const dir of [layout.localPluginsDir, layout.dataDir, layout.cordisDir]) {
+    writeFileSync(join(dir, '.gitkeep'), '')
+  }
 
-  return { appJsonPath, packageJsonPath, instanceDir }
+  return {
+    projectRoot: layout.projectRoot,
+    appJsonPath: layout.appJson,
+    packageJsonPath: layout.packageJson,
+    bodyEntry: layout.bodyEntry,
+    serverEntry: layout.serverEntry,
+  }
 }
 
 /** 把相对路径（含 `~`）展开成绝对路径，命令行里手打路径的常见写法。 */
@@ -182,3 +228,73 @@ export function expandPath(input: string): string {
   const expanded = input === '~' || input.startsWith('~/') ? join(process.env.HOME ?? '', input.slice(1)) : input
   return resolve(expanded)
 }
+
+/** 目录是否已有内容。`new` 只在空目录（或尚不存在的目录）里落盘。 */
+export function isDirectoryNonEmpty(path: string): boolean {
+  if (!existsSync(path)) return false
+  if (!statSync(path).isDirectory()) return true
+  return readdirSync(path).length > 0
+}
+
+function writeJson(path: string, value: unknown): void {
+  writeFileSync(path, JSON.stringify(value, null, 2) + '\n')
+}
+
+/** npm 包名：小写，只保留合法字符。应用展示名仍用用户输入。 */
+function packageNameOf(name: string): string {
+  const slug = name
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+  return slug || 'cordis-app-project'
+}
+
+const BODY_TEMPLATE = `import type { ReactElement } from 'react'
+
+/**
+ * 项目 body 入口。
+ *
+ * 布局、导航和项目页面都由项目自己决定；#5 会提供 \`cordis-app/ui\` 的出口组件，
+ * 在那之前这里保持最小占位，保证项目可以直接启动后端。
+ */
+export default function Body(): ReactElement {
+  return (
+    <main>
+      <h1>Hello cordis-app</h1>
+      <p>项目 body 入口：src/body.tsx</p>
+    </main>
+  )
+}
+`
+
+const HOME_PAGE_TEMPLATE = `import type { ReactElement } from 'react'
+
+export default function Home(): ReactElement {
+  return (
+    <section>
+      <h2>Home</h2>
+      <p>示例页面：src/pages/Home.tsx</p>
+    </section>
+  )
+}
+`
+
+const SERVER_ENTRY_TEMPLATE = `/**
+ * 项目后端入口。
+ *
+ * 默认导出 apply(ctx)，由 worker 在内置插件之后、应用插件之前调用。
+ * 它不是插件：没有 plugin.json，也不参与安装/卸载。
+ */
+export default function apply(ctx) {
+  ctx.router.get('/api/hello', (_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ hello: 'world' }))
+  })
+}
+`
+
+const GITIGNORE = `node_modules/
+dist/
+.cordis/
+data/
+`

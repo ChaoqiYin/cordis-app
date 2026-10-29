@@ -5,14 +5,15 @@
  */
 
 import type { ConfigStore, Kernel, KernelContext } from '@cordis-app/kernel'
-import { resolveLayout, type ClientManifest, type PluginFailure } from '@cordis-app/protocol'
+import { resolveProjectLayout, type ClientManifest, type PluginFailure } from '@cordis-app/protocol'
 import { parseJson, readBody, sendError, sendJson } from '../builtin/http-utils.js'
 import { findPlugin, scanPlugins } from '../plugin/catalog.js'
 import type { PluginInstaller } from '../plugin/installer.js'
 
 export interface ApiOptions {
   kernel: Kernel
-  instanceDir: string
+  /** 项目根；插件、配置、数据都从这里推导 */
+  projectRoot: string
   dataDir: string
   /** 安装器由 worker 持有：启动恢复与设置页安装必须走同一个实例 */
   installer: PluginInstaller
@@ -26,7 +27,7 @@ export interface ApiOptions {
 
 export function installRoutes(ctx: KernelContext, options: ApiOptions): void {
   const { installer } = options
-  const nodeModulesDir = resolveLayout(options.dataDir).nodeModulesDir
+  const nodeModulesDir = resolveProjectLayout(options.projectRoot).nodeModulesDir
 
   /** 插件列表：已安装的全集（含只贡献服务端能力的），设置页据此渲染。 */
   ctx.router.get('/api/plugins', (_req, res) => {
@@ -104,7 +105,7 @@ export function installRoutes(ctx: KernelContext, options: ApiOptions): void {
   ctx.router.get('/api/runtime', (_req, res) => {
     sendJson(res, 200, {
       version: options.getManifest().version,
-      instanceDir: options.instanceDir,
+      projectRoot: options.projectRoot,
       dataDir: options.dataDir,
     })
   })

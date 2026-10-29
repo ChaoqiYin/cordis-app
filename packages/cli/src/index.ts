@@ -14,14 +14,18 @@ export {
 } from './commands.js'
 export {
   accessUrl,
-  createApp,
+  createProject,
   expandPath,
   findResourcesDir,
+  isDirectoryNonEmpty,
   openWorkspace,
-  readAppLock,
   readAppManifest,
+  readProjectPackage,
   readRuntimeFile,
   isProcessAlive,
+  type ProjectPackageJson,
   type Workspace,
+  type CreatedProject,
+  type CreateProjectOptions,
 } from './workspace.js'
 export { main } from './cli.js'

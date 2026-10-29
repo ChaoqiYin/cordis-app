@@ -19,8 +19,8 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  ENV_DATA,
   ENV_PORT,
+  ENV_PROJECT,
   ENV_RESOURCES,
   ENV_TOKEN,
   ENV_VERSION,
@@ -30,7 +30,7 @@ import {
   MAX_PORT_RETRIES,
   encodeHandshake,
   handshakeOf,
-  resolveLayout,
+  resolveProjectLayout,
   type HandshakeLine,
   type PluginFailure,
   type RuntimeFile,
@@ -39,7 +39,8 @@ import {
 import { createLoggerFactory } from '@cordis-app/kernel'
 
 export interface SupervisorOptions {
-  dataDir: string
+  /** 项目根。端口、token、运行时文件与 worker 环境都以它为准。 */
+  projectRoot: string
   /** 前端产物目录，交给 worker 的 static 插件分发 */
   resourcesDir?: string
   /** 覆盖 worker 路径，测试时注入 */
@@ -108,7 +109,7 @@ export class Supervisor {
       this.port = await findFreePort()
     }
     this.token = generateToken()
-    mkdirSync(this.options.dataDir, { recursive: true })
+    mkdirSync(resolveProjectLayout(this.options.projectRoot).cordisDir, { recursive: true })
     return this.spawn()
   }
 
@@ -121,7 +122,7 @@ export class Supervisor {
         env: buildWorkerEnv({
           port: this.port,
           token: this.token,
-          dataDir: this.options.dataDir,
+          projectRoot: this.options.projectRoot,
           resourcesDir: this.options.resourcesDir,
           version: this.version,
         }),
@@ -265,7 +266,7 @@ export class Supervisor {
       pid: process.pid,
       startedAt: new Date().toISOString(),
     }
-    writeFileSync(resolveLayout(this.options.dataDir).runtimeFile, JSON.stringify(file, null, 2))
+    writeFileSync(resolveProjectLayout(this.options.projectRoot).runtimeFile, JSON.stringify(file, null, 2))
   }
 }
 
@@ -273,23 +274,23 @@ export class Supervisor {
 export function buildWorkerEnv(input: {
   port: number
   token: string
-  dataDir: string
+  projectRoot: string
   resourcesDir?: string
   /** 框架版本；由 supervisor 注入，worker 据此生成 manifest 与 peer 校验 */
   version: string
 }): NodeJS.ProcessEnv {
   const isWindows = process.platform === 'win32'
-  const layout = resolveLayout(input.dataDir)
+  const layout = resolveProjectLayout(input.projectRoot)
   const base: NodeJS.ProcessEnv = isWindows
     ? // Windows 上 PATH 不能只留 bin/：系统 DLL 的查找依赖 System32 等目录。
       { ...process.env }
-    : { PATH: '', HOME: input.dataDir, TMPDIR: layout.tmpDir }
+    : { PATH: '', HOME: input.projectRoot, TMPDIR: layout.tmpDir }
 
   return {
     ...base,
     [ENV_PORT]: String(input.port),
     [ENV_TOKEN]: input.token,
-    [ENV_DATA]: input.dataDir,
+    [ENV_PROJECT]: input.projectRoot,
     [ENV_VERSION]: input.version,
     ...(input.resourcesDir ? { [ENV_RESOURCES]: input.resourcesDir } : {}),
     // 用户 shell 里残留的调试或注入配置会污染 worker。

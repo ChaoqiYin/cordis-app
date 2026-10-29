@@ -48,28 +48,30 @@ export interface RuntimeFile {
   startedAt: string
 }
 
-/** app.json —— 用户编辑的唯一应用清单。 */
+/** body 声明自己实际提供的 UI 能力。 */
+export interface UiCapabilities {
+  pages: boolean
+  slots: string[]
+  menus: string[]
+  settings: boolean
+}
+
+/**
+ * app.json —— 用户编辑的唯一应用清单。
+ *
+ * 不保存框架版本与插件版本范围：依赖的唯一真源是项目 `package.json`。
+ */
 export interface AppManifest {
   name: string
   version: string
   icon?: string
-  /** 框架版本范围，安装时校验兼容性 */
-  framework: string
-  /** 直接依赖：插件名 → 版本范围 */
-  plugins: Record<string, string>
-}
-
-/** app.lock —— 解析结果，记录事实。 */
-export interface AppLock {
-  lockfileVersion: 1
-  plugins: Record<string, LockedPlugin>
-}
-
-export interface LockedPlugin {
-  version: string
-  resolved: string
-  integrity?: string
-  dependencies?: Record<string, string>
+  /**
+   * 启用顺序，按插件 id 记录。
+   * 缺省或为空表示「发现即启用」；未列出的已发现插件默认仍然启用。
+   */
+  plugins?: string[]
+  /** 项目 body 提供的 UI 能力；由 #5 的宿主契约消费 */
+  ui?: UiCapabilities
 }
 
 /** plugin.json —— 插件通过它声明身份与能力。 */

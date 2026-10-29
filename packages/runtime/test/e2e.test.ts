@@ -3,82 +3,130 @@
  *
  * 测试直连 startWorker 而不是 fork，省掉进程间时序的不确定性；
  * supervisor 的进程行为另有测试覆盖。
+ *
+ * 所有 fixture 都是「项目根」：package.json、app.json、node_modules、
+ * server/index.js、data、.cordis 都在同一个目录下，不再有 instances/default。
  */
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { startWorker, readWorkerOptions } from '../lib/worker/worker.js'
 import { findFreePort, generateToken, buildWorkerEnv } from '../lib/supervisor/supervisor.js'
 import { PluginInstaller } from '../lib/plugin/installer.js'
 import { safeJoin } from '../lib/builtin/http-utils.js'
-import { ENV_DATA, ENV_PORT, ENV_TOKEN, ENV_VERSION, FRAMEWORK_VERSION } from '@cordis-app/protocol'
+import { ENV_PORT, ENV_PROJECT, ENV_TOKEN, ENV_VERSION, FRAMEWORK_VERSION } from '@cordis-app/protocol'
 
 interface Fixture {
-  dataDir: string
-  instanceDir: string
+  projectRoot: string
   resourcesDir: string
 }
 
-/** 造一个最小实例：一个只贡献 server 端点的插件。 */
-function createFixture(): Fixture {
-  const dataDir = mkdtempSync(join(tmpdir(), 'cordis-e2e-'))
-  const instanceDir = join(dataDir, 'instances', 'default')
-  const resourcesDir = join(dataDir, 'resources')
-  mkdirSync(instanceDir, { recursive: true })
+interface FixtureOptions {
+  /** 写进 app.json.plugins 的启用顺序 */
+  enabled?: string[]
+  /** node_modules 下要生成的插件 id；默认只有 demo */
+  plugins?: string[]
+  /** 项目后端入口内容；null 表示不生成 server/index.js */
+  server?: string | null
+}
+
+const DEFAULT_SERVER = `export default function apply(ctx) {
+  ctx.router.get('/api/hello', (_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ hello: 'world' }))
+  })
+  ctx.router.get('/api/order', (_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ source: 'project' }))
+  })
+}
+`
+
+/** 造一个最小项目根：插件、后端入口、UI 产物都在项目自己的布局里。 */
+function createFixture(options: FixtureOptions = {}): Fixture {
+  const projectRoot = mkdtempSync(join(tmpdir(), 'cordis-e2e-'))
+  const resourcesDir = join(projectRoot, 'resources')
   mkdirSync(join(resourcesDir, 'ui'), { recursive: true })
   mkdirSync(join(resourcesDir, 'shared'), { recursive: true })
   writeFileSync(join(resourcesDir, 'ui', 'index.html'), '<!doctype html><title>test</title>')
 
+  const pluginIds = options.plugins ?? ['demo']
   writeFileSync(
-    join(instanceDir, 'app.json'),
-    JSON.stringify({ name: 'test', version: '1.0.0', framework: '^1.0.0', plugins: { demo: '^1.0.0' } }, null, 2),
+    join(projectRoot, 'package.json'),
+    JSON.stringify({ name: 'test', version: '1.0.0', private: true, type: 'module' }, null, 2),
+  )
+  writeFileSync(
+    join(projectRoot, 'app.json'),
+    JSON.stringify(
+      { name: 'test', version: '1.0.0', plugins: options.enabled ?? pluginIds },
+      null,
+      2,
+    ),
   )
 
-  const pluginDir = join(instanceDir, 'node_modules', 'demo')
+  if (options.server !== null) {
+    mkdirSync(join(projectRoot, 'server'), { recursive: true })
+    writeFileSync(join(projectRoot, 'server', 'index.js'), options.server ?? DEFAULT_SERVER)
+  }
+
+  for (const id of pluginIds) writePlugin(projectRoot, id)
+
+  return { projectRoot, resourcesDir }
+}
+
+function writePlugin(projectRoot: string, id: string): void {
+  const pluginDir = join(projectRoot, 'node_modules', id)
   mkdirSync(pluginDir, { recursive: true })
   writeFileSync(
     join(pluginDir, 'package.json'),
-    JSON.stringify({ name: 'demo', version: '1.0.0', peerDependencies: { 'cordis-app': '^1.0.0' }, type: 'module' }),
+    JSON.stringify({ name: id, version: '1.0.0', peerDependencies: { 'cordis-app': '^1.0.0' }, type: 'module' }),
   )
   writeFileSync(
     join(pluginDir, 'plugin.json'),
-    JSON.stringify({ id: 'demo', displayName: '演示插件', server: './index.js', client: './client.js' }),
+    JSON.stringify({ id, displayName: `插件 ${id}`, server: './index.js', client: './client.js' }),
   )
   writeFileSync(
     join(pluginDir, 'index.js'),
-    `export const name = 'demo'
+    `export const name = ${JSON.stringify(id)}
 export const inject = ['router']
 export function apply(ctx) {
-  ctx.router.get('/api/demo', (_req, res) => {
+  ctx.router.get('/api/${id}', (_req, res) => {
     res.writeHead(200, { 'content-type': 'application/json' })
-    res.end(JSON.stringify({ hello: 'world' }))
+    res.end(JSON.stringify({ plugin: ${JSON.stringify(id)} }))
   })
+  ${id === 'demo' ? `ctx.router.get('/api/order', (_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ source: 'plugin' }))
+  })` : ''}
 }
-export const data = { accent: '#4f7cff' }
-`,
+${id === 'demo' ? "export const data = { accent: '#4f7cff' }\n" : ''}`,
   )
   writeFileSync(join(pluginDir, 'client.js'), 'export default () => {}')
-
-  return { dataDir, instanceDir, resourcesDir }
 }
 
 async function withWorker(
-  fn: (ctx: { port: number; token: string; base: string; handle: Awaited<ReturnType<typeof startWorker>> }) => Promise<void>,
+  fn: (ctx: {
+    port: number
+    token: string
+    base: string
+    projectRoot: string
+    handle: Awaited<ReturnType<typeof startWorker>>
+  }) => Promise<void>,
+  fixture = createFixture(),
 ) {
-  const fixture = createFixture()
   const port = await findFreePort()
   const token = generateToken()
   const handle = await startWorker({
     port,
     token,
-    dataDir: fixture.dataDir,
+    projectRoot: fixture.projectRoot,
     resourcesDir: fixture.resourcesDir,
   })
   try {
-    await fn({ port, token, base: `http://127.0.0.1:${port}`, handle })
+    await fn({ port, token, base: `http://127.0.0.1:${port}`, projectRoot: fixture.projectRoot, handle })
   } finally {
     await handle.close()
   }
@@ -102,7 +150,7 @@ test('/__health 与 /__plugins 使用注入的框架版本', async () => {
   const handle = await startWorker({
     port,
     token,
-    dataDir: fixture.dataDir,
+    projectRoot: fixture.projectRoot,
     resourcesDir: fixture.resourcesDir,
     version,
   })
@@ -121,22 +169,25 @@ test('/__health 与 /__plugins 使用注入的框架版本', async () => {
   }
 })
 
-test('worker 从 supervisor 构造的环境读取框架版本', () => {
+test('worker 从 supervisor 构造的环境读取项目根与框架版本', () => {
   const options = readWorkerOptions({
     [ENV_PORT]: '5140',
     [ENV_TOKEN]: 'token',
-    [ENV_DATA]: '/tmp/data',
+    [ENV_PROJECT]: '/tmp/project',
     [ENV_VERSION]: '2.3.4',
   })
+  assert.equal(options.projectRoot, '/tmp/project')
   assert.equal(options.version, '2.3.4')
 
   const env = buildWorkerEnv({
     port: 5140,
     token: 'token',
-    dataDir: '/tmp/data',
+    projectRoot: '/tmp/project',
     version: '2.3.4',
   })
+  assert.equal(env[ENV_PROJECT], '/tmp/project', 'supervisor 必须把项目根随环境注入 worker')
   assert.equal(env[ENV_VERSION], '2.3.4', 'supervisor 必须把版本随环境注入 worker')
+  assert.equal(env.HOME, '/tmp/project', 'worker 的 HOME 指向项目根，插件落盘不会跑到仓库里')
 })
 
 test('API 缺少 token 时 401，带上 token 后 200', async () => {
@@ -146,8 +197,63 @@ test('API 缺少 token 时 401，带上 token 后 200', async () => {
 
     const allowed = await fetch(`${base}/api/demo`, { headers: { authorization: `Bearer ${token}` } })
     assert.equal(allowed.status, 200)
+    assert.deepEqual(await allowed.json(), { plugin: 'demo' })
+  })
+})
+
+test('项目后端入口 server/index.js 的路由可访问', async () => {
+  await withWorker(async ({ base, token }) => {
+    const denied = await fetch(`${base}/api/hello`)
+    assert.equal(denied.status, 401, '项目路由与插件路由一样受 token 保护')
+
+    const allowed = await fetch(`${base}/api/hello`, { headers: { authorization: `Bearer ${token}` } })
+    assert.equal(allowed.status, 200)
     assert.deepEqual(await allowed.json(), { hello: 'world' })
   })
+})
+
+test('项目后端入口先于应用插件注册路由', async () => {
+  await withWorker(async ({ base, token }) => {
+    const res = await fetch(`${base}/api/order`, { headers: { authorization: `Bearer ${token}` } })
+    assert.equal(res.status, 200)
+    assert.deepEqual(await res.json(), { source: 'project' }, '同名路由应由项目入口先命中，说明它先于插件挂载')
+  })
+})
+
+test('缺少 server/index.js 时跳过项目入口，不影响启动', async () => {
+  await withWorker(
+    async ({ base, token, handle }) => {
+      assert.deepEqual(handle.failures, [])
+      assert.equal((await fetch(`${base}/__health`)).status, 200)
+      const missing = await fetch(`${base}/api/hello`, { headers: { authorization: `Bearer ${token}` } })
+      assert.equal(missing.status, 404, '没有入口就没有 /api/hello，但不是启动失败')
+    },
+    createFixture({ server: null }),
+  )
+})
+
+test('server/index.js 默认导出不是函数时启动失败并给出清晰原因', async () => {
+  const fixture = createFixture({ server: 'export default 42\n' })
+  const port = await findFreePort()
+  await assert.rejects(
+    () =>
+      startWorker({
+        port,
+        token: generateToken(),
+        projectRoot: fixture.projectRoot,
+        resourcesDir: fixture.resourcesDir,
+      }),
+    /默认导出 apply\(ctx\)/,
+  )
+})
+
+test('应用插件按 app.json.plugins 的顺序加载', async () => {
+  await withWorker(
+    async ({ handle }) => {
+      assert.deepEqual(Object.keys(handle.manifest.plugins), ['beta', 'alpha'])
+    },
+    createFixture({ plugins: ['alpha', 'beta'], enabled: ['beta', 'alpha'] }),
+  )
 })
 
 test('伪造 Origin 被拒绝，合法 Origin 放行', async () => {
@@ -172,7 +278,7 @@ test('插件清单含插件数据，因此仍需 token', async () => {
     const res = await fetch(`${base}/__plugins`, { headers: { authorization: `Bearer ${token}` } })
     assert.equal(res.status, 200)
     const manifest = await res.json()
-    assert.equal(manifest.plugins.demo.displayName, '演示插件')
+    assert.equal(manifest.plugins.demo.displayName, '插件 demo')
     assert.deepEqual(manifest.plugins.demo.data, { accent: '#4f7cff' })
     assert.equal(manifest.plugins.demo.files.length, 1)
   })
@@ -206,7 +312,7 @@ test('SPA 回落到 index.html', async () => {
 
 test('未声明的核心 peer 会被发现阶段拒绝', async () => {
   const fixture = createFixture()
-  const pluginDir = join(fixture.instanceDir, 'node_modules', 'demo')
+  const pluginDir = join(fixture.projectRoot, 'node_modules', 'demo')
   writeFileSync(
     join(pluginDir, 'package.json'),
     JSON.stringify({ name: 'demo', version: '1.0.0', type: 'module' }),
@@ -215,7 +321,7 @@ test('未声明的核心 peer 会被发现阶段拒绝', async () => {
   const handle = await startWorker({
     port,
     token: generateToken(),
-    dataDir: fixture.dataDir,
+    projectRoot: fixture.projectRoot,
     resourcesDir: fixture.resourcesDir,
   })
   try {
@@ -229,7 +335,7 @@ test('未声明的核心 peer 会被发现阶段拒绝', async () => {
 
 test('一个插件失败不影响其他插件加载', async () => {
   const fixture = createFixture()
-  const badDir = join(fixture.instanceDir, 'node_modules', 'bad')
+  const badDir = join(fixture.projectRoot, 'node_modules', 'bad')
   mkdirSync(badDir, { recursive: true })
   writeFileSync(
     join(badDir, 'package.json'),
@@ -240,7 +346,7 @@ test('一个插件失败不影响其他插件加载', async () => {
   const handle = await startWorker({
     port: await findFreePort(),
     token: generateToken(),
-    dataDir: fixture.dataDir,
+    projectRoot: fixture.projectRoot,
     resourcesDir: fixture.resourcesDir,
   })
   try {
@@ -250,6 +356,24 @@ test('一个插件失败不影响其他插件加载', async () => {
   } finally {
     await handle.close()
   }
+})
+
+test('配置写进项目 data/config.json，项目根没有 instances 与 app.lock', async () => {
+  await withWorker(async ({ base, token, projectRoot }) => {
+    const res = await fetch(`${base}/api/config/demo`, {
+      method: 'PUT',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ value: { accent: '#000' } }),
+    })
+    assert.equal(res.status, 200)
+
+    const configPath = join(projectRoot, 'data', 'config.json')
+    assert.equal(existsSync(configPath), true, '配置必须落在 <project>/data/config.json')
+    assert.deepEqual(JSON.parse(readFileSync(configPath, 'utf8')), { demo: { accent: '#000' } })
+
+    assert.equal(existsSync(join(projectRoot, 'instances')), false, '项目模式不再有 instances/')
+    assert.equal(existsSync(join(projectRoot, 'app.lock')), false, 'app.json 之外不再有公共 lock')
+  })
 })
 
 test('布局比对：搬家才需要重启，新增包不算', () => {
@@ -285,7 +409,7 @@ test('/api/restart 需要 token，并要求 worker 走优雅重启', async () =>
   const handle = await startWorker({
     port,
     token,
-    dataDir: fixture.dataDir,
+    projectRoot: fixture.projectRoot,
     resourcesDir: fixture.resourcesDir,
   })
 

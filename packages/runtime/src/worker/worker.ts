@@ -4,18 +4,22 @@
  * 启动顺序是有讲究的：
  *   1. 建内核，注册日志与配置（它们无法由插件提供——插件自己就依赖它们）
  *   2. 挂内置插件：server → auth → router → static → ws → storage
- *   3. 挂应用插件
- *   4. 全部就绪后标记 healthy，再通过 IPC 报告就绪
+ *   3. 调用项目后端入口 `server/index.js` 的 apply(ctx)
+ *   4. 挂应用插件（按 app.json.plugins 的启用顺序）
+ *   5. 全部就绪后标记 healthy，再通过 IPC 报告就绪
  *
- * 第 4 步的顺序保证握手回传的是「完整就绪」而不是「HTTP 起来了」。
+ * 项目入口排在第 3 步而不是当成插件：它不是可安装/卸载的包，没有 plugin.json，
+ * 但它的路由必须先于应用插件注册，才能让插件复用或覆盖项目自己的约定。
+ * 第 5 步的顺序保证握手回传的是「完整就绪」而不是「HTTP 起来了」。
  */
 
-import { mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { createKernel, createLoggerFactory, ConfigStore, type KernelContext } from '@cordis-app/kernel'
 import {
-  ENV_DATA,
   ENV_PORT,
+  ENV_PROJECT,
   ENV_RESOURCES,
   ENV_TOKEN,
   ENV_VERSION,
@@ -24,7 +28,8 @@ import {
   HEALTH_PATH,
   MANIFEST_PATH,
   RECONNECT_EVENT,
-  resolveLayout,
+  resolveProjectLayout,
+  type AppManifest,
   type ClientManifest,
   type PluginFailure,
   type WorkerMessage,
@@ -38,7 +43,8 @@ import { installRoutes } from './api.js'
 export interface WorkerOptions {
   port: number
   token: string
-  dataDir: string
+  /** 项目根。所有路径都从它推导。 */
+  projectRoot: string
   resourcesDir?: string
   /**
    * 框架版本。supervisor 通过环境注入；直接调用 startWorker 时缺省取
@@ -62,27 +68,32 @@ export interface WorkerHandle {
 export function readWorkerOptions(env: NodeJS.ProcessEnv = process.env): WorkerOptions {
   const port = Number(env[ENV_PORT])
   const token = env[ENV_TOKEN] ?? ''
-  const dataDir = env[ENV_DATA] ?? ''
-  if (!port || !token || !dataDir) {
-    throw new Error('worker 必须由 supervisor 拉起（缺少端口 / token / 数据目录环境变量）')
+  const projectRoot = env[ENV_PROJECT] ?? ''
+  if (!port || !token || !projectRoot) {
+    throw new Error('worker 必须由 supervisor 拉起（缺少端口 / token / 项目根环境变量）')
   }
   return {
     port,
     token,
-    dataDir,
+    projectRoot,
     resourcesDir: env[ENV_RESOURCES],
     version: env[ENV_VERSION] ?? FRAMEWORK_VERSION,
   }
 }
 
 export async function startWorker(options: WorkerOptions): Promise<WorkerHandle> {
-  const layout = resolveLayout(options.dataDir)
+  const layout = resolveProjectLayout(options.projectRoot)
   const logger = createLoggerFactory({ level: 'info' })
   const frameworkVersion = options.version ?? FRAMEWORK_VERSION
   const installer = new PluginInstaller({
-    instanceDir: layout.instanceDir,
+    projectRoot: layout.projectRoot,
     frameworkVersion,
   })
+
+  // 项目可能刚被 `new` 出来，运行时目录还没建齐。
+  for (const dir of [layout.cordisDir, layout.tmpDir, layout.logsDir, layout.dataDir]) {
+    mkdirSync(dir, { recursive: true })
+  }
 
   // 上次安装/卸载若被中途打断，先还原磁盘再加载插件：否则会按「装了一半」
   // 的 node_modules 启动，用户看到的是插件莫名消失或版本倒退。
@@ -116,15 +127,29 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
     pluginsDir: layout.nodeModulesDir,
   })
   kernel.plugin(builtin.ws, {})
-  kernel.plugin(builtin.storage, { root: layout.pluginDataDir })
+  kernel.plugin(builtin.storage, { root: layout.dataDir })
 
   await kernel.ready()
 
-  // 应用插件：先扫 node_modules，再逐个挂载。失败不阻断其他插件。
+  // 项目后端入口固定为 server/index.js：内置插件之后、应用插件之前。
+  try {
+    await applyProjectServer(ctx, layout.serverEntry)
+  } catch (error) {
+    // 内置插件已经启动监听。启动失败必须把 socket 关掉，否则调用方拿到
+    // 拒绝后进程仍然活着，测试与 supervisor 都会被一个「失败的 worker」拖住。
+    await ctx.server.close().catch(() => {})
+    kernel.dispose()
+    throw error
+  }
+
+  // 应用插件：先扫 node_modules，再按 app.json 的启用顺序逐个挂载。
+  // 失败不阻断其他插件。
+  const enabledOrder = readEnabledPlugins(layout.appJson)
   const loaded = await loadPlugins({
     kernel,
     nodeModulesDir: layout.nodeModulesDir,
     version: manifest.version,
+    ...(enabledOrder ? { order: enabledOrder } : {}),
     configFor: (id) => config.get(id) ?? {},
   })
   failures.push(...loaded.failures)
@@ -157,8 +182,8 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
 
   installRoutes(ctx, {
     kernel,
-    instanceDir: layout.instanceDir,
-    dataDir: options.dataDir,
+    projectRoot: layout.projectRoot,
+    dataDir: layout.dataDir,
     installer,
     config,
     getManifest: () => manifest,
@@ -210,5 +235,33 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
       await ctx.server.close().catch(() => {})
       kernel.dispose()
     },
+  }
+}
+
+/**
+ * 调用项目后端入口。
+ *
+ * 入口缺失不是错误：新建项目可能只做前端，或用户暂时删掉了后端。
+ * 入口存在但格式不对则必须硬失败——静默跳过会让用户在「路由 404」上
+ * 排查半天，而真正的原因是入口根本没被执行。
+ */
+async function applyProjectServer(ctx: KernelContext, entry: string): Promise<void> {
+  if (!existsSync(entry)) return
+  const mod = await import(pathToFileURL(entry).href)
+  const apply = mod.default
+  if (typeof apply !== 'function') {
+    throw new Error(`项目后端入口 ${entry} 必须默认导出 apply(ctx) 函数`)
+  }
+  await apply(ctx)
+}
+
+/** 读 app.json.plugins；缺失或格式不对时返回 undefined（等价于发现即启用）。 */
+function readEnabledPlugins(path: string): string[] | undefined {
+  try {
+    const manifest = JSON.parse(readFileSync(path, 'utf8')) as AppManifest
+    if (!Array.isArray(manifest.plugins)) return undefined
+    return manifest.plugins.filter((id): id is string => typeof id === 'string')
+  } catch {
+    return undefined
   }
 }

@@ -1,5 +1,5 @@
 /**
- * 六个子命令的实现。
+ * 子命令的实现。
  *
  * 所有命令都返回退出码而不是直接调用 `process.exit()`：这样 `cli.ts` 是唯一
  * 决定进程何时退出、以什么状态退出的地方，测试也能直接调用命令函数拿到结果。
@@ -8,34 +8,41 @@
  * 在事件循环上绕远路。
  */
 
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { spawn } from 'node:child_process'
-import { FRAMEWORK_VERSION, resolveLayout, waitForReady } from '@cordis-app/protocol'
+import { FRAMEWORK_VERSION, waitForReady } from '@cordis-app/protocol'
 import { PluginInstaller, Supervisor, readPluginId } from '@cordis-app/runtime'
 import type { ParsedArgs } from './args.js'
 import { UsageError } from './args.js'
 import {
   accessUrl,
-  createApp,
+  createProject,
   expandPath,
   findResourcesDir,
+  isDirectoryNonEmpty,
   openWorkspace,
-  readAppLock,
   readAppManifest,
+  readProjectPackage,
   readRuntimeFile,
   type Workspace,
 } from './workspace.js'
 
-/** 命令执行的依赖注入点。测试据此替换掉进程、网络、浏览器。 */
+/** 脚手架写入的框架依赖；它们不是插件，不参与 list 的插件表格。 */
+const FRAMEWORK_DEPENDENCIES = new Set(['cordis-app', 'react', 'react-dom'])
+
+/** 命令执行的依赖注入点。测试据此替换掉进程、网络、浏览器、包管理器。 */
 export interface CommandIO {
   out(line: string): void
   err(line: string): void
-  /** 框架版本，写进新应用的 app.json 并用于 peer 校验 */
+  /** 框架版本，写进新项目的 package.json 并用于 peer 校验 */
   frameworkVersion: string
   /** 打开浏览器的实现，测试时替换 */
   openBrowser?(url: string): void
   /** 覆盖 UI 产物目录探测 */
   resourcesDir?: string
+  /** 执行包管理器，测试时替换；默认在项目根执行 npm */
+  packageManager?(command: string, args: string[], cwd: string): Promise<void>
 }
 
 export const defaultIO: CommandIO = {
@@ -57,7 +64,7 @@ export const defaultIO: CommandIO = {
 function requireApp(workspace: Workspace, io: CommandIO): boolean {
   if (existsSync(workspace.appJsonPath)) return true
   io.err(`找不到应用定义：${workspace.appJsonPath}`)
-  io.err('先执行 cordis-app new <名字>，或用 --data 指向已有的数据目录。')
+  io.err('先执行 cordis-app new <名字>，或用 --project 指向已有的项目根。')
   return false
 }
 
@@ -67,41 +74,41 @@ export async function commandNew(args: ParsedArgs, io: CommandIO): Promise<numbe
   const name = args.positionals[0]
   if (!name) throw new UsageError('用法：cordis-app new <名字>')
 
-  // `--data` 指定数据目录时直接建在那里；否则在当前目录下建一个同名目录，
-  // 免得把「新建应用」这个意图误写进用户的全局数据目录。
-  const root = args.dataDir ? expandPath(args.dataDir) : expandPath(name)
-  const appJsonPath = resolveLayout(root).appJson
-  if (existsSync(appJsonPath)) {
-    io.err(`目录已存在且包含应用定义：${appJsonPath}`)
-    io.err('换一个名字，或先删掉那个目录。')
+  // `--project` 指定项目根时直接建在那里；否则在当前目录下建一个同名目录。
+  const root = args.projectDir ? expandPath(args.projectDir) : expandPath(name)
+  if (isDirectoryNonEmpty(root)) {
+    io.err(`目标目录非空：${root}`)
+    io.err('换一个目录，或先清空它。')
     return 1
   }
 
-  const created = createApp({ name, root, frameworkVersion: io.frameworkVersion })
-  io.out(`已创建应用「${name}」`)
+  const created = createProject({ name, root, frameworkVersion: io.frameworkVersion })
+  io.out(`已创建项目「${name}」`)
+  io.out(`  项目根    ${created.projectRoot}`)
   io.out(`  应用定义  ${created.appJsonPath}`)
+  io.out(`  后端入口  ${created.serverEntry}`)
   io.out('')
   io.out('下一步：')
-  io.out(`  cordis-app add <插件包名> --data ${root}`)
-  io.out(`  cordis-app run --data ${root}`)
+  io.out(`  cordis-app add <插件包名> --project ${created.projectRoot}`)
+  io.out(`  cordis-app run --project ${created.projectRoot}`)
   return 0
 }
 
 // ---------------------------------------------------------------- run
 
 export async function commandRun(args: ParsedArgs, io: CommandIO): Promise<number> {
-  const workspace = openWorkspace(args.dataDir)
+  const workspace = openWorkspace(args.projectDir)
   if (!requireApp(workspace, io)) return 1
 
   // 已经在跑：直接把地址交出去，而不是再起一个抢端口的实例
   const running = readRuntimeFile(workspace.runtimeJsonPath)
   if (running) {
-    io.err(`应用已在运行（pid ${running.pid}）`)
+    io.err(`项目已在运行（pid ${running.pid}）`)
     io.out(accessUrl(running.port, running.token))
     return 0
   }
 
-  const resourcesDir = io.resourcesDir ?? findResourcesDir(workspace.dataDir)
+  const resourcesDir = io.resourcesDir ?? findResourcesDir(workspace.projectRoot)
   if (!resourcesDir) {
     io.err('找不到 UI 产物目录，页面将无法打开。')
     io.err('请先构建前端（pnpm build:ui），或用 --resources <目录> 指定。')
@@ -131,7 +138,7 @@ function startSupervisor(
     }
 
     const supervisor = new Supervisor({
-      dataDir: workspace.dataDir,
+      projectRoot: workspace.projectRoot,
       resourcesDir,
       version: io.frameworkVersion,
       // --port 只在用户显式要求时生效；其余情况交给 supervisor 找空闲端口
@@ -171,8 +178,9 @@ function startSupervisor(
 
 async function makeInstaller(workspace: Workspace, io: CommandIO): Promise<PluginInstaller> {
   return new PluginInstaller({
-    instanceDir: workspace.instanceDir,
+    projectRoot: workspace.projectRoot,
     frameworkVersion: io.frameworkVersion,
+    ...(io.packageManager ? { run: io.packageManager } : {}),
   })
 }
 
@@ -180,7 +188,7 @@ export async function commandAdd(args: ParsedArgs, io: CommandIO): Promise<numbe
   const spec = args.positionals[0]
   if (!spec) throw new UsageError('用法：cordis-app add <包名[@版本]>')
 
-  const workspace = openWorkspace(args.dataDir)
+  const workspace = openWorkspace(args.projectDir)
   if (!requireApp(workspace, io)) return 1
 
   const installer = await makeInstaller(workspace, io)
@@ -188,9 +196,9 @@ export async function commandAdd(args: ParsedArgs, io: CommandIO): Promise<numbe
   io.out(`已安装 ${result.id}`)
   io.out(`  ${result.reason}`)
 
-  // 只有正在运行的实例才需要人去重启；没跑的话下次 run 自然就加载了新插件
+  // 只有正在运行的项目才需要人去重启；没跑的话下次 run 自然就加载了新插件
   if (result.restarted && readRuntimeFile(workspace.runtimeJsonPath)) {
-    io.out('  应用正在运行，执行 cordis-app restart 让改动生效')
+    io.out('  项目正在运行，执行 cordis-app restart 让改动生效')
   }
   return 0
 }
@@ -199,7 +207,7 @@ export async function commandRemove(args: ParsedArgs, io: CommandIO): Promise<nu
   const spec = args.positionals[0]
   if (!spec) throw new UsageError('用法：cordis-app remove <包名>')
 
-  const workspace = openWorkspace(args.dataDir)
+  const workspace = openWorkspace(args.projectDir)
   if (!requireApp(workspace, io)) return 1
 
   const installer = await makeInstaller(workspace, io)
@@ -207,7 +215,7 @@ export async function commandRemove(args: ParsedArgs, io: CommandIO): Promise<nu
   io.out(`已卸载 ${result.id}`)
   io.out(`  ${result.reason}`)
   if (readRuntimeFile(workspace.runtimeJsonPath)) {
-    io.out('  应用正在运行，执行 cordis-app restart 让改动生效')
+    io.out('  项目正在运行，执行 cordis-app restart 让改动生效')
   }
   return 0
 }
@@ -215,24 +223,47 @@ export async function commandRemove(args: ParsedArgs, io: CommandIO): Promise<nu
 // ---------------------------------------------------------------- list
 
 export async function commandList(args: ParsedArgs, io: CommandIO): Promise<number> {
-  const workspace = openWorkspace(args.dataDir)
+  const workspace = openWorkspace(args.projectDir)
   const manifest = readAppManifest(workspace.appJsonPath)
   if (!manifest) {
     io.err(`找不到应用定义：${workspace.appJsonPath}`)
     return 1
   }
 
-  const lock = readAppLock(workspace.appLockPath)
-  const nodeModulesDir = resolveLayout(workspace.dataDir).nodeModulesDir
-  const rows = Object.entries(manifest.plugins).map(([name, range]) => ({
-    name,
-    range,
-    version: lock?.plugins[name]?.version ?? '（未安装）',
-    id: readPluginId(nodeModulesDir, name) ?? name,
-  }))
+  const pkg = readProjectPackage(workspace.packageJsonPath)
+  if (!pkg) {
+    io.err(`找不到项目依赖清单：${workspace.packageJsonPath}`)
+    return 1
+  }
+
+  // package.json 是依赖的事实源；app.json 不再维护第二份版本清单。
+  // 框架与 React 是项目的运行底座，不是可安装/卸载的插件，列表里不展示。
+  const rows = Object.entries(pkg.dependencies ?? {})
+    .filter(([name]) => !FRAMEWORK_DEPENDENCIES.has(name))
+    .map(([name, range]) => {
+    const installed = readInstalledPackage(workspace.nodeModulesDir, name)
+    const id = readPluginId(workspace.nodeModulesDir, name) ?? null
+    return {
+      name,
+      range,
+      version: installed?.version ?? '（未安装）',
+      id,
+      enabled: installed !== undefined && id !== null,
+    }
+  })
 
   if (args.json) {
-    io.out(JSON.stringify({ name: manifest.name, version: manifest.version, plugins: rows }, null, 2))
+    io.out(
+      JSON.stringify(
+        {
+          name: manifest.name,
+          version: manifest.version,
+          plugins: rows.map(({ name, version, id, enabled }) => ({ name, version, id, enabled })),
+        },
+        null,
+        2,
+      ),
+    )
     return 0
   }
 
@@ -242,17 +273,35 @@ export async function commandList(args: ParsedArgs, io: CommandIO): Promise<numb
     return 0
   }
 
-  const width = Math.max(...rows.map((row) => row.name.length), 4)
+  const nameWidth = Math.max(...rows.map((row) => row.name.length), 4)
+  const versionWidth = Math.max(...rows.map((row) => row.version.length), 4)
+  const idWidth = Math.max(...rows.map((row) => (row.id ?? '-').length), 2)
+  io.out(`  ${'包名'.padEnd(nameWidth)}  ${'版本'.padEnd(versionWidth)}  ${'插件 id'.padEnd(idWidth)}  状态`)
   for (const row of rows) {
-    io.out(`  ${row.name.padEnd(width)}  ${row.version.padEnd(10)}  ${row.range}`)
+    io.out(
+      `  ${row.name.padEnd(nameWidth)}  ${row.version.padEnd(versionWidth)}  ${(row.id ?? '-').padEnd(idWidth)}  ${row.enabled ? '已启用' : '未启用'}`,
+    )
   }
   return 0
+}
+
+/** 读已安装包的版本；包不存在或 package.json 损坏时返回 undefined。 */
+function readInstalledPackage(nodeModulesDir: string, name: string): { version: string } | undefined {
+  try {
+    const pkg = JSON.parse(
+      // 直接 join：作用域包名 `@scope/name` 正好是两层目录
+      readFileSync(join(nodeModulesDir, name, 'package.json'), 'utf8'),
+    ) as { version?: string }
+    return pkg.version ? { version: pkg.version } : undefined
+  } catch {
+    return undefined
+  }
 }
 
 // ---------------------------------------------------------------- restart
 
 /**
- * 重启正在运行的实例。
+ * 重启正在运行的项目。
  *
  * 走 HTTP 而不是信号：supervisor 的 pid 在 runtime.json 里，但向它发信号是
  * 「终止整个应用」的意思。真正该被重启的是 worker，而只有 supervisor 知道
@@ -260,10 +309,10 @@ export async function commandList(args: ParsedArgs, io: CommandIO): Promise<numb
  * 「关监听 → 通知客户端 → exit(75)」那条既有路径。
  */
 export async function commandRestart(args: ParsedArgs, io: CommandIO): Promise<number> {
-  const workspace = openWorkspace(args.dataDir)
+  const workspace = openWorkspace(args.projectDir)
   const running = readRuntimeFile(workspace.runtimeJsonPath)
   if (!running) {
-    io.err('应用没有在运行。用 cordis-app run 启动。')
+    io.err('项目没有在运行。用 cordis-app run 启动。')
     return 1
   }
 
@@ -278,7 +327,7 @@ export async function commandRestart(args: ParsedArgs, io: CommandIO): Promise<n
       return 1
     }
   } catch (error) {
-    io.err(`连接不上正在运行的实例：${(error as Error).message}`)
+    io.err(`连接不上正在运行的项目：${(error as Error).message}`)
     return 1
   }
 
@@ -296,9 +345,8 @@ export async function commandRestart(args: ParsedArgs, io: CommandIO): Promise<n
 /**
  * 等待「旧进程已下线、新进程已就绪」。
  *
- * 两段式观察的规则由 protocol 的 waitForReady 统一实现：先等健康检查失败
- * （旧 worker 关闭监听需要时间，之前的 200 来自即将退出的进程），再等它重新
- * 变成 200（`markReady()` 之后才会返回 200）。这里只提供探测手段。
+ * 两段式观察的规则由 protocol 的 waitForReady 统一实现：先等健康检查失败，
+ * 再等它重新变成 200。这里只提供探测手段。
  */
 async function waitForRestart(port: number, timeoutMs = 30_000): Promise<boolean> {
   return waitForReady({
@@ -327,5 +375,3 @@ export const COMMAND_HANDLERS = {
   restart: commandRestart,
   list: commandList,
 } as const
-
-

@@ -19,7 +19,8 @@ export const MAX_PORT_RETRIES = 5
 /** supervisor 注入 worker 的环境变量名 */
 export const ENV_PORT = 'CORDIS_APP_PORT'
 export const ENV_TOKEN = 'CORDIS_APP_TOKEN'
-export const ENV_DATA = 'CORDIS_APP_DATA'
+/** supervisor 注入 worker 的项目根 */
+export const ENV_PROJECT = 'CORDIS_APP_PROJECT'
 export const ENV_RESOURCES = 'CORDIS_APP_RESOURCES'
 export const ENV_HANDSHAKE_PIPE = 'CORDIS_APP_HANDSHAKE'
 
