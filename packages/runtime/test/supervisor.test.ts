@@ -3,6 +3,8 @@
  *
  * 这是架构里最不能出错的一条：worker 退出码 75 → supervisor 重新 fork →
  * 端口与 token 不变 → 前端能重新连上。任何一环断了，「不闪窗」就不成立。
+ *
+ * fixture 是项目根：运行时文件落在 `.cordis/runtime.json`，不再有数据目录。
  */
 
 import { test } from 'node:test'
@@ -14,31 +16,32 @@ import { Supervisor } from '../lib/supervisor/supervisor.js'
 import { decodeHandshake, FRAMEWORK_VERSION } from '@cordis-app/protocol'
 
 interface Fixture {
-  dataDir: string
-  instanceDir: string
+  projectRoot: string
   resourcesDir: string
 }
 
 function createFixture(): Fixture {
-  const dataDir = mkdtempSync(join(tmpdir(), 'cordis-sup-'))
-  const instanceDir = join(dataDir, 'instances', 'default')
-  const resourcesDir = join(dataDir, 'resources')
+  const projectRoot = mkdtempSync(join(tmpdir(), 'cordis-sup-'))
+  const resourcesDir = join(projectRoot, 'resources')
   mkdirSync(join(resourcesDir, 'ui'), { recursive: true })
   mkdirSync(join(resourcesDir, 'shared'), { recursive: true })
-  mkdirSync(instanceDir, { recursive: true })
   writeFileSync(join(resourcesDir, 'ui', 'index.html'), '<!doctype html><title>t</title>')
   writeFileSync(
-    join(instanceDir, 'app.json'),
-    JSON.stringify({ name: 't', version: '1.0.0', framework: '^1.0.0', plugins: {} }, null, 2),
+    join(projectRoot, 'package.json'),
+    JSON.stringify({ name: 't', version: '1.0.0', private: true, type: 'module' }, null, 2),
   )
-  return { dataDir, instanceDir, resourcesDir }
+  writeFileSync(
+    join(projectRoot, 'app.json'),
+    JSON.stringify({ name: 't', version: '1.0.0', plugins: [] }, null, 2),
+  )
+  return { projectRoot, resourcesDir }
 }
 
 test('握手行只出现在 stdout，格式可解析', async () => {
   const fixture = createFixture()
   const lines: string[] = []
   const supervisor = new Supervisor({
-    dataDir: fixture.dataDir,
+    projectRoot: fixture.projectRoot,
     resourcesDir: fixture.resourcesDir,
     stdout: {
       write(chunk: string | Uint8Array) {
@@ -58,7 +61,7 @@ test('握手行只出现在 stdout，格式可解析', async () => {
     assert.deepEqual(parsed!.failures, [])
     assert.equal(parsed!.version, FRAMEWORK_VERSION, '握手版本必须来自框架唯一真源')
 
-    const runtimeFile = JSON.parse(readFileSync(join(fixture.dataDir, 'runtime.json'), 'utf8'))
+    const runtimeFile = JSON.parse(readFileSync(join(fixture.projectRoot, '.cordis', 'runtime.json'), 'utf8'))
     assert.equal(runtimeFile.port, handshake.port)
     assert.equal(runtimeFile.token, handshake.token)
   } finally {
@@ -69,7 +72,7 @@ test('握手行只出现在 stdout，格式可解析', async () => {
 test('supervisor 把版本注入 worker，健康检查与握手一致', async () => {
   const fixture = createFixture()
   const supervisor = new Supervisor({
-    dataDir: fixture.dataDir,
+    projectRoot: fixture.projectRoot,
     resourcesDir: fixture.resourcesDir,
     version: '4.5.6',
     stdout: { write: () => true } as any,
@@ -93,7 +96,7 @@ test('退出码 75 触发重新 fork，端口与 token 保持不变', async () =
   const lines: string[] = []
   const readyEvents: number[] = []
   const supervisor = new Supervisor({
-    dataDir: fixture.dataDir,
+    projectRoot: fixture.projectRoot,
     resourcesDir: fixture.resourcesDir,
     onReady: (payload) => readyEvents.push(payload.port),
     stdout: {

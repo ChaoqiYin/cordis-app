@@ -12,8 +12,8 @@ export interface ParsedArgs {
   command: CommandName
   /** 位置参数，例如 `add foo` 的 foo */
   positionals: string[]
-  /** `--data <dir>` */
-  dataDir?: string
+  /** `--project <dir>`；`--data <dir>` 是兼容别名，含义同样是项目根 */
+  projectDir?: string
   /** `--resources <dir>` */
   resourcesDir?: string
   /** `--port <n>`：仅 run 用，强制指定端口 */
@@ -61,8 +61,9 @@ export function parseArgs(argv: string[]): ParsedArgs {
         return next
       }
       switch (flag) {
+        case '--project':
         case '--data':
-          parsed.dataDir = take()
+          parsed.projectDir = take()
           break
         case '--resources':
           parsed.resourcesDir = take()
@@ -109,15 +110,16 @@ function splitFlag(arg: string): [string, string | undefined] {
 export const HELP_TEXT = `cordis-app —— 应用与插件的命令行
 
 用法：
-  cordis-app new <名字>                     创建一个新应用
+  cordis-app new <名字>                     创建一个新项目
   cordis-app add <包名[@版本]>              安装插件
   cordis-app remove <包名>                  卸载插件
-  cordis-app run                            启动应用并打印访问地址
-  cordis-app restart                        重启正在运行的应用
-  cordis-app list [--json]                  列出已安装的插件
+  cordis-app run                            启动项目并打印访问地址
+  cordis-app restart                        重启正在运行的项目
+  cordis-app list [--json]                  列出项目依赖中的插件
 
 通用选项：
-  --data <目录>        数据目录（默认按平台标准目录，可用 CORDIS_APP_DATA 覆盖）
+  --project <目录>     项目根（默认当前目录，可用 CORDIS_APP_PROJECT 覆盖）
+  --data <目录>        --project 的兼容别名
   --resources <目录>   UI 产物目录（默认自动探测）
   --port <端口>        仅 run：强制使用指定端口
   --no-open            仅 run：不尝试打开浏览器

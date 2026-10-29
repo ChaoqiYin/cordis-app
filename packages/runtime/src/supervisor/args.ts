@@ -1,20 +1,21 @@
-import { resolveDataDir } from '@cordis-app/protocol'
+import { resolveProjectRoot } from '@cordis-app/protocol'
 
 export interface SupervisorArgs {
-  dataDir: string
+  projectRoot: string
   resourcesDir?: string
 }
 
-/** 解析 supervisor 的命令行参数。数据目录优先级由 protocol 统一决定。 */
+/** 解析 supervisor 的命令行参数。项目根优先级由 protocol 统一决定。 */
 export function readSupervisorArgs(argv: string[]): SupervisorArgs {
-  let dataFlag: string | undefined
+  let projectFlag: string | undefined
   let resourcesDir: string | undefined
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]
-    if (arg === '--data') dataFlag = argv[++i]
+    // --data 是 --project 的兼容别名：两者都是项目根，不再有独立的数据目录。
+    if (arg === '--project' || arg === '--data') projectFlag = argv[++i]
     else if (arg === '--resources') resourcesDir = argv[++i]
   }
 
-  return { dataDir: resolveDataDir(dataFlag), resourcesDir }
+  return { projectRoot: resolveProjectRoot(projectFlag), resourcesDir }
 }

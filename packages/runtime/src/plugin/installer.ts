@@ -7,15 +7,19 @@
  *   ③ 记录安装前的 node_modules 布局
  *   ④ 调用包管理器写入 node_modules
  *   ⑤ 重新读取布局，与 ③ diff
- *   ⑥ 更新 app.json / app.lock
+ *   ⑥ 把插件 id 写进 app.json 的启用列表
  *   ⑦ 按 6.4 决定：直接挂载，或重启 worker
  *
- * 失败必须可回滚：第 ④ 步失败时用 app.lock 回到安装前状态——这正是保留 lock
- * 的直接收益，不需要「卸载残留」，只需按记录重装。
+ * 事实源是项目根：`package.json`（包管理器读写）、项目 lockfile、`app.json`。
+ * 不再维护 app.lock：版本与完整性信息本来就属于项目的 lockfile，框架再存一份
+ * 只会产生第三个需要同步的真相。
+ *
+ * 失败必须可回滚。进程内失败与进程死亡走同一条路径：事务开始前把三个事实文件
+ * 与 node_modules 布局写进 `.cordis/install-journal.json`，恢复时按日志还原。
  */
 
 import { execFile } from 'node:child_process'
-import { existsSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import semver from 'semver'
@@ -23,33 +27,45 @@ import {
   CORE_PACKAGE,
   SHARED_MODULES,
   SHARED_PEER_RANGES,
-  type AppLock,
   type AppManifest,
   type InstallResult,
-  type LockedPlugin,
   type PluginManifest,
 } from '@cordis-app/protocol'
 
 const execFileAsync = promisify(execFile)
 
-/** 安装事务日志的文件名。放在实例根目录，不进 node_modules。 */
-const JOURNAL_NAME = '.install-journal.json'
+/** 事务日志放在项目的运行时目录里，不属于用户源码。 */
+const JOURNAL_PATH = join('.cordis', 'install-journal.json')
+
+/** 包管理器可能写出的 lockfile。恢复时要逐个还原，不能只认一种。 */
+const LOCKFILE_NAMES = [
+  'pnpm-lock.yaml',
+  'package-lock.json',
+  'npm-shrinkwrap.json',
+  'yarn.lock',
+  'bun.lock',
+  'bun.lockb',
+] as const
 
 /** node_modules 的布局快照：解析键 → 解析到的真实路径。 */
 export type LayoutSnapshot = Map<string, string>
 
-/** 一次安装事务开始前的磁盘状态。恢复时据此把实例整体还原。 */
+/** 一次安装事务开始前的磁盘状态。恢复时据此把项目整体还原。 */
 interface JournalState {
   /** 快照的 JSON 形式（Map 不能直接落盘） */
   snapshot: Record<string, string>
+  /** 顶层包名 → 版本；恢复时用来装回被删掉/降级的包 */
+  versions: Record<string, string>
+  /** 事务前的 package.json 原文；不存在时为 null */
+  packageJson: string | null
+  /** 事务前每个 lockfile 的原文；不存在的记 null */
+  lockfiles: Record<string, string | null>
   /** 事务前的 app.json 原文；不存在时为 null */
   appJson: string | null
-  /** 事务前的 app.lock 原文；不存在时为 null */
-  appLock: string | null
 }
 
 interface InstallJournal {
-  version: 1
+  version: 2
   action: 'install' | 'remove'
   spec: string
   startedAt: string
@@ -63,7 +79,8 @@ export interface RecoveryResult {
 }
 
 export interface InstallerOptions {
-  instanceDir: string
+  /** 项目根。所有路径都从它推导，不再有实例目录。 */
+  projectRoot: string
   /** 框架版本，用于 peer 校验 */
   frameworkVersion: string
   /** 自带 yarn.cjs 的路径；缺失时回退到系统 npm */
@@ -76,9 +93,9 @@ export class PluginInstaller {
   constructor(private readonly options: InstallerOptions) {}
 
   /**
-   * 读目录下的 node_modules 布局。
+   * 读项目 node_modules 的布局。
    *
-   * 键是「从实例根出发的解析路径」而不是包名，因为同一个包可以在不同层级
+   * 键是「从项目根出发的解析路径」而不是包名，因为同一个包可以在不同层级
    * 各有一份（`node_modules/lodash` 与 `node_modules/demo/node_modules/lodash`）。
    * 只按包名记录会把这些互相覆盖，而「依赖被提升 / 被降级到嵌套目录」正是
    * 布局比对要抓的那种搬家——漏掉它，重启判定就形同虚设。
@@ -88,8 +105,8 @@ export class PluginInstaller {
    */
   snapshot(): LayoutSnapshot {
     const layout: LayoutSnapshot = new Map()
-    const root = join(this.options.instanceDir, 'node_modules')
-    if (!existsSync(root)) return layout
+    const root = this.options.projectRoot ? join(this.options.projectRoot, 'node_modules') : ''
+    if (!root || !existsSync(root)) return layout
     // 前缀为空：顶层包的键就是包名，嵌套包的键是 `demo/node_modules/lodash`
     this.walk(root, '', 0, layout)
     return layout
@@ -172,11 +189,11 @@ export class PluginInstaller {
     const before = this.snapshot()
     const wasPresent = this.isPresent(spec, before)
     this.writeJournal({
-      version: 1,
+      version: 2,
       action: 'install',
       spec,
       startedAt: new Date().toISOString(),
-      before: this.captureState(),
+      before: this.captureState(before),
     })
 
     try {
@@ -199,9 +216,7 @@ export class PluginInstaller {
 
       // 已进入 require.cache 的插件才需要重启；新插件直接挂载即可。
       const restarted = wasPresent || moved.length > 0
-      const installed = this.readInstalledVersion(name)
-      await this.updateLock()
-      this.recordIntent(name, versionRangeOf(spec) ?? `^${installed}`)
+      this.addEnabledPlugin(manifest.id)
       this.clearJournal()
 
       return {
@@ -232,8 +247,8 @@ export class PluginInstaller {
    *
    * 恢复步骤：
    *   ① 本次新增的插件包从 node_modules 撤掉
-   *   ② 事务前存在、现在缺失/搬家/版本变了的顶层包，按日志里的 lock 装回
-   *   ③ app.json 与 app.lock 还原成事务前原文
+   *   ② 事务前存在、现在缺失/搬家/版本变了的顶层包，按日志里的版本装回
+   *   ③ package.json、项目 lockfile、app.json 还原成事务前原文
    *   ④ 删除日志
    *
    * 任一步失败都保留日志，让下一次启动继续尝试；宁可反复报错，也不假装干净。
@@ -253,21 +268,24 @@ export class PluginInstaller {
       await this.runPackageManager(['remove', name])
     }
 
-    // ② 事务前存在、现在不可用的顶层包：按事务前的 lock 装回。
-    const locked = parseLock(journal.before.appLock)
+    // ② 事务前存在、现在不可用的顶层包：按事务前记录的版本装回。
     const afterCleanup = this.snapshot()
     for (const [key, path] of before) {
       if (key.includes('node_modules/')) continue
       const name = packageNameFromKey(key)
-      const version = locked?.plugins?.[name]?.version
+      const version = journal.before.versions?.[name]
       if (!version) continue
       if (afterCleanup.get(key) === path && this.versionOf(path) === version) continue
       await this.runPackageManager(['add', `${name}@${version}`])
     }
 
-    // ③ 清单文件按原文还原，而不是重新推导——推导会把本次事务的痕迹带进来。
+    // ③ 事实文件按原文还原，而不是重新推导——推导会把本次事务的痕迹带进来。
+    this.restoreFile(this.packageJsonPath, journal.before.packageJson)
+    for (const name of LOCKFILE_NAMES) {
+      const content = journal.before.lockfiles?.[name] ?? null
+      this.restoreFile(join(this.options.projectRoot, name), content)
+    }
     this.restoreFile(this.appJsonPath, journal.before.appJson)
-    this.restoreFile(this.appLockPath, journal.before.appLock)
     this.clearJournal()
     return { action: journal.action, spec: journal.spec }
   }
@@ -290,33 +308,44 @@ export class PluginInstaller {
   }
 
   private get appJsonPath(): string {
-    return join(this.options.instanceDir, 'app.json')
+    return join(this.options.projectRoot, 'app.json')
   }
 
-  private get appLockPath(): string {
-    return join(this.options.instanceDir, 'app.lock')
+  private get packageJsonPath(): string {
+    return join(this.options.projectRoot, 'package.json')
   }
 
   private get journalPath(): string {
-    return join(this.options.instanceDir, JOURNAL_NAME)
+    return join(this.options.projectRoot, JOURNAL_PATH)
   }
 
-  private captureState(): JournalState {
+  private captureState(snapshot: LayoutSnapshot): JournalState {
+    const versions: Record<string, string> = {}
+    for (const [key, path] of snapshot) {
+      if (key.includes('node_modules/')) continue
+      const version = this.versionOf(path)
+      if (version) versions[packageNameFromKey(key)] = version
+    }
     return {
-      snapshot: Object.fromEntries(this.snapshot()),
+      snapshot: Object.fromEntries(snapshot),
+      versions,
+      packageJson: readIfExists(this.packageJsonPath),
+      lockfiles: Object.fromEntries(
+        LOCKFILE_NAMES.map((name) => [name, readIfExists(join(this.options.projectRoot, name))]),
+      ),
       appJson: readIfExists(this.appJsonPath),
-      appLock: readIfExists(this.appLockPath),
     }
   }
 
   private writeJournal(journal: InstallJournal): void {
+    mkdirSync(join(this.options.projectRoot, '.cordis'), { recursive: true })
     writeFileSync(this.journalPath, JSON.stringify(journal, null, 2) + '\n')
   }
 
   private readJournal(): InstallJournal | undefined {
     try {
       const journal = JSON.parse(readFileSync(this.journalPath, 'utf8')) as InstallJournal
-      if (journal?.version !== 1 || !journal.before?.snapshot) return undefined
+      if (journal?.version !== 2 || !journal.before?.snapshot) return undefined
       return journal
     } catch {
       return undefined
@@ -345,17 +374,16 @@ export class PluginInstaller {
     const name = packageNameOf(spec)
     const manifest = this.findManifest(name)
     this.writeJournal({
-      version: 1,
+      version: 2,
       action: 'remove',
       spec: name,
       startedAt: new Date().toISOString(),
-      before: this.captureState(),
+      before: this.captureState(this.snapshot()),
     })
 
     try {
       await this.runPackageManager(['remove', name])
-      await this.updateLock()
-      this.recordIntent(name, undefined)
+      this.removeEnabledPlugin(manifest?.id ?? name)
       this.clearJournal()
       return {
         id: manifest?.id ?? name,
@@ -411,10 +439,10 @@ export class PluginInstaller {
     const run = this.options.run ?? defaultRun
     if (this.options.yarnPath && existsSync(this.options.yarnPath)) {
       // 单文件 CLI（yarn.cjs）可以直接随包分发，不需要用户机器上有全局安装
-      await run(process.execPath, [this.options.yarnPath, ...args], this.options.instanceDir)
+      await run(process.execPath, [this.options.yarnPath, ...args], this.options.projectRoot)
       return
     }
-    await run('npm', args, this.options.instanceDir)
+    await run('npm', args, this.options.projectRoot)
   }
 
   private readPluginManifest(name: string): PluginManifest {
@@ -475,97 +503,39 @@ export class PluginInstaller {
     }
   }
 
-  private packageDirOf(spec: string): string {
-    const name = packageNameOf(spec)
-    return join(this.options.instanceDir, 'node_modules', name)
+  private packageDirOf(name: string): string {
+    return join(this.options.projectRoot, 'node_modules', name)
+  }
+
+  /** 把插件 id 追加到 app.json 的启用列表；已在列表里则保持原位。 */
+  private addEnabledPlugin(id: string): void {
+    this.mutateEnabledPlugins((plugins) => (plugins.includes(id) ? plugins : [...plugins, id]))
+  }
+
+  private removeEnabledPlugin(id: string): void {
+    this.mutateEnabledPlugins((plugins) => plugins.filter((plugin) => plugin !== id))
   }
 
   /**
-   * 用当前 node_modules 布局重建 app.lock，并同步 app.json。
+   * app.json.plugins 是启用顺序，不是依赖清单。
    *
-   * 必须是「重建」而不是「累加」：卸载一个包之后，累加式写法会把它的条目
-   * 永久留在 lock 里，于是 syncAppJson 永远认为它还在、永远不会从 app.json
-   * 删掉——用户卸载了插件，`app.json` 却还写着它，下次启动又会尝试安装。
+   * 依赖与版本只写在 package.json；这里只记「用户想启用哪些插件、按什么顺序」。
+   * 因此 add 是追加 id，remove 是按 id 过滤，绝不动包名与版本。
    */
-  private async updateLock(): Promise<void> {
-    const lockPath = this.appLockPath
-    const previous: AppLock = existsSync(lockPath)
-      ? JSON.parse(readFileSync(lockPath, 'utf8'))
-      : { lockfileVersion: 1, plugins: {} }
-
-    const plugins: Record<string, LockedPlugin> = {}
-    for (const [name, dir] of this.snapshot()) {
-      const pkgPath = join(dir, 'package.json')
-      if (!existsSync(pkgPath)) continue
-      const pkg = JSON.parse(readFileSync(pkgPath, 'utf8')) as {
-        version?: string
-        dependencies?: Record<string, string>
-      }
-      if (!pkg.version) continue
-      const existing = previous.plugins[name]
-      plugins[name] = {
-        version: pkg.version,
-        resolved:
-          existing?.resolved ??
-          `https://registry.npmjs.org/${name}/-/${name.split('/').pop()}-${pkg.version}.tgz`,
-        ...(existing?.integrity ? { integrity: existing.integrity } : {}),
-        ...(pkg.dependencies ? { dependencies: pkg.dependencies } : {}),
-      }
-    }
-
-    const lock: AppLock = { lockfileVersion: 1, plugins }
-    writeFileSync(lockPath, JSON.stringify(lock, null, 2) + '\n')
-    this.syncAppJson(lock)
-  }
-
-  /** app.json 只列直接依赖；这里不臆造意图，只保证被删掉的包也离开清单。 */
-  private syncAppJson(lock: AppLock): void {
-    const appPath = this.appJsonPath
-    if (!existsSync(appPath)) return
-    const app: AppManifest = JSON.parse(readFileSync(appPath, 'utf8'))
-    const plugins = { ...app.plugins }
-    for (const name of Object.keys(plugins)) {
-      if (!(name in lock.plugins)) delete plugins[name]
-    }
-    app.plugins = plugins
-    writeFileSync(appPath, JSON.stringify(app, null, 2) + '\n')
-  }
-
-  /**
-   * 把一次安装 / 卸载写回 app.json 的意图清单。
-   *
-   * `syncAppJson` 只负责「删掉已经不在 node_modules 里的」，它无法区分
-   * 「用户想要这个插件」与「这是某个插件的传递依赖」，所以新增必须由这里
-   * 显式记录。撤销时传 undefined。
-   */
-  private recordIntent(name: string, range: string | undefined): void {
-    const appPath = this.appJsonPath
-    if (!existsSync(appPath)) return
-    const app: AppManifest = JSON.parse(readFileSync(appPath, 'utf8'))
-    const plugins = { ...app.plugins }
-    if (range === undefined) delete plugins[name]
-    else plugins[name] = range
-    app.plugins = plugins
-    writeFileSync(appPath, JSON.stringify(app, null, 2) + '\n')
-  }
-
-  /** 已装包的版本号；缺失时返回 '0.0.0'，让 `^0.0.0` 至少是个合法范围。 */
-  private readInstalledVersion(name: string): string {
-    try {
-      const pkg = JSON.parse(
-        readFileSync(join(this.options.instanceDir, 'node_modules', name, 'package.json'), 'utf8'),
-      ) as { version?: string }
-      return pkg.version ?? '0.0.0'
-    } catch {
-      return '0.0.0'
-    }
+  private mutateEnabledPlugins(mutate: (plugins: string[]) => string[]): void {
+    const path = this.appJsonPath
+    if (!existsSync(path)) return
+    const app = JSON.parse(readFileSync(path, 'utf8')) as AppManifest
+    const plugins = Array.isArray(app.plugins) ? app.plugins : []
+    app.plugins = mutate(plugins)
+    writeFileSync(path, JSON.stringify(app, null, 2) + '\n')
   }
 
   /** 卸载前读一次清单，好让结果里报出 plugin.json 的 id 而不是包名。 */
   private findManifest(name: string): PluginManifest | undefined {
     try {
       return JSON.parse(
-        readFileSync(join(this.options.instanceDir, 'node_modules', name, 'plugin.json'), 'utf8'),
+        readFileSync(join(this.options.projectRoot, 'node_modules', name, 'plugin.json'), 'utf8'),
       ) as PluginManifest
     } catch {
       return undefined
@@ -594,14 +564,6 @@ function parentKeyOf(key: string): string | undefined {
   return index === -1 ? undefined : key.slice(0, index - 1)
 }
 
-/** 从 spec 中取出作者写的版本范围；没写则返回 undefined，交给调用方推导。 */
-function versionRangeOf(spec: string): string | undefined {
-  const name = packageNameOf(spec)
-  if (name === spec) return undefined
-  const range = spec.slice(name.length + 1)
-  return range || undefined
-}
-
 async function defaultRun(command: string, args: string[], cwd: string): Promise<void> {
   await execFileAsync(command, args, { cwd, env: process.env, windowsHide: true })
 }
@@ -619,14 +581,5 @@ function readIfExists(path: string): string | null {
     return readFileSync(path, 'utf8')
   } catch {
     return null
-  }
-}
-
-function parseLock(raw: string | null): AppLock | undefined {
-  if (raw === null) return undefined
-  try {
-    return JSON.parse(raw) as AppLock
-  } catch {
-    return undefined
   }
 }
