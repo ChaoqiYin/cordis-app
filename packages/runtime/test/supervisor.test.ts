@@ -11,7 +11,7 @@ import { mkdirSync, mkdtempSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Supervisor } from '../lib/supervisor/supervisor.js'
-import { decodeHandshake } from '@cordis-app/protocol'
+import { decodeHandshake, FRAMEWORK_VERSION } from '@cordis-app/protocol'
 
 interface Fixture {
   dataDir: string
@@ -56,10 +56,33 @@ test('握手行只出现在 stdout，格式可解析', async () => {
     assert.equal(parsed!.token, handshake.token)
     assert.equal(parsed!.ready, true)
     assert.deepEqual(parsed!.failures, [])
+    assert.equal(parsed!.version, FRAMEWORK_VERSION, '握手版本必须来自框架唯一真源')
 
     const runtimeFile = JSON.parse(readFileSync(join(fixture.dataDir, 'runtime.json'), 'utf8'))
     assert.equal(runtimeFile.port, handshake.port)
     assert.equal(runtimeFile.token, handshake.token)
+  } finally {
+    await supervisor.stop()
+  }
+})
+
+test('supervisor 把版本注入 worker，健康检查与握手一致', async () => {
+  const fixture = createFixture()
+  const supervisor = new Supervisor({
+    dataDir: fixture.dataDir,
+    resourcesDir: fixture.resourcesDir,
+    version: '4.5.6',
+    stdout: { write: () => true } as any,
+  })
+
+  const handshake = await supervisor.start()
+  try {
+    assert.equal(handshake.version, '4.5.6')
+    // start() 以 worker 的 ready 消息为准；listen 回调可能晚一个 tick，
+    // 用轮询等待真实可连接，避免把「刚绑定还在回调队列里」当成失败。
+    assert.equal(await waitForHealthy(handshake.port), 200)
+    const healthy = await (await fetch(`http://127.0.0.1:${handshake.port}/__health`)).json()
+    assert.equal(healthy.version, '4.5.6', 'worker 的清单版本必须与 supervisor 注入的版本一致')
   } finally {
     await supervisor.stop()
   }
@@ -83,9 +106,8 @@ test('退出码 75 触发重新 fork，端口与 token 保持不变', async () =
 
   const first = await supervisor.start()
   try {
-    // 服务可用
-    const before = await fetch(`http://127.0.0.1:${first.port}/__health`)
-    assert.equal(before.status, 200)
+    // 服务可用。start() 的 ready 早于 listen 回调时，先轮询到可连接。
+    assert.equal(await waitForHealthy(first.port), 200)
 
     // 触发优雅重启：worker 收到 SIGTERM 后 process.exit(75)
     supervisor.restart()

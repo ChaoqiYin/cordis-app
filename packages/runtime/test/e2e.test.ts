@@ -10,10 +10,11 @@ import assert from 'node:assert/strict'
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { startWorker } from '../lib/worker/worker.js'
-import { findFreePort, generateToken } from '../lib/supervisor/supervisor.js'
+import { startWorker, readWorkerOptions } from '../lib/worker/worker.js'
+import { findFreePort, generateToken, buildWorkerEnv } from '../lib/supervisor/supervisor.js'
 import { PluginInstaller } from '../lib/plugin/installer.js'
 import { safeJoin } from '../lib/builtin/http-utils.js'
+import { ENV_DATA, ENV_PORT, ENV_TOKEN, ENV_VERSION, FRAMEWORK_VERSION } from '@cordis-app/protocol'
 
 interface Fixture {
   dataDir: string
@@ -89,8 +90,53 @@ test('/__health 免 token，只回 200 与版本', async () => {
     assert.equal(res.status, 200)
     const body = await res.json()
     assert.equal(body.ok, true)
-    assert.equal(body.version, '1.0.0')
+    assert.equal(body.version, FRAMEWORK_VERSION)
   })
+})
+
+test('/__health 与 /__plugins 使用注入的框架版本', async () => {
+  const fixture = createFixture()
+  const port = await findFreePort()
+  const token = generateToken()
+  const version = '9.9.9-injected'
+  const handle = await startWorker({
+    port,
+    token,
+    dataDir: fixture.dataDir,
+    resourcesDir: fixture.resourcesDir,
+    version,
+  })
+  try {
+    const healthy = await (await fetch(`http://127.0.0.1:${port}/__health`)).json()
+    assert.equal(healthy.version, version, '健康检查必须报告注入的版本，而不是模块内写死的值')
+
+    const manifest = await (
+      await fetch(`http://127.0.0.1:${port}/__plugins`, {
+        headers: { authorization: `Bearer ${token}` },
+      })
+    ).json()
+    assert.equal(manifest.version, version, '前端清单必须与健康检查同源')
+  } finally {
+    await handle.close()
+  }
+})
+
+test('worker 从 supervisor 构造的环境读取框架版本', () => {
+  const options = readWorkerOptions({
+    [ENV_PORT]: '5140',
+    [ENV_TOKEN]: 'token',
+    [ENV_DATA]: '/tmp/data',
+    [ENV_VERSION]: '2.3.4',
+  })
+  assert.equal(options.version, '2.3.4')
+
+  const env = buildWorkerEnv({
+    port: 5140,
+    token: 'token',
+    dataDir: '/tmp/data',
+    version: '2.3.4',
+  })
+  assert.equal(env[ENV_VERSION], '2.3.4', 'supervisor 必须把版本随环境注入 worker')
 })
 
 test('API 缺少 token 时 401，带上 token 后 200', async () => {

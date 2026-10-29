@@ -13,7 +13,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { apply, data, inject, name } from '../src/server.ts'
-import type { KernelContext, RouteHandler } from '@cordis-app/kernel'
+import type { KernelContext, RouteHandler } from 'cordis-app/server'
 
 function createFakeContext() {
   const routes = new Map<string, RouteHandler>()

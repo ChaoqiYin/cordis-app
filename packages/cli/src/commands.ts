@@ -10,7 +10,7 @@
 
 import { existsSync } from 'node:fs'
 import { spawn } from 'node:child_process'
-import { resolveLayout, waitForReady } from '@cordis-app/protocol'
+import { FRAMEWORK_VERSION, resolveLayout, waitForReady } from '@cordis-app/protocol'
 import { PluginInstaller, Supervisor, readPluginId } from '@cordis-app/runtime'
 import type { ParsedArgs } from './args.js'
 import { UsageError } from './args.js'
@@ -41,7 +41,7 @@ export interface CommandIO {
 export const defaultIO: CommandIO = {
   out: (line) => process.stdout.write(line + '\n'),
   err: (line) => process.stderr.write(line + '\n'),
-  frameworkVersion: '1.0.0',
+  frameworkVersion: FRAMEWORK_VERSION,
   openBrowser(url) {
     const command = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'cmd' : 'xdg-open'
     const args = process.platform === 'win32' ? ['/c', 'start', '', url] : [url]

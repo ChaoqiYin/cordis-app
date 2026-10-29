@@ -23,8 +23,10 @@ import {
   ENV_PORT,
   ENV_RESOURCES,
   ENV_TOKEN,
+  ENV_VERSION,
   EXIT_PORT_IN_USE,
   EXIT_RESTART,
+  FRAMEWORK_VERSION,
   MAX_PORT_RETRIES,
   encodeHandshake,
   handshakeOf,
@@ -121,6 +123,7 @@ export class Supervisor {
           token: this.token,
           dataDir: this.options.dataDir,
           resourcesDir: this.options.resourcesDir,
+          version: this.version,
         }),
       })
       this.child = child
@@ -272,6 +275,8 @@ export function buildWorkerEnv(input: {
   token: string
   dataDir: string
   resourcesDir?: string
+  /** 框架版本；由 supervisor 注入，worker 据此生成 manifest 与 peer 校验 */
+  version: string
 }): NodeJS.ProcessEnv {
   const isWindows = process.platform === 'win32'
   const layout = resolveLayout(input.dataDir)
@@ -285,6 +290,7 @@ export function buildWorkerEnv(input: {
     [ENV_PORT]: String(input.port),
     [ENV_TOKEN]: input.token,
     [ENV_DATA]: input.dataDir,
+    [ENV_VERSION]: input.version,
     ...(input.resourcesDir ? { [ENV_RESOURCES]: input.resourcesDir } : {}),
     // 用户 shell 里残留的调试或注入配置会污染 worker。
     NODE_OPTIONS: '',
@@ -293,11 +299,8 @@ export function buildWorkerEnv(input: {
 }
 
 function readVersion(): string {
-  try {
-    return (globalThis as any).CORDIS_APP_VERSION ?? '1.0.0'
-  } catch {
-    return '1.0.0'
-  }
+  // 版本只有 FRAMEWORK_VERSION 一个真源；聚合包的 package.json 在构建时生成它。
+  return FRAMEWORK_VERSION
 }
 
 export type { PluginFailure }

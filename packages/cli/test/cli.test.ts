@@ -11,8 +11,9 @@ import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { FRAMEWORK_VERSION } from '@cordis-app/protocol'
 import { parseArgs, UsageError, main } from '../lib/index.js'
-import { commandList, commandNew, commandRemove, type CommandIO } from '../lib/index.js'
+import { commandList, commandNew, commandRemove, defaultIO, type CommandIO } from '../lib/index.js'
 
 interface Fake {
   out: string[]
@@ -179,10 +180,12 @@ test('main 对用法错误返回 2，主流程错误返回 1', async () => {
   assert.ok(help.out.join('\n').includes('cordis-app new'))
 })
 
-test('main --version 只输出版本号', async () => {
+test('--version 与 new 使用的框架版本来自唯一真源', async () => {
+  assert.equal(defaultIO.frameworkVersion, FRAMEWORK_VERSION)
+
   const fake = fakeIO()
   assert.equal(await main(['--version'], fake.io), 0)
-  assert.match(fake.out[0]!, /^\d+\.\d+\.\d+$/)
+  assert.equal(fake.out[0], FRAMEWORK_VERSION)
 })
 
 test('run 在缺少应用定义时不会去 fork worker', async () => {
