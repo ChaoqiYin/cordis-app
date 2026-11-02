@@ -17,13 +17,14 @@ worker。它决定安装来源与插件根的扫描范围，是进程配置，HT
 缺省运行形态。项目根是事实源，安装走 npm，插件可来自项目本地根与项目依赖根。
 
 **打包模式**
-面向分发布局的运行形态：从 `dist/` 产物运行，清单是 `dist/app.json`，只接受
-签名插件包；不扫描 `<project>/plugins` 与 `<project>/node_modules`，除非显式
-传入本地插件根。
+面向分发布局的运行形态：CLI 从 `dist/` 产物运行，桌面外壳从释放目录运行；
+清单是构建产物里的 `app.json`，只接受签名插件包；不扫描 `<project>/plugins`
+与 `<project>/node_modules`，除非显式传入本地插件根。
 
 **用户插件根（`userPluginsDir`）**
-可写的插件安装目录。`start` 使用 `<project>/data/plugins`；worker 以它的父目录
-作为用户数据根，`installed.json`、安装事务日志与插件目录都在那里。
+可写的插件安装目录。`start` 使用 `<project>/data/plugins`；桌面外壳传入
+`<桌面数据目录>/plugins`。worker 以它的父目录作为用户数据根，
+`installed.json`、安装事务日志与插件目录都在那里。
 
 **`package.json`**
 项目依赖的唯一真源：`cordis-app`、React、插件包都写在这里。`add`/`remove` 通过
@@ -62,7 +63,7 @@ worker。它决定安装来源与插件根的扫描范围，是进程配置，HT
 **插件根**
 发现插件的目录，每个根只扫一层。按优先级从高到低：内置（`resources/plugins`）、
 项目本地（`<project>/plugins`）、项目依赖（`<project>/node_modules`）、用户
-（`<userData>/plugins`）。重复 id 保留高优先级插件。项目模式四个根都参与；打包
+（`<桌面数据目录>/plugins`）。重复 id 保留高优先级插件。项目模式四个根都参与；打包
 模式只扫内置与用户（显式传入的本地根仍生效），不扫项目依赖。
 
 **插件入口**
@@ -103,7 +104,7 @@ body 暴露给插件的 UI 扩展点：pages（`PluginPageOutlet`）、slots
 
 **事务日志（`install-journal.json`）**
 `<project>/.cordis/install-journal.json`，打包模式写在
-`<userData>/.cordis/install-journal.json`。来源动手前落盘，记录来源、动作、
+`<桌面数据目录>/.cordis/install-journal.json`。来源动手前落盘，记录来源、动作、
 规格、事实文件原文与来源自己的事务前状态；回滚成功后删除。进程被强杀后，
 下一次启动据此恢复。
 
@@ -118,20 +119,47 @@ tar.gz 归档，包含 `plugin.json`、`package.json`、server/client 产物与
 id、版本与 hash。
 
 **`installed.json`**
-打包模式的安装事实，写在 `<userData>/installed.json`。记录每个插件的版本、
+打包模式的安装事实，写在 `<桌面数据目录>/installed.json`。记录每个插件的版本、
 目录名、内容 hash 与安装时间。
 
+**桌面安装目录**
+`package:desktop` 的 `--out` 目录，也只读安装根：包含 `cordis-app[.exe]` 与
+`bin/{node, cordis-app-supervisor.mjs, cordis-app-worker.mjs}`。外壳以「安装目录
+下存在 `bin/node`」判定打包形态；运行期从不写入这里。
+
+**桌面数据目录**
+打包应用的可写用户数据根。默认按平台：macOS
+`~/Library/Application Support/cordis-app`、Windows `%APPDATA%\cordis-app`、
+Linux `${XDG_DATA_HOME:-~/.local/share}/cordis-app`；可用外壳的 `--data` 或
+`CORDIS_APP_DATA` 覆盖，`--data` 优先。包含释放目录、用户插件根、
+`installed.json`、`.cordis/` 与 `data/`。
+
+**释放目录**
+`<桌面数据目录>/app/<hash>/`。打包时内嵌的应用产物在首次启动后释放到这里；
+目录名是「路径 + 内容」的哈希。相同内容再次启动直接复用，不重复写盘；内容变化
+生成新目录，并在取得单实例锁后清理旧目录。释放先写 `.tmp-*` 再原子改名，失败
+不会留下半成品。
+
 **只读安装目录**
-安装完成后不再被修改的代码与依赖目录（例如 `<userData>/plugins/<id>@<version>/`、
-`resources/`）。
+运行期不再被写入的代码与依赖目录。桌面形态就是「桌面安装目录」；项目模式指
+构建后不再修改的依赖目录。用户安装的插件目录
+（`<桌面数据目录>/plugins/<id>@<version>/`）在安装完成后也不修改，但它位于可写
+数据根内，不是安装目录。
 
 **用户数据**
 运行时可写的数据根：项目模式是 `<project>/data`（配置为 `data/config.json`），
-打包模式是 `<userData>`。
+打包模式是桌面数据目录。
 
 **`runtime.json`**
 `<project>/.cordis/runtime.json`，supervisor 写入的运行中快照，供 `restart` 定位
-实例。
+实例。打包模式下「项目根」是桌面数据目录，因此文件位于
+`<桌面数据目录>/.cordis/runtime.json`。
+
+**`--data` 与 `--project`**
+CLI 的 `--data` 是 `--project` 的兼容别名，二者都指项目根。Go 外壳的 `--data`
+指「桌面数据目录」，不是项目源码根；外壳交给 supervisor 时一律用 `--project`。
+打包模式下 supervisor 的「项目根」就是桌面数据目录——运行时事实、`.cordis/`
+与 `data/` 都在那里；项目模式下才是源码项目根。两种同名参数不能混用。
 
 ## 进程
 
@@ -157,6 +185,10 @@ supervisor stdout 上唯一的字符串契约：
 - **实例 / `instances/default`**：应用不再有平台级实例目录，一切基于项目根。
 - **公共 `app.lock`**：已删除。版本与完整性属于项目 lockfile 或
   `installed.json`。
-- **全局数据目录**：项目模式的数据在 `<project>/data`；只有打包模式才有
-  `<userData>`。
-- **`--data` 作为「数据目录」**：它只是 `--project` 的兼容别名，含义是项目根。
+- **全局数据目录**：项目模式的数据在 `<project>/data`；只有打包模式才有桌面
+  数据目录。
+- **把外壳的 `--data` 当成项目源码根**：已废弃。外壳的 `--data` 是桌面数据
+  目录，交给 supervisor 时叫 `--project`；CLI 的同名参数才是项目根的兼容
+  别名（见「`--data` 与 `--project`」）。
+- **可写安装目录**：桌面安装目录在运行期只读，应用产物释放到桌面数据目录后
+  才写入。
