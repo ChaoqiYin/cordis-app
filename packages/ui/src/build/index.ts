@@ -20,8 +20,9 @@ import {
   rmSync,
   watch,
   writeFileSync,
+  type Dirent,
 } from 'node:fs'
-import { dirname, join, relative, resolve } from 'node:path'
+import { basename, dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { build as esbuild, type BuildOptions } from 'esbuild'
 import { build as viteBuild, createServer, type Plugin, type ViteDevServer } from 'vite'
@@ -110,10 +111,15 @@ export async function buildProject(options: BuildProjectOptions): Promise<BuildR
     })
     log(`  server/index.js  ← ${relative(layout.projectRoot, serverEntry) || '（空入口）'}`)
 
-    const plugins = await buildLocalPlugins(layout.localPluginsDir, pluginsOut, {
-      minify: options.minify === true,
-      log,
-    })
+    const plugins = await buildProjectPlugins(
+      layout.localPluginsDir,
+      layout.nodeModulesDir,
+      pluginsOut,
+      {
+        minify: options.minify === true,
+        log,
+      },
+    )
     log(`  resources/plugins/  ${plugins.length} 个`)
     builtPlugins = plugins
 
@@ -319,76 +325,168 @@ function findProjectServer(projectRoot: string): string | undefined {
   return undefined
 }
 
-/** 构建项目 plugins/ 下带 plugin.json 的本地插件。 */
+type PluginRootKind = 'local' | 'dependency'
+
+interface BuildPluginsOptions {
+  minify: boolean
+  log: (line: string) => void
+}
+
+/**
+ * 构建可分发布布局里的插件。
+ *
+ * 本地 `plugins/` 与项目依赖根都按同一套预设重建：运行时的项目模式会同时
+ * 扫描这两个根，构建后的 packaged 形态也必须包含同一组插件，否则
+ * `add` → `build` → `start` 会静默丢掉 npm 安装的插件。
+ *
+ * 同 id 时本地插件优先，与运行时 catalog 的 local > dependency 一致。
+ */
+async function buildProjectPlugins(
+  localRoot: string,
+  nodeModulesDir: string,
+  outRoot: string,
+  options: BuildPluginsOptions,
+): Promise<BuiltPlugin[]> {
+  return buildPluginRoots(
+    [
+      { dir: localRoot, kind: 'local' },
+      { dir: nodeModulesDir, kind: 'dependency' },
+    ],
+    outRoot,
+    options,
+  )
+}
+
+/** 构建项目 plugins/ 下带 plugin.json 的本地插件（dev 只构建这个根）。 */
 async function buildLocalPlugins(
   sourceRoot: string,
   outRoot: string,
-  options: { minify: boolean; log: (line: string) => void },
+  options: BuildPluginsOptions,
 ): Promise<BuiltPlugin[]> {
-  if (!existsSync(sourceRoot)) return []
+  return buildPluginRoots([{ dir: sourceRoot, kind: 'local' }], outRoot, options)
+}
 
+async function buildPluginRoots(
+  roots: ReadonlyArray<{ dir: string; kind: PluginRootKind }>,
+  outRoot: string,
+  options: BuildPluginsOptions,
+): Promise<BuiltPlugin[]> {
   const built: BuiltPlugin[] = []
-  const ids = new Set<string>()
-  for (const entry of readdirSync(sourceRoot, { withFileTypes: true })) {
-    if (!entry.isDirectory() || entry.name.startsWith('.')) continue
-    const pluginRoot = join(sourceRoot, entry.name)
-    const manifestPath = join(pluginRoot, 'plugin.json')
-    if (!existsSync(manifestPath)) continue
+  const ids = new Map<string, PluginRootKind>()
 
-    const manifest = readPluginManifest(manifestPath)
-    const id = manifest.id ?? entry.name
-    if (!/^[A-Za-z0-9._-]+$/.test(id)) {
-      throw new Error(`插件 id 只能包含字母、数字、点、下划线与短横线：${id}`)
-    }
-    if (ids.has(id)) throw new Error(`插件 id 重复：${id}`)
-    ids.add(id)
+  for (const root of roots) {
+    if (!existsSync(root.dir)) continue
+    for (const pluginRoot of packageDirectories(root.dir)) {
+      const manifestPath = join(pluginRoot, 'plugin.json')
+      if (!existsSync(manifestPath)) continue
 
-    const pluginOut = join(outRoot, id)
-    mkdirSync(pluginOut, { recursive: true })
-    copyIfExists(manifestPath, join(pluginOut, 'plugin.json'))
-    copyIfExists(join(pluginRoot, 'package.json'), join(pluginOut, 'package.json'))
-
-    const files: string[] = []
-    const entries: Array<{ kind: 'client' | 'server'; relativePath: string }> = []
-    if (manifest.client) entries.push({ kind: 'client', relativePath: manifest.client })
-    if (manifest.server) entries.push({ kind: 'server', relativePath: manifest.server })
-
-    for (const { kind, relativePath } of entries) {
-      const source = join(pluginRoot, relativePath)
-      if (!existsSync(source)) {
-        throw new Error(`插件 ${id} 的 ${kind} 入口不存在：${relativePath}`)
+      const manifest = readPluginManifest(manifestPath)
+      const id = manifest.id ?? basename(pluginRoot)
+      if (!/^[A-Za-z0-9._-]+$/.test(id)) {
+        throw new Error(`插件 id 只能包含字母、数字、点、下划线与短横线：${id}`)
       }
-      const outfile = join(pluginOut, relativePath)
-      const preset =
-        kind === 'client'
-          ? clientPreset({
-              entry: source,
-              outfile,
-              root: pluginRoot,
-              minify: options.minify,
-              sourcemap: true,
-            })
-          : serverPreset({
-              entry: source,
-              outfile,
-              root: pluginRoot,
-              minify: options.minify,
-              sourcemap: true,
-            })
-      await esbuild(buildOptions(preset, pluginRoot))
-      files.push(relativePath)
-    }
 
-    // 没有声明入口的插件（纯配置/资源包）原样复制，运行时会被告知不可加载。
-    if (entries.length === 0) {
-      copyDirectory(pluginRoot, pluginOut)
-      options.log(`  ${id}: 没有构建入口，已原样复制`)
-    }
+      const existing = ids.get(id)
+      if (existing) {
+        if (existing === 'local' && root.kind === 'dependency') {
+          options.log(`  ${id}: 本地插件优先，跳过依赖 ${pluginRoot}`)
+          continue
+        }
+        throw new Error(`插件 id 重复：${id}`)
+      }
+      ids.set(id, root.kind)
 
-    built.push({ id, files, copied: entries.length === 0 })
+      built.push(await buildPluginPackage(pluginRoot, manifestPath, manifest, id, outRoot, options))
+    }
   }
 
   return built
+}
+
+/**
+ * 扫描一个插件根下的包目录。
+ *
+ * `node_modules` 的 `@scope/name` 是一个包，所以作用域目录再展开一层；
+ * 点目录（`.bin`、`.pnpm`）跳过。符号链接（pnpm / npm file: 依赖）也要接受。
+ */
+function packageDirectories(root: string): string[] {
+  const found: string[] = []
+  for (const entry of readdirSafe(root)) {
+    if (entry.name.startsWith('.')) continue
+    if (!entry.isDirectory() && !entry.isSymbolicLink()) continue
+
+    if (entry.name.startsWith('@')) {
+      for (const scoped of readdirSafe(join(root, entry.name))) {
+        if (scoped.name.startsWith('.')) continue
+        if (!scoped.isDirectory() && !scoped.isSymbolicLink()) continue
+        found.push(join(root, entry.name, scoped.name))
+      }
+    } else {
+      found.push(join(root, entry.name))
+    }
+  }
+  return found
+}
+
+function readdirSafe(dir: string): Dirent[] {
+  try {
+    return readdirSync(dir, { withFileTypes: true })
+  } catch {
+    return []
+  }
+}
+
+async function buildPluginPackage(
+  pluginRoot: string,
+  manifestPath: string,
+  manifest: PluginManifest,
+  id: string,
+  outRoot: string,
+  options: BuildPluginsOptions,
+): Promise<BuiltPlugin> {
+  const pluginOut = join(outRoot, id)
+  mkdirSync(pluginOut, { recursive: true })
+  copyIfExists(manifestPath, join(pluginOut, 'plugin.json'))
+  copyIfExists(join(pluginRoot, 'package.json'), join(pluginOut, 'package.json'))
+
+  const files: string[] = []
+  const entries: Array<{ kind: 'client' | 'server'; relativePath: string }> = []
+  if (manifest.client) entries.push({ kind: 'client', relativePath: manifest.client })
+  if (manifest.server) entries.push({ kind: 'server', relativePath: manifest.server })
+
+  for (const { kind, relativePath } of entries) {
+    const source = join(pluginRoot, relativePath)
+    if (!existsSync(source)) {
+      throw new Error(`插件 ${id} 的 ${kind} 入口不存在：${relativePath}`)
+    }
+    const outfile = join(pluginOut, relativePath)
+    const preset =
+      kind === 'client'
+        ? clientPreset({
+            entry: source,
+            outfile,
+            root: pluginRoot,
+            minify: options.minify,
+            sourcemap: true,
+          })
+        : serverPreset({
+            entry: source,
+            outfile,
+            root: pluginRoot,
+            minify: options.minify,
+            sourcemap: true,
+          })
+    await esbuild(buildOptions(preset, pluginRoot))
+    files.push(relativePath)
+  }
+
+  // 没有声明入口的插件（纯配置/资源包）原样复制，运行时会被告知不可加载。
+  if (entries.length === 0) {
+    copyDirectory(pluginRoot, pluginOut)
+    options.log(`  ${id}: 没有构建入口，已原样复制`)
+  }
+
+  return { id, files, copied: entries.length === 0 }
 }
 
 function buildOptions(preset: BuildOptions, root: string): BuildOptions {
