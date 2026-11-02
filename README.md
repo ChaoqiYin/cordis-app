@@ -49,7 +49,7 @@ cordis-app 只支持**项目模式**：应用就是一个普通目录，`package
 
 ## 快速开始
 
-环境要求：Node.js ≥ 20.19、pnpm 10。构建 Go 外壳还需要 Go 1.25。
+环境要求：Node.js ≥ 22.18、pnpm 10。构建 Go 外壳还需要 Go 1.25。
 
 ```bash
 pnpm install

@@ -6,7 +6,7 @@
   "type": "module",
   "packageManager": "pnpm@10.26.2",
   "engines": {
-    "node": ">=20.19.0"
+    "node": ">=22.18.0"
   },
   "scripts": {
     "version:sync": "node packages/cordis-app/scripts/sync-version.mjs",
