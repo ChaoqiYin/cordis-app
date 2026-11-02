@@ -3,19 +3,10 @@
  *
  * 只做参数解析与信号处理，逻辑全在 Supervisor 类里，便于测试。
  */
-import { readSupervisorArgs } from './args.js'
+import { readSupervisorArgs, toSupervisorOptions } from './args.js'
 import { Supervisor } from './supervisor.js'
 
-const options = readSupervisorArgs(process.argv.slice(2))
-const supervisor = new Supervisor({
-  projectRoot: options.projectRoot,
-  ...(options.resourcesDir ? { resourcesDir: options.resourcesDir } : {}),
-  ...(options.serverEntry ? { serverEntry: options.serverEntry } : {}),
-  ...(options.localPluginsDir ? { localPluginsDir: options.localPluginsDir } : {}),
-  ...(options.userPluginsDir ? { userPluginsDir: options.userPluginsDir } : {}),
-  ...(options.mode ? { mode: options.mode } : {}),
-  ...(options.dev ? { dev: true } : {}),
-})
+const supervisor = new Supervisor(toSupervisorOptions(readSupervisorArgs(process.argv.slice(2))))
 
 const handshake = await supervisor.start()
 // 握手行已经写到 stdout；这里在 stderr 记一条供人阅读的信息。

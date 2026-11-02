@@ -20,6 +20,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   ENV_APP_JSON,
+  ENV_BUNDLE_PUBLIC_KEY,
   ENV_DEV,
   ENV_LOCAL_PLUGINS,
   ENV_MODE,
@@ -327,13 +328,19 @@ export function buildWorkerEnv(input: {
 }): NodeJS.ProcessEnv {
   const isWindows = process.platform === 'win32'
   const layout = resolveProjectLayout(input.projectRoot)
+  // 公钥是外壳/CLI 对 supervisor 进程的显式配置，必须穿过白名单到达 worker。
+  // 未设置（或为空）时不能留下空值键：worker 用真值判断它是否可信。
+  const bundlePublicKey = process.env[ENV_BUNDLE_PUBLIC_KEY]
   const base: NodeJS.ProcessEnv = isWindows
     ? // Windows 上 PATH 不能只留 bin/：系统 DLL 的查找依赖 System32 等目录。
       { ...process.env }
     : { PATH: '', HOME: input.projectRoot, TMPDIR: layout.tmpDir }
+  // Windows 分支继承了整个环境，这里先清掉可能存在的空键，再由下方统一转发。
+  if (!bundlePublicKey) delete base[ENV_BUNDLE_PUBLIC_KEY]
 
   return {
     ...base,
+    ...(bundlePublicKey ? { [ENV_BUNDLE_PUBLIC_KEY]: bundlePublicKey } : {}),
     [ENV_PORT]: String(input.port),
     [ENV_TOKEN]: input.token,
     [ENV_PROJECT]: input.projectRoot,

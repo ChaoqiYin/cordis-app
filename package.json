@@ -16,9 +16,9 @@
     "build:runtime": "pnpm --filter @cordis-app/runtime run build",
     "build:preset": "pnpm --filter @cordis-app/preset run build",
     "build:cli": "pnpm --filter @cordis-app/cli run build",
-    "stage:ui": "node packages/shell/scripts/stage-resources.mjs",
-    "build:shell": "pnpm build:ui && pnpm stage:ui && mkdir -p dist && cd packages/shell && go build -o ../../dist/cordis-app .",
-    "test:shell": "cd packages/shell && go test ./...",
+    "build:shell": "pnpm build:ui && mkdir -p dist && cd packages/shell && go build -o ../../dist/cordis-app .",
+    "package:desktop": "pnpm build:runtime && node packages/shell/scripts/package-desktop.mjs",
+    "test:shell": "cd packages/shell && go test ./... && node --test scripts/*.test.mjs",
     "typecheck": "pnpm -r --filter \"./packages/**\" --filter \"./examples/**\" run typecheck",
     "test": "pnpm -r --filter \"./packages/**\" --filter \"./examples/**\" run test",
     "dev": "pnpm --filter @cordis-app/ui run dev",
@@ -27,6 +27,7 @@
   "devDependencies": {
     "@types/node": "^24.19.2",
     "cordis-app": "workspace:*",
+    "esbuild": "^0.28.2",
     "typescript": "^5.9.3"
   }
 }

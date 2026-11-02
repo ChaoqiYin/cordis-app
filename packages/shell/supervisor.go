@@ -56,17 +56,39 @@ type supervisor struct {
 	once   sync.Once
 }
 
-func startSupervisor(l layout) (*supervisor, error) {
+// supervisorArgs 构造 supervisor 的命令行参数。
+//
+// 项目根一律用 --project（可写数据目录），不再使用含义模糊的 --data。
+// 开发形态只传项目根与资源根；打包形态补上发布契约里的全部字段。
+func supervisorArgs(l layout) []string {
 	args := []string{
 		l.supervisorJS,
-		"--data", l.dataDir,
+		"--project", l.projectRoot,
 		"--resources", l.resourcesDir,
 	}
+	if !l.packaged {
+		return args
+	}
+	return append(args,
+		"--server-entry", l.serverEntry,
+		"--app-json", l.appJson,
+		"--user-plugins", l.userPluginsDir,
+		"--mode", l.mode,
+		"--worker", l.workerJS,
+	)
+}
+
+func startSupervisor(l layout) (*supervisor, error) {
+	args := supervisorArgs(l)
 
 	cmd := exec.Command(l.nodeBin, args...)
 	// 工作目录固定：supervisor 与 worker 用相对路径解析任何东西时，
-	// 都不能受「用户从哪个目录启动外壳」影响。
+	// 都不能受「用户从哪个目录启动外壳」影响。打包形态用可写数据目录，
+	// 不依赖只读的安装目录。
 	cmd.Dir = l.installDir
+	if l.packaged {
+		cmd.Dir = l.dataDir
+	}
 	cmd.Env = supervisorEnv(l)
 	setProcessGroup(cmd)
 
@@ -140,12 +162,24 @@ func startSupervisor(l layout) (*supervisor, error) {
 // supervisor 都起不来。裁剪只对正式安装生效，那里有随包分发的 node。
 func supervisorEnv(l layout) []string {
 	env := os.Environ()
+
+	// 必须先移除外层注入的 CORDIS_APP_*：用户 shell 里残留的调试配置不能
+	// 劫持项目根或资源根。之后只写外壳自己的值，保证每个键只出现一次。
+	env = filterEnv(env,
+		"NODE_OPTIONS", "NODE_PATH",
+		"CORDIS_APP_DATA", "CORDIS_APP_RESOURCES",
+		"CORDIS_APP_PROJECT", "CORDIS_APP_BUNDLE_PUBLIC_KEY",
+	)
+
 	env = append(env,
 		"CORDIS_APP_DATA="+l.dataDir,
+		"CORDIS_APP_PROJECT="+l.projectRoot,
 		"CORDIS_APP_RESOURCES="+l.resourcesDir,
 	)
-	// 用户 shell 里残留的调试或注入配置会污染 worker
-	env = filterEnv(env, "NODE_OPTIONS", "NODE_PATH")
+
+	if key := bundlePublicKey(l); key != "" {
+		env = append(env, "CORDIS_APP_BUNDLE_PUBLIC_KEY="+key)
+	}
 
 	if l.packaged {
 		// Windows 上 PATH 不能只留 bin/：系统 DLL 的查找依赖 System32 等目录，
@@ -161,6 +195,33 @@ func supervisorEnv(l layout) []string {
 		env = append(env, extra.values...)
 	}
 	return env
+}
+
+// bundlePublicKey 解析可信公钥：启动环境 > 随包 PEM > 不注入。
+//
+// 环境变量的值是 PEM 内容而不是路径——worker 直接把它当 publicKey 用。
+// 两个来源都没有（或随包文件读不出来）时只警告、不失败：没有公钥是合法
+// 配置，worker 会保持 fail-closed，拒绝安装签名插件包。
+func bundlePublicKey(l layout) string {
+	if key := os.Getenv("CORDIS_APP_BUNDLE_PUBLIC_KEY"); key != "" {
+		return key
+	}
+	if l.bundlePublicKeyFile == "" {
+		warnMissingPublicKey()
+		return ""
+	}
+	data, err := os.ReadFile(l.bundlePublicKeyFile)
+	if err != nil {
+		warnMissingPublicKey()
+		return ""
+	}
+	return string(data)
+}
+
+func warnMissingPublicKey() {
+	fmt.Fprintln(os.Stderr,
+		"警告：启动环境与随包 PEM 都没有提供插件包签名公钥；"+
+			"worker 将保持 fail-closed，拒绝安装签名插件包。")
 }
 
 func filterEnv(env []string, drop ...string) []string {
