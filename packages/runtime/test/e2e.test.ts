@@ -223,6 +223,40 @@ test('运行形态决定安装来源：项目模式 npm，打包模式 bundle', 
   }
 })
 
+test('打包模式不做项目侧 doctor：不兼容的项目依赖不影响启动', async () => {
+  // 桌面形态的项目根是数据目录，根本没有 package.json；即便有，它也不是 npm
+  // 安装事实。用一份「项目模式下会硬失败」的依赖，证明打包形态确实跳过了检查。
+  const fixture = createFixture({ dependencies: { 'cordis-app': '^0.0.1' } })
+  const options = {
+    projectRoot: fixture.projectRoot,
+    resourcesDir: fixture.resourcesDir,
+    userPluginsDir: fixture.userPluginsDir,
+  }
+
+  // 先确认 fixture 有效：同一份依赖在项目模式下是硬错误。
+  await assert.rejects(
+    startWorker({
+      port: await findFreePort(),
+      token: generateToken(),
+      ...options,
+    }),
+    /不兼容/,
+  )
+
+  mkdirSync(fixture.userPluginsDir, { recursive: true })
+  const handle = await startWorker({
+    port: await findFreePort(),
+    token: generateToken(),
+    ...options,
+    mode: 'packaged',
+  })
+  try {
+    assert.equal(handle.sourceKind, 'bundle')
+  } finally {
+    await handle.close()
+  }
+})
+
 test('打包模式缺少可写用户插件根时拒绝启动', async () => {
   const fixture = createFixture()
   await assert.rejects(

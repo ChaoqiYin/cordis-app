@@ -117,7 +117,8 @@ body 暴露给插件的 UI 扩展点：pages（`PluginPageOutlet`）、slots
 **启动 doctor**
 worker 启动前的兼容性检查：项目 `package.json` 声明的 `cordis-app` 版本必须与
 当前框架兼容（缺失只告警，不兼容是硬错误），插件还要校验 `cordis-app` 与共享
-模块的 peer 范围。检查在监听端口之前完成，避免留下半启动的 worker。
+模块的 peer 范围。检查在监听端口之前完成，避免留下半启动的 worker。项目侧检查
+只在项目模式执行；打包形态没有 npm 安装，依赖由构建期保证自包含。
 
 **插件包（`.cordis-plugin`）**
 tar.gz 归档，包含 `plugin.json`、`package.json`、server/client 产物与

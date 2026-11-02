@@ -231,6 +231,14 @@ async function main() {
     }
     const entry = manifest.plugins?.hello
     if (!entry) fail('桌面形态清单里没有 hello')
+
+    // 项目侧 doctor 只对 npm 安装形态有意义；桌面形态的项目根是数据目录，
+    // 不应把「那里没有 package.json」误报成问题。
+    for (const doctorMessage of ['无法读取项目', '项目 package.json 没有声明 cordis-app']) {
+      if (stderr.includes(doctorMessage)) {
+        fail(`打包形态不应执行项目侧 doctor：${doctorMessage}`)
+      }
+    }
     const clientFile = entry.files?.[0]
     if (!clientFile) fail('hello 清单没有前端入口')
 
