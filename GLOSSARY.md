@@ -116,7 +116,9 @@ worker 启动前的兼容性检查：项目 `package.json` 声明的 `cordis-app
 **插件包（`.cordis-plugin`）**
 tar.gz 归档，包含 `plugin.json`、`package.json`、server/client 产物与
 `bundle.json`。第三方依赖已在构建期进入产物，归档不包含 `node_modules`。
-内容 hash 排除 `bundle.json` 自身；签名为 Ed25519，覆盖 id、版本与 hash。
+`package.json` 只保留元数据与 `peerDependencies`（框架契约）；`dependencies`
+只是开发/构建期的解析输入，运行时不安装。内容 hash 排除 `bundle.json` 自身；
+签名为 Ed25519，覆盖 id、版本与 hash。
 
 **自包含**
 模块产物在运行时不依赖项目或插件目录下的 `node_modules`；它需要的非框架

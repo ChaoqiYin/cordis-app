@@ -248,16 +248,33 @@ Linux `${XDG_DATA_HOME:-~/.local/share}/cordis-app`。可用外壳的
 
 ### 服务端依赖在构建期自包含
 
-`cordis-app build` 的服务端预设会用 esbuild 把第三方依赖打进项目
-`server/index.js` 与内置/本地插件的服务端产物；`dev` 使用同一个预设。只有
-Node 内置模块与 `cordis-app` 的类型面保持 external。`@cordis-app/*` 是框架
-内部包，不属于公开契约，值导入在构建期失败。
+唯一规则：**非框架提供的额外包由模块作者在构建期自包含**。服务端产物不在运行时
+从项目或插件目录的 `node_modules` 解析依赖。
 
-桌面形态的产物搬到数据目录后，Node 不会再去项目的 `node_modules` 解析依赖，
-因此 `package:desktop` 在暂存与构建之前扫描 `server/index.js` 与各插件的服务端
-入口。发现白名单外的裸导入会硬失败，列出文件与包名，且不生成安装目录。遇到
-这种情况时，检查依赖是否已声明在项目或插件的 `package.json` 中，然后重新执行
-`cordis-app build`。
+框架提供的服务端依赖只有 Node 内置模块（`node:*`）与 `cordis-app` 的类型面，
+构建时保持 external。`@cordis-app/*` 是框架内部包，不属于公开契约，值导入在
+构建期失败。
+
+五条路径共用这一条规则：
+
+- **`dev`**：与 `build` 使用同一个 `serverPreset`，项目 `server/` 与本地插件会
+  现场构建到 `.cordis/dev/`，第三方依赖在每次重建时重新打包。
+- **`build`**：项目 `server/index.js` 与 `resources/plugins/*` 的服务端入口都会把
+  第三方依赖打进各自的 ESM 产物；`dist/` 不包含 `node_modules`。
+- **`start`**：只读取 `dist/` 的 `app.json`、前端产物与 server 入口，部署时不需要
+  项目 `node_modules`。
+- **`package:desktop`**：在暂存与构建之前扫描项目 server 与各插件的服务端入口。
+  白名单外的裸导入会硬失败，列出文件与包名，且不生成安装目录。遇到这种情况时，
+  检查依赖是否已声明在项目或插件的 `package.json` 中，然后重新执行
+  `cordis-app build`。
+- **签名插件**：作者用 `@cordis-app/preset` 的 `serverPreset` / `clientPreset`
+  构建入口。`.cordis-plugin` 只含构建产物，不含 `node_modules`；`package.json`
+  只保留元数据与 `peerDependencies`，`dependencies` 只是构建输入，运行时不安装。
+  安装与启动不需要 npm 或网络。
+
+取舍（每个插件各带一份第三方依赖、模块级单例不跨插件共享、`dev` 重建更重、
+不支持原生 `.node` addon）记录在
+[ADR 0001](./docs/adr/0001-self-contained-server-builds.md)。
 
 ### 不在范围内
 
@@ -349,8 +366,11 @@ menus、settings 四个出口全部保留的写法。
 ## 签名插件包
 
 `.cordis-plugin` 是 tar.gz，包含 `plugin.json`、`package.json`、server/client
-产物与 `bundle.json`。`bundle.json` 记录内容 hash、Ed25519 签名与 peer 范围；
-安装时先比 hash、再验签名，任何一步失败都不改动用户插件目录。
+产物与 `bundle.json`。归档**不包含 `node_modules`**：第三方依赖已由作者在构建期
+打进 server/client 产物。`package.json` 只保留元数据与 `peerDependencies`；
+`dependencies` 是构建输入，安装与运行时不解析、也不安装。`bundle.json` 记录内容
+hash、Ed25519 签名与 peer 范围；安装时先比 hash、再验签名，任何一步失败都不改动
+用户插件目录。
 
 格式、hash 规范化、签名载荷与密钥管理见
 [docs/plugin-bundles.md](./docs/plugin-bundles.md)。

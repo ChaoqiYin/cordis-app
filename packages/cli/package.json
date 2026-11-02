@@ -30,7 +30,9 @@
     "@cordis-app/ui": "workspace:*"
   },
   "devDependencies": {
+    "@cordis-app/preset": "workspace:*",
     "@types/node": "^24.0.0",
+    "esbuild": "^0.28.2",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "typescript": "^5.9.3"
