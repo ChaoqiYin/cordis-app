@@ -20,6 +20,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from 'node:fs'
@@ -166,6 +167,7 @@ async function startPackagedWorker(
   projectRoot: string,
   userDataDir: string,
   publicKey: string,
+  dist?: { resourcesDir: string; serverEntry: string; appJson: string },
 ): Promise<{ handle: WorkerHandle; token: string; base: string }> {
   const port = await findFreePort()
   const token = generateToken()
@@ -176,8 +178,39 @@ async function startPackagedWorker(
     userPluginsDir: join(userDataDir, 'plugins'),
     mode: 'packaged',
     bundle: { publicKey },
+    ...(dist ?? {}),
   })
   return { handle, token, base: `http://127.0.0.1:${port}` }
+}
+
+/** 轮询健康检查，避免 supervisor 握手与 HTTP 监听之间的短暂竞态。 */
+async function waitForHealth(base: string, timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  let lastError: unknown
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(`${base}/__health`)
+      if (res.status === 200) return
+      lastError = new Error(`健康检查返回 ${res.status}`)
+    } catch (error) {
+      lastError = error
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+  throw lastError ?? new Error('健康检查超时')
+}
+
+/** 在项目 node_modules 里放一个假 npm 依赖；构建期必须把它打进产物。 */
+function writeProjectDependency(root: string, name: string): string {
+  const marker = 'PROCESS_SELF_CONTAINED_MARKER'
+  const dir = join(root, 'node_modules', name)
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(
+    join(dir, 'package.json'),
+    JSON.stringify({ name, version: '1.0.0', type: 'module', main: 'index.js' }),
+  )
+  writeFileSync(join(dir, 'index.js'), `export const marker = '${marker}'\n`)
+  return marker
 }
 
 async function fetchManifest(base: string, token: string): Promise<ClientManifest> {
@@ -344,6 +377,118 @@ test('项目模式闭环：new → 安装签名插件包 → 启动 → 渲染 �
       await third.handle.close()
     }
   } finally {
+    rmSync(work, { recursive: true, force: true })
+  }
+})
+
+test('打包形态删掉项目 node_modules 后，项目与本地插件路由仍可用', async () => {
+  const work = mkdtempSync(join(tmpdir(), 'cordis-self-contained-'))
+  const projectRoot = join(work, 'demo')
+  const userDataDir = join(work, 'userdata')
+  const nodeModules = join(projectRoot, 'node_modules')
+  const movedNodeModules = join(projectRoot, 'node_modules.off')
+  let nodeModulesMoved = false
+
+  mkdirSync(join(userDataDir, 'plugins'), { recursive: true })
+  try {
+    const io = {
+      out: () => {},
+      err: () => {},
+      frameworkVersion: FRAMEWORK_VERSION,
+    }
+    assert.equal(
+      await commandNew(parseArgs(['new', 'demo', '--project', projectRoot]), io),
+      0,
+    )
+
+    const marker = writeProjectDependency(projectRoot, 'cordis-fake-dep')
+    writeFileSync(
+      join(projectRoot, 'server', 'index.js'),
+      `import { marker } from 'cordis-fake-dep'
+export default function apply(ctx) {
+  ctx.router.get('/api/project-dependency', (_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ marker, from: 'project' }))
+  })
+}
+`,
+    )
+
+    const pluginRoot = join(projectRoot, 'plugins', 'local-dep')
+    mkdirSync(pluginRoot, { recursive: true })
+    writeFileSync(
+      join(pluginRoot, 'plugin.json'),
+      JSON.stringify({
+        id: 'local-dep',
+        displayName: 'Local Dependency',
+        server: 'server.js',
+      }),
+    )
+    writeFileSync(
+      join(pluginRoot, 'package.json'),
+      JSON.stringify({
+        name: 'cordis-local-dep',
+        version: '1.0.0',
+        type: 'module',
+        peerDependencies: { 'cordis-app': `^${FRAMEWORK_VERSION}` },
+        dependencies: { 'cordis-fake-dep': '^1.0.0' },
+      }),
+    )
+    writeFileSync(
+      join(pluginRoot, 'server.js'),
+      `import { marker } from 'cordis-fake-dep'
+export const inject = ['router']
+
+export function apply(ctx) {
+  ctx.router.get('/api/local-plugin-dependency', (_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ marker, from: 'plugin' }))
+  })
+}
+`,
+    )
+
+    const appJson = readJson(join(projectRoot, 'app.json'))
+    appJson.plugins = ['local-dep']
+    writeFileSync(join(projectRoot, 'app.json'), JSON.stringify(appJson, null, 2) + '\n')
+
+    const built = await buildProject({ projectRoot })
+    assert.equal(existsSync(join(built.outDir, 'node_modules')), false, 'dist 不能携带 node_modules')
+
+    // 先改名再启动：产物若仍保留裸导入，Node 会在这里解析失败。
+    renameSync(nodeModules, movedNodeModules)
+    nodeModulesMoved = true
+
+    const { publicKey } = generateKeyPairSync('ed25519')
+    const worker = await startPackagedWorker(
+      projectRoot,
+      userDataDir,
+      publicKey.export({ type: 'spki', format: 'pem' }).toString(),
+      {
+        resourcesDir: built.resourcesDir,
+        serverEntry: built.serverEntry,
+        appJson: built.appJson,
+      },
+    )
+    try {
+      await waitForHealth(worker.base)
+      const headers = { authorization: `Bearer ${worker.token}` }
+      for (const [path, from] of [
+        ['/api/project-dependency', 'project'],
+        ['/api/local-plugin-dependency', 'plugin'],
+      ] as const) {
+        const res = await fetch(`${worker.base}${path}`, { headers })
+        assert.equal(res.status, 200, `${from} 路由应在删除项目 node_modules 后仍可用`)
+        assert.deepEqual(await res.json(), { marker, from })
+      }
+      assert.deepEqual(worker.handle.failures, [])
+    } finally {
+      await worker.handle.close()
+    }
+  } finally {
+    if (nodeModulesMoved && existsSync(movedNodeModules)) {
+      renameSync(movedNodeModules, nodeModules)
+    }
     rmSync(work, { recursive: true, force: true })
   }
 })
