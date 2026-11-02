@@ -236,11 +236,17 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
 
   // 启动 doctor（项目侧）：依赖存在但不兼容是硬错误；只是没声明则警告。
   // 必须在监听端口之前完成，避免失败后留下一个半启动的 worker。
-  const projectCheck = checkProjectFrameworkFile(layout.packageJson, frameworkVersion)
-  if (projectCheck.missing) {
-    logger.warn(projectCheck.reason ?? '项目没有声明 cordis-app 依赖')
-  } else if (!projectCheck.ok) {
-    throw new Error(projectCheck.reason ?? '项目 cordis-app 依赖与当前框架版本不兼容')
+  //
+  // 打包形态没有 npm 安装：产物来自 `dist/` 或桌面释放目录，依赖已在构建期
+  // 自包含（ADR 0001），项目根往往只是桌面数据目录，根本不存在可供校验的
+  // `package.json`。对它做项目侧检查只会把「部署目录不是 npm 项目」误报成问题。
+  if (!packaged) {
+    const projectCheck = checkProjectFrameworkFile(layout.packageJson, frameworkVersion)
+    if (projectCheck.missing) {
+      logger.warn(projectCheck.reason ?? '项目没有声明 cordis-app 依赖')
+    } else if (!projectCheck.ok) {
+      throw new Error(projectCheck.reason ?? '项目 cordis-app 依赖与当前框架版本不兼容')
+    }
   }
 
   // 插件根按优先级扫描一次。打包形态只认「内置 + 用户」：依赖根属于项目
