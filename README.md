@@ -102,7 +102,7 @@ node packages/cli/lib/cli.js start --project /tmp/cordis-demo
 worker 装进一个可直接运行的桌面安装目录。前置条件是仓库已执行
 `pnpm install && pnpm build`，且项目已执行 `cordis-app build`。
 
-打包环境必须使用 Node.js ≥ 24；安装包随带打包者当前的 Node 运行时，最终用户
+打包环境必须使用 Node.js ≥ 24；安装包随包提供打包者当前的 Node 运行时，最终用户
 不需要另外安装 Node。完整的版本一致性规则见
 [ADR 0002](./docs/adr/0002-node-version-contract.md)。
 
