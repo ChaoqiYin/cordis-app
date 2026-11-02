@@ -74,6 +74,19 @@ test('startApp 解析握手行并返回 url / token / port', async () => {
   await app.stop()
 })
 
+test('startApp 把显式端口交给 supervisor', async () => {
+  const fake = fakeSpawn()
+  const app = await startApp({ ...baseOptions, port: 41234, spawn: fake.spawn })
+
+  assert.deepEqual(fake.calls[0]!.slice(1), [
+    '--project',
+    baseOptions.projectRoot,
+    '--port',
+    '41234',
+  ])
+  await app.stop()
+})
+
 test('ready 与 plugin-failure 事件在返回后仍能被订阅到', async () => {
   const fake = fakeSpawn(
     handshake({ failures: [{ id: 'broken', reason: '缺少 plugin.json' }] }),

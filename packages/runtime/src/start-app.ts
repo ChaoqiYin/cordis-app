@@ -163,6 +163,7 @@ export async function startApp(options: StartAppOptions): Promise<AppHandle> {
   const pastFailures: PluginFailure[] = []
 
   const args = ['--project', options.projectRoot]
+  if (options.port) args.push('--port', String(options.port))
   if (options.resourcesDir) args.push('--resources', options.resourcesDir)
   if (options.serverEntry) args.push('--server-entry', options.serverEntry)
   if (options.appJson) args.push('--app-json', options.appJson)
