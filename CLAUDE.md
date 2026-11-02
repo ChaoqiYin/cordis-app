@@ -1,3 +1,9 @@
+## Project status
+
+Currently unpublished to npm; there is no release workflow. Consumers should install
+`packages/cordis-app` through a local `file:` dependency (see README). Do not add
+publish/release automation unless explicitly asked.
+
 ## Agent skills
 
 ### Issue tracker

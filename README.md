@@ -7,6 +7,9 @@ cordis-app 只支持**项目模式**：应用就是一个普通目录，`package
 真源，`app.json` 记录应用身份、启用的插件与 body 提供的 UI 能力。不再有
 `instances/default`、平台级数据目录或公共 `app.lock`。
 
+> **发布状态**：项目尚未发布到 npm，也暂时没有 release 流程。使用方项目请通过
+> 本地 `file:` 路径依赖接入，见[在另一个项目中使用](#在另一个项目中使用本地联调)。
+
 ## 项目长什么样
 
 ```
@@ -50,6 +53,9 @@ cordis-app 只支持**项目模式**：应用就是一个普通目录，`package
 ## 快速开始
 
 环境要求：Node.js ≥ 24、pnpm 10。构建 Go 外壳还需要 Go 1.25。
+
+下面的命令都在本仓库根执行，用于仓库内演示；在另一个项目中使用见
+[本地联调](#在另一个项目中使用本地联调)。
 
 ```bash
 pnpm install
@@ -95,6 +101,38 @@ node packages/cli/lib/cli.js start --project /tmp/cordis-demo
 
 `start` 从 `dist/` 读取 `app.json`、前端产物与 server 入口；可写的 `data/` 与
 运行时 `.cordis/` 仍按项目根定位。源码根没有 `app.json` 不影响 `start`。
+
+## 在另一个项目中使用（本地联调）
+
+项目尚未发布到 npm。使用方项目不要依赖 npm registry 上的 `cordis-app`，而是把
+依赖指向本仓库的聚合包：
+
+```bash
+# 源仓库：先安装并构建
+cd /path/to/cordis-app
+pnpm install
+pnpm build
+
+# 使用方项目
+cd /path/to/your-app
+npm install /path/to/cordis-app/packages/cordis-app
+```
+
+npm 会在使用方的 `node_modules/cordis-app` 创建 symlink，指向本仓库的
+`packages/cordis-app`；`package.json` 记录为 `file:` 依赖。源仓库必须先完成
+`pnpm install`，`cordis-app` 依赖的 `@cordis-app/*` 才能从源仓库的
+`node_modules` 解析。使用方同样需要 Node.js ≥ 24。
+
+修改源码后，只需在源仓库重新执行 `pnpm build`，使用方不需要重新安装：
+
+```bash
+npx cordis-app build
+npx cordis-app start
+```
+
+如果使用方是 pnpm 项目，可以用
+`pnpm add link:/path/to/cordis-app/packages/cordis-app`。这是临时联调方式，
+不是发布形态；release 流程补齐后再改为版本依赖。
 
 ## 桌面打包
 
