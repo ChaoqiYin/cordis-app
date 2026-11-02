@@ -32,6 +32,13 @@ export interface PresetOptions {
   sourcemap?: boolean
   /** 生产构建（压缩、去调试代码），默认按 NODE_ENV 判断 */
   minify?: boolean
+  /**
+   * 是否注入 `createRequire` banner，默认 true。
+   *
+   * 只在入口已经是本预设的产物时设为 false：否则二次构建会重复声明
+   * `__cordisAppCreateRequire`，产物在加载时直接语法错误。
+   */
+  injectRuntimeBanner?: boolean
 }
 
 function common(options: PresetOptions, browser: boolean): BuildOptions {
@@ -69,7 +76,7 @@ export function serverPreset(options: PresetOptions): BuildOptions {
   return {
     ...build,
     external: [CORE_PACKAGE],
-    banner: { js: RUNTIME_BANNER },
+    ...(options.injectRuntimeBanner === false ? {} : { banner: { js: RUNTIME_BANNER } }),
     define: { ...build.define, ...RUNTIME_DEFINE },
     plugins: [optionalNativeModulesPlugin(), internalPackageGuardPlugin()],
   }
@@ -104,6 +111,7 @@ export type { SharedModule } from './shared.js'
 export {
   NODE_TARGET,
   RUNTIME_BANNER,
+  RUNTIME_BANNER_MARKER,
   RUNTIME_DEFINE,
   internalPackageGuardPlugin,
   optionalNativeModulesPlugin,

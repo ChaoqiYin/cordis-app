@@ -22,6 +22,8 @@ import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { build as esbuild } from 'esbuild'
+import { serverPreset } from '@cordis-app/preset'
 import { SHARED_MODULE_TABLE, WS_PATH } from '@cordis-app/protocol'
 import {
   buildProject,
@@ -308,6 +310,38 @@ test('build 把 node_modules 里的插件（含 scope 与 file: 链接）打进 
     pathToFileURL(join(result.resourcesDir, 'plugins', 'installed', 'server.js')).href
   )
   assert.equal(built.default(), 'INSTALLED_PLUGIN_MARKER')
+})
+
+test('依赖插件已是服务端预设产物时不会重复注入 banner', async () => {
+  const root = createProject()
+  const dir = writeInstalledPlugin(root, 'prebuilt-plugin', { id: 'prebuilt' })
+  // 模拟 npm 包中已构建的入口：插件作者先用 serverPreset 产出 lib/server.js。
+  writeFileSync(
+    join(dir, 'server-source.js'),
+    "export default function apply() { return 'PREBUILT_PLUGIN' }\n",
+  )
+  await esbuild(
+    serverPreset({
+      entry: 'server-source.js',
+      outfile: 'server.js',
+      root: dir,
+      minify: false,
+      sourcemap: false,
+    }),
+  )
+  rmSync(join(dir, 'server-source.js'))
+
+  const result = await buildProject({ projectRoot: root })
+  const entry = join(result.resourcesDir, 'plugins', 'prebuilt', 'server.js')
+  const source = readFileSync(entry, 'utf8')
+
+  assert.equal(
+    (source.match(/createRequire as __cordisAppCreateRequire/g) ?? []).length,
+    1,
+    '二次构建不能再注入一份 createRequire banner',
+  )
+  const built = await import(pathToFileURL(entry).href)
+  assert.equal(built.default(), 'PREBUILT_PLUGIN', '预构建入口重新打包后仍可加载')
 })
 
 test('本地插件与依赖插件同 id 时保留本地插件', async () => {

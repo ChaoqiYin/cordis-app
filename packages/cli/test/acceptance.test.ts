@@ -721,7 +721,7 @@ test('npm 安装的插件经 build 进入打包形态：删除项目 node_module
       }),
     )
     writeFileSync(
-      join(pluginRoot, 'server.js'),
+      join(pluginRoot, 'server-source.js'),
       `import { marker } from 'cordis-fake-dep'
 export const inject = ['router']
 
@@ -733,6 +733,9 @@ export function apply(ctx) {
 }
 `,
     )
+    // npm 上分发的插件带的是预构建入口，这里按插件作者的真实流程先构建一次。
+    await buildPluginServer(pluginRoot, 'server-source.js', 'server.js')
+    rmSync(join(pluginRoot, 'server-source.js'))
 
     const appJson = readJson(join(projectRoot, 'app.json'))
     appJson.plugins = ['installed']
