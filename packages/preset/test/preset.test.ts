@@ -12,7 +12,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { SHARED_MODULES, isShared, clientPreset, serverPreset } from '../lib/index.js'
+import { SHARED_MODULES, NODE_TARGET, isShared, clientPreset, serverPreset } from '../lib/index.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 // test/ → preset/ → packages/ → 仓库根
@@ -55,6 +55,19 @@ test('服务端预设提供 CJS 动态 require 与 ws 纯 JS 回退所需的运�
   assert.match(build.banner?.js ?? '', /createRequire/, 'CJS 依赖里的动态 require 需要 createRequire banner')
   assert.equal(build.define?.['process.env.WS_NO_BUFFER_UTIL'], '"true"')
   assert.equal(build.define?.['process.env.WS_NO_UTF_8_VALIDATE'], '"true"')
+})
+
+test('Node 版本契约：共享常量与服务端预设都以 node24 为构建目标', () => {
+  assert.equal(NODE_TARGET, 'node24', '服务端预设与桌面 runtime 必须共用同一个 Node 构建目标')
+  const build = serverPreset({ entry: 'src/index.ts', root: '/tmp/p' })
+  assert.equal(build.target, 'node24')
+})
+
+test('Node 版本契约：根与 cordis-app 声明的最低运行版本是 Node 24', () => {
+  for (const relative of ['package.json', 'packages/cordis-app/package.json']) {
+    const pkg = JSON.parse(readFileSync(join(repo, relative), 'utf8'))
+    assert.equal(pkg.engines?.node, '>=24.0.0', `${relative} 的 engines.node 应与最低运行版本一致`)
+  }
 })
 
 test('import map 里出现的每个说明符都在预设白名单内', () => {

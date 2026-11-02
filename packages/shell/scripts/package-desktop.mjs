@@ -321,15 +321,15 @@ export function assertPresetLib(presetLibPath, deps = {}) {
  * banner、可选原生依赖的空模块与 `WS_NO_*` 定义来自 @cordis-app/preset 的
  * 共享片段：服务端预设与桌面运行时打包器必须是同一套规则。
  *
- * `format: 'esm'` + `platform: 'node'` + `target: 'node22'` 与根 engines
- * （node >= 22.18）对齐；ESM 天然保留顶层 await。`nodePaths` 只用于测试
+ * `format: 'esm'` + `platform: 'node'` + 共享的 `NODE_TARGET` 与根 engines
+ * 对齐；ESM 天然保留顶层 await。`nodePaths` 只用于测试
  * 夹具解析工作区里的 ws，生产路径不需要。
  */
 export async function bundleRuntime({ entries, outDir, nodePaths }) {
   const { build } = await import('esbuild')
   const presetLib = join(repoRoot, 'packages', 'preset', 'lib', 'index.js')
   assertPresetLib(presetLib)
-  const { RUNTIME_BANNER, RUNTIME_DEFINE, optionalNativeModulesPlugin } =
+  const { NODE_TARGET, RUNTIME_BANNER, RUNTIME_DEFINE, optionalNativeModulesPlugin } =
     await import(pathToFileURL(presetLib).href)
   mkdirSync(outDir, { recursive: true })
 
@@ -340,7 +340,7 @@ export async function bundleRuntime({ entries, outDir, nodePaths }) {
       bundle: true,
       format: 'esm',
       platform: 'node',
-      target: 'node22',
+      target: NODE_TARGET,
       logLevel: 'warning',
       banner: { js: RUNTIME_BANNER },
       define: { ...RUNTIME_DEFINE },
