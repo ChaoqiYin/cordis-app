@@ -21,6 +21,7 @@ import {
 } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
+import { isBuiltin } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -97,23 +98,43 @@ export function isBareSpecifier(specifier) {
 }
 
 /**
- * 扫描一段 ESM/CJS 源码里的裸导入。
+ * 发布产物允许保留的裸导入。
  *
- * 这是发布前的粗筛，不是完整的模块解析器：它只回答「产物里有没有 Node
- * 运行时可能找不到的包名」。注释里的字符串可能被误报，但宁可多报。
+ * 框架提供的服务端依赖只有两类：不带前缀的 Node 内置模块（例如 `events`）
+ * 与 `cordis-app` 的类型面（含子路径）。`@cordis-app/*` 是框架内部包，
+ * 不属于公开契约，必须判为违规。
+ */
+export function isAllowedBareSpecifier(specifier) {
+  return (
+    isBuiltin(specifier) ||
+    specifier === 'cordis-app' ||
+    specifier.startsWith('cordis-app/')
+  )
+}
+
+/**
+ * 扫描一段 ESM/CJS 源码里未被框架提供的裸导入。
+ *
+ * 这是发布门禁的粗筛，不是完整的模块解析器：它只回答「产物里有没有运行
+ * 时可能找不到的包名」。注释里的字符串可能被误报，但宁可多报。
+ *
+ * `__require` 是 esbuild 把 CJS 依赖的动态 `require` 转换后的产物；漏掉它
+ * 会放过真正的外部依赖。
  */
 export function scanBareImports(source, file) {
   const patterns = [
     /\bimport\s+(?:[^'"]*?\s+from\s+)?['"]([^'"]+)['"]/g,
     /\bexport\s+(?:[^'"]*?\s+from\s+)['"]([^'"]+)['"]/g,
     /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
-    /\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
+    /\b(?:__)?require\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
   ]
 
   const specifiers = new Set()
   for (const pattern of patterns) {
     for (const match of source.matchAll(pattern)) {
-      if (isBareSpecifier(match[1])) specifiers.add(match[1])
+      if (isBareSpecifier(match[1]) && !isAllowedBareSpecifier(match[1])) {
+        specifiers.add(match[1])
+      }
     }
   }
 
@@ -198,8 +219,8 @@ function applyStaging(plan) {
 /**
  * 收集内置插件的清单。
  *
- * 清单损坏时跳过：构建阶段已经校验过插件，这里只做发布前提示，不该因为
- * 一个读不懂的文件阻断打包。
+ * 清单损坏时跳过：构建阶段已经校验过插件，发布门禁只扫描能识别的入口；
+ * 不因为一个读不懂的文件在这里制造误导性的失败。
  */
 function collectPluginManifests(distDir) {
   const pluginsDir = join(distDir, 'resources', 'plugins')
@@ -222,27 +243,32 @@ function collectPluginManifests(distDir) {
   return manifests
 }
 
-/** 读取并扫描服务端产物，返回需要提示的裸导入。 */
-export function collectBareImportWarnings(distDir) {
+/**
+ * 校验 dist 里的服务端产物是否还能在运行时解析依赖。
+ *
+ * 白名单只有 Node 内置模块与 `cordis-app`；其余裸导入（包括 `@cordis-app/*`）
+ * 都说明构建期没有把依赖打进产物，桌面安装目录启动后会失败。
+ */
+export function validateBareImports(distDir) {
   const pluginManifests = collectPluginManifests(distDir)
-  const warnings = []
+  const violations = []
   for (const target of planBareImportScan({ distDir, pluginManifests })) {
     if (!existsSync(target.file)) continue
-    warnings.push(...scanBareImports(readFileSync(target.file, 'utf8'), target.label))
+    violations.push(...scanBareImports(readFileSync(target.file, 'utf8'), target.label))
   }
-  return warnings
+  return { ok: violations.length === 0, violations }
 }
 
-function printBareImportWarnings(warnings) {
-  if (warnings.length === 0) return
+function printBareImportViolations(violations) {
+  if (violations.length === 0) return
 
-  console.warn('警告：服务端产物包含未内联的第三方依赖，安装后可能启动失败。')
-  for (const { file, specifier } of warnings) {
-    console.warn(`  ${file}  →  ${specifier}`)
+  console.error('服务端产物包含未内联的第三方依赖，无法打包：')
+  for (const { file, specifier } of violations) {
+    console.error(`  ${file}  →  ${specifier}`)
   }
-  console.warn(
-    "当前服务端预设使用 packages: 'external'，这些依赖不会随包分发；" +
-      '请把服务端依赖内联进产物，或等待 distribution 预设。',
+  console.error(
+    '白名单只有 node:* 与 cordis-app；请把这些包声明在项目或插件的依赖里，' +
+      '然后重新执行 cordis-app build，让构建期把依赖打进产物。',
   )
 }
 
@@ -317,12 +343,17 @@ export async function runPackage(options) {
     return 1
   }
 
+  // 发布门禁：不完整的产物不能进入暂存、runtime 打包或 go build。
+  const bareImports = validateBareImports(distDir)
+  if (!bareImports.ok) {
+    printBareImportViolations(bareImports.violations)
+    return 1
+  }
+
   if (publicKeyPath && !existsSync(publicKeyPath)) {
     console.error(`找不到签名公钥：${publicKeyPath}`)
     return 1
   }
-
-  printBareImportWarnings(collectBareImportWarnings(distDir))
 
   applyStaging(
     planStaging({ distDir, shellAppDir, publicKeyPath }),

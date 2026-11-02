@@ -10,6 +10,7 @@ import {
   validateDist,
   planStaging,
   scanBareImports,
+  validateBareImports,
   planBareImportScan,
   parseArgs,
   bundleRuntime,
@@ -90,25 +91,74 @@ test('planStaging 把可选公钥复制成随包 PEM', () => {
   })
 })
 
-test('scanBareImports 只报告非 node:、非相对的模块', () => {
+test('scanBareImports 放行 Node 内置与框架提供依赖，报告其余裸导入', () => {
   const source = `
     import { readFile } from 'node:fs/promises'
     import path from 'node:path'
+    import { EventEmitter } from 'events'
+    import type { Server } from 'cordis-app'
+    import { definePlugin } from 'cordis-app/server'
     import local from './local.js'
     import absolute from '/abs/module.js'
     import lodash from 'lodash'
+    import protocol from '@cordis-app/protocol'
     export { thing } from 'left-pad'
     const lazy = await import('dynamic-dep')
     const legacy = require('cjs-dep')
+    const bundled = __require("esbuild-dep")
   `
 
-  const warnings = scanBareImports(source, 'server/index.js')
+  const violations = scanBareImports(source, 'server/index.js')
 
   assert.deepEqual(
-    warnings.map((warning) => warning.specifier).sort(),
-    ['cjs-dep', 'dynamic-dep', 'left-pad', 'lodash'],
+    violations.map((violation) => violation.specifier).sort(),
+    ['@cordis-app/protocol', 'cjs-dep', 'dynamic-dep', 'esbuild-dep', 'left-pad', 'lodash'],
   )
-  assert.ok(warnings.every((warning) => warning.file === 'server/index.js'))
+  assert.ok(violations.every((violation) => violation.file === 'server/index.js'))
+})
+
+test('validateBareImports 放行只含白名单导入的 dist', (t) => {
+  const dist = join(tempDir(t), 'dist')
+  mkdirSync(join(dist, 'server'), { recursive: true })
+  writeFileSync(
+    join(dist, 'server', 'index.js'),
+    `
+      import { readFile } from 'node:fs/promises'
+      import { EventEmitter } from 'events'
+      import type { Server } from 'cordis-app'
+      import { definePlugin } from 'cordis-app/server'
+      import local from './local.js'
+    `,
+  )
+
+  assert.deepEqual(validateBareImports(dist), { ok: true, violations: [] })
+})
+
+test('validateBareImports 报告项目与插件服务端的违规文件与包名', (t) => {
+  const dist = join(tempDir(t), 'dist')
+  const pluginDir = join(dist, 'resources', 'plugins', 'hello')
+  mkdirSync(join(dist, 'server'), { recursive: true })
+  mkdirSync(pluginDir, { recursive: true })
+  writeFileSync(
+    join(dist, 'server', 'index.js'),
+    "import lodash from 'lodash'\n",
+  )
+  writeFileSync(
+    join(pluginDir, 'plugin.json'),
+    JSON.stringify({ id: 'hello', server: 'server.js' }),
+  )
+  writeFileSync(
+    join(pluginDir, 'server.js'),
+    "import protocol from '@cordis-app/protocol'\n",
+  )
+
+  assert.deepEqual(validateBareImports(dist), {
+    ok: false,
+    violations: [
+      { file: 'server/index.js', specifier: 'lodash' },
+      { file: 'resources/plugins/hello/server.js', specifier: '@cordis-app/protocol' },
+    ],
+  })
 })
 
 test('planBareImportScan 包含项目 server 与内置插件服务端入口', () => {
@@ -156,6 +206,61 @@ test('缺少 dist 必要文件时命令非零退出并指出缺失项', (t) => {
   assert.match(result.stderr, /app\.json/)
   assert.match(result.stderr, /server\/index\.js/)
   assert.match(result.stderr, /resources\/ui\/index\.html/)
+})
+
+test('白名单外裸导入在暂存与打包前非零退出，不留下半成品', (t) => {
+  const root = tempDir(t)
+  const project = join(root, 'project')
+  const dist = join(project, 'dist')
+  const out = join(root, 'install')
+  const pluginDir = join(dist, 'resources', 'plugins', 'hello')
+
+  for (const relative of [
+    'app.json',
+    'package.json',
+    'server/index.js',
+    'resources/ui/index.html',
+  ]) {
+    mkdirSync(join(dist, relative, '..'), { recursive: true })
+    writeFileSync(join(dist, relative), 'x')
+  }
+  writeFileSync(join(dist, 'server', 'index.js'), "import lodash from 'lodash'\n")
+  mkdirSync(pluginDir, { recursive: true })
+  writeFileSync(
+    join(pluginDir, 'plugin.json'),
+    JSON.stringify({ id: 'hello', server: 'server.js' }),
+  )
+  writeFileSync(
+    join(pluginDir, 'server.js'),
+    "import protocol from '@cordis-app/protocol'\n",
+  )
+
+  const stagedServer = resolve(here, '..', 'app', 'server')
+  const stagedResources = resolve(here, '..', 'app', 'resources')
+  assert.equal(existsSync(stagedServer), false, '测试前置：外壳 app 目录不应有残留 server')
+  assert.equal(existsSync(stagedResources), false, '测试前置：外壳 app 目录不应有残留 resources')
+  t.after(() => {
+    rmSync(stagedServer, { recursive: true, force: true })
+    rmSync(stagedResources, { recursive: true, force: true })
+  })
+
+  const result = spawnSync(
+    process.execPath,
+    [scriptPath, '--project', project, '--out', out],
+    { encoding: 'utf8' },
+  )
+
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /server\/index\.js/)
+  assert.match(result.stderr, /lodash/)
+  assert.match(result.stderr, /resources\/plugins\/hello\/server\.js/)
+  assert.match(result.stderr, /@cordis-app\/protocol/)
+  assert.match(result.stderr, /重新执行 cordis-app build/)
+  assert.doesNotMatch(result.stderr, /packages: 'external'/)
+  assert.doesNotMatch(result.stderr, /distribution 预设/)
+  assert.equal(existsSync(out), false, '失败时不应生成安装目录')
+  assert.equal(existsSync(stagedServer), false, '失败时不应暂存到外壳 app 目录')
+  assert.equal(existsSync(stagedResources), false, '失败时不应暂存到外壳 app 目录')
 })
 
 test('bundleRuntime 把可选原生依赖内联为空模块', async (t) => {

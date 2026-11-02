@@ -122,7 +122,7 @@ pnpm package:desktop --project /tmp/cordis-demo --out /tmp/cordis-demo-install
 /tmp/cordis-demo-install/cordis-app --url --data /tmp/cordis-demo-data
 ```
 
-`package:desktop` 先执行 `pnpm build:runtime`，再把 `dist/` 暂存进外壳、用
+`package:desktop` 先构建 preset 与 runtime，再把 `dist/` 暂存进外壳、用
 esbuild 打包 supervisor 与 worker、`go build` 外壳，并复制当前平台的 Node 到
 `bin/`。`--out` 目录可以不存在。可选参数
 `--bundle-public-key <PEM 文件>` 让签名公钥随包分发。
@@ -246,18 +246,18 @@ Linux `${XDG_DATA_HOME:-~/.local/share}/cordis-app`。可用外壳的
 出的值；用户 shell 里残留的 `CORDIS_APP_PROJECT` 等配置不会劫持 supervisor
 的项目根或资源根。
 
-### 服务端依赖必须自包含
+### 服务端依赖在构建期自包含
 
-`cordis-app build` 的服务端预设仍是 `packages: 'external'`：项目
-`server/index.js` 与内置插件的服务端产物里，第三方裸导入不会被打进产物。
-桌面形态的产物搬到数据目录后，Node 不会再去项目的 `node_modules` 解析它们，
-因此：
+`cordis-app build` 的服务端预设会用 esbuild 把第三方依赖打进项目
+`server/index.js` 与内置/本地插件的服务端产物；`dev` 使用同一个预设。只有
+Node 内置模块与 `cordis-app` 的类型面保持 external。`@cordis-app/*` 是框架
+内部包，不属于公开契约，值导入在构建期失败。
 
-- 脚手架与示例插件只含类型导入，默认闭环不受影响；
-- 如果服务端产物带有运行时第三方依赖，`package:desktop` 会在打包前扫描
-  `server/index.js` 与各插件的服务端入口，并打印警告（列出文件与包名）；
-- 这只是发布前的粗筛，不替代真实启动验证。当前版本还没有能自动内联这些
-  依赖的 distribution 预设。
+桌面形态的产物搬到数据目录后，Node 不会再去项目的 `node_modules` 解析依赖，
+因此 `package:desktop` 在暂存与构建之前扫描 `server/index.js` 与各插件的服务端
+入口。发现白名单外的裸导入会硬失败，列出文件与包名，且不生成安装目录。遇到
+这种情况时，检查依赖是否已声明在项目或插件的 `package.json` 中，然后重新执行
+`cordis-app build`。
 
 ### 不在范围内
 
