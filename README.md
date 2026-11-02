@@ -172,7 +172,8 @@ pnpm package:desktop --project /tmp/cordis-demo --out /tmp/cordis-demo-install
 
 `package:desktop` 先构建 preset 与 runtime，再把 `dist/` 暂存进外壳、用
 esbuild 打包 supervisor 与 worker、`go build` 外壳，并复制打包者当前的 Node
-（`process.execPath`）到 `bin/`。`--out` 目录可以不存在。可选参数
+（`process.execPath`）到 `bin/`。`--out` 目录可以不存在。窗口标题取项目
+`app.json` 的 `name`；缺失或为空时显示 `cordis-app`。可选参数
 `--bundle-public-key <PEM 文件>` 让签名公钥随包分发。
 
 启动后可以直接照抄下面这段做端到端验收（命令都在仓库根或任意目录执行）。
