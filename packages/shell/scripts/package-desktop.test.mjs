@@ -286,7 +286,7 @@ test('validateBareImports 允许没有 server 入口的插件', (t) => {
   })
 })
 
-test('planBareImportScan 包含项目 server 与内置插件服务端入口', () => {
+test('planBareImportScan 包含项目 server、来源模块与内置插件服务端入口', () => {
   const targets = planBareImportScan({
     distDir: '/project/dist',
     pluginManifests: [
@@ -297,8 +297,21 @@ test('planBareImportScan 包含项目 server 与内置插件服务端入口', ()
 
   assert.deepEqual(
     targets.map((target) => target.label),
-    ['server/index.js', 'resources/plugins/hello/server.js'],
+    ['server/index.js', 'server/plugin-source.js', 'resources/plugins/hello/server.js'],
   )
+})
+
+test('validateBareImports 检查插件来源模块的裸导入', (t) => {
+  const dist = join(tempDir(t), 'dist')
+  mkdirSync(join(dist, 'server'), { recursive: true })
+  writeFileSync(join(dist, 'server', 'index.js'), 'export default function apply() {}\n')
+  writeFileSync(join(dist, 'server', 'plugin-source.js'), "import ky from 'ky'\n")
+
+  assert.deepEqual(validateBareImports(dist), {
+    ok: false,
+    violations: [{ file: 'server/plugin-source.js', specifier: 'ky' }],
+    errors: [],
+  })
 })
 
 test('parseArgs 接受打包必需的参数', () => {

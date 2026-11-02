@@ -22,7 +22,7 @@ import {
   writeFileSync,
   type Dirent,
 } from 'node:fs'
-import { basename, dirname, join, relative, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { build as esbuild, type BuildOptions } from 'esbuild'
 import { build as viteBuild, createServer, type Plugin, type ViteDevServer } from 'vite'
@@ -32,6 +32,7 @@ import {
   SHARED_MODULE_TABLE,
   SHARED_PREFIX,
   WS_PATH,
+  PLUGIN_SOURCE_BUILT_PATH,
   resolveProjectLayout,
   type AppManifest,
   type PluginManifest,
@@ -67,6 +68,8 @@ export interface BuildResult {
   outDir: string
   resourcesDir: string
   serverEntry: string
+  /** 项目声明了来源模块时，构建产物中的绝对路径 */
+  pluginSource?: string
   appJson: string
   packageJson: string
   plugins: BuiltPlugin[]
@@ -89,6 +92,7 @@ export async function buildProject(options: BuildProjectOptions): Promise<BuildR
   const pluginsOut = join(resourcesDir, 'plugins')
   const serverOut = join(staging, 'server')
   let builtPlugins: BuiltPlugin[] = []
+  let builtPluginSource: string | undefined
 
   if (!existsSync(layout.appJson)) {
     throw new Error(`找不到应用定义：${layout.appJson}`)
@@ -98,6 +102,10 @@ export async function buildProject(options: BuildProjectOptions): Promise<BuildR
   }
 
   try {
+    // 清单要解析一次：来源模块的路径与产物清单的改写都依赖它。放最前面，
+    // 清单写错时不必先跑完一整轮前端构建才报错。
+    const app = readProjectAppManifest(layout.appJson)
+
     for (const dir of [uiDir, sharedOut, pluginsOut, serverOut]) mkdirSync(dir, { recursive: true })
 
     copySharedModules(sharedOut)
@@ -111,6 +119,17 @@ export async function buildProject(options: BuildProjectOptions): Promise<BuildR
     })
     log(`  server/index.js  ← ${relative(layout.projectRoot, serverEntry) || '（空入口）'}`)
 
+    const pluginSource = await buildProjectPluginSource(
+      layout.projectRoot,
+      app,
+      join(serverOut, 'plugin-source.js'),
+      { minify: options.minify === true },
+    )
+    if (pluginSource) {
+      log(`  server/plugin-source.js  ← ${relative(layout.projectRoot, pluginSource)}`)
+      builtPluginSource = join(outDir, 'server', 'plugin-source.js')
+    }
+
     const plugins = await buildProjectPlugins(
       layout.localPluginsDir,
       layout.nodeModulesDir,
@@ -123,7 +142,7 @@ export async function buildProject(options: BuildProjectOptions): Promise<BuildR
     log(`  resources/plugins/  ${plugins.length} 个`)
     builtPlugins = plugins
 
-    copyFileSync(layout.appJson, join(staging, 'app.json'))
+    writeAppJson(layout.appJson, join(staging, 'app.json'), app, builtPluginSource !== undefined)
     writePackageJson(layout.projectRoot, join(staging, 'package.json'))
 
     // 原子切换：旧目录先挪到同级备份，staging 改名成功后才删备份。
@@ -140,6 +159,7 @@ export async function buildProject(options: BuildProjectOptions): Promise<BuildR
     outDir,
     resourcesDir: join(outDir, 'resources'),
     serverEntry: join(outDir, 'server', 'index.js'),
+    ...(builtPluginSource ? { pluginSource: builtPluginSource } : {}),
     appJson: join(outDir, 'app.json'),
     packageJson: join(outDir, 'package.json'),
     plugins: builtPlugins,
@@ -323,6 +343,93 @@ function findProjectServer(projectRoot: string): string | undefined {
     if (existsSync(candidate)) return candidate
   }
   return undefined
+}
+
+/**
+ * 读项目清单。
+ *
+ * `build` 需要解析 app.json 来定位来源模块；格式错误必须在构建期失败，
+ * 而不是把坏清单原样复制进 dist，等启动时才以「未找到模块」的形式暴露。
+ */
+function readProjectAppManifest(path: string): AppManifest {
+  let raw: unknown
+  try {
+    raw = JSON.parse(readFileSync(path, 'utf8'))
+  } catch (error) {
+    throw new Error(`无法解析应用定义 ${path}：${(error as Error).message}`, { cause: error })
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error(`应用定义 ${path} 必须是 JSON 对象`)
+  }
+  return raw as AppManifest
+}
+
+/**
+ * 构建 app.json.pluginSource 指向的来源模块。
+ *
+ * 输出名固定为 `server/plugin-source.js`，与源文件名无关；产物清单里的值
+ * 会被改写成同一路径，运行期只按清单所在目录解析。这样 `start` 与桌面
+ * 释放目录都不需要额外的启动参数，也不会回头读源码根。
+ */
+async function buildProjectPluginSource(
+  projectRoot: string,
+  app: AppManifest,
+  outfile: string,
+  options: { minify: boolean },
+): Promise<string | undefined> {
+  const declared = app.pluginSource
+  if (declared === undefined) return undefined
+  if (typeof declared !== 'string' || declared.trim() === '') {
+    throw new Error('app.json.pluginSource 必须是非空字符串')
+  }
+  if (isAbsolute(declared)) {
+    throw new Error(`app.json.pluginSource 必须是相对路径：${declared}`)
+  }
+
+  const source = resolve(projectRoot, declared)
+  const rel = relative(projectRoot, source)
+  if (rel === '' || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+    throw new Error(`app.json.pluginSource 不能指向项目根之外：${declared}`)
+  }
+  if (!existsSync(source)) {
+    throw new Error(`找不到插件来源模块：${source}（app.json.pluginSource = ${declared}）`)
+  }
+
+  await esbuild(
+    buildOptions(
+      serverPreset({
+        entry: source,
+        outfile,
+        root: projectRoot,
+        minify: options.minify,
+        sourcemap: true,
+      }),
+      projectRoot,
+    ),
+  )
+  return source
+}
+
+/**
+ * 写产物清单。
+ *
+ * 没有来源模块时原样复制，保留用户的格式；有来源模块时只改写这一个字段，
+ * 让它指向构建产物里的固定位置。
+ */
+function writeAppJson(
+  sourcePath: string,
+  outPath: string,
+  app: AppManifest,
+  hasPluginSource: boolean,
+): void {
+  if (!hasPluginSource) {
+    copyFileSync(sourcePath, outPath)
+    return
+  }
+  writeFileSync(
+    outPath,
+    JSON.stringify({ ...app, pluginSource: PLUGIN_SOURCE_BUILT_PATH }, null, 2) + '\n',
+  )
 }
 
 type PluginRootKind = 'local' | 'dependency'

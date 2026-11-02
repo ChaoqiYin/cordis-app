@@ -149,6 +149,7 @@ export function scanBareImports(source, file) {
 export function planBareImportScan({ distDir, pluginManifests = [] }) {
   const targets = [
     { file: join(distDir, 'server', 'index.js'), label: 'server/index.js' },
+    { file: join(distDir, 'server', 'plugin-source.js'), label: 'server/plugin-source.js' },
   ]
 
   for (const { dir, manifest } of pluginManifests) {

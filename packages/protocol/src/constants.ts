@@ -75,6 +75,15 @@ export const ENV_VERSION = 'CORDIS_APP_VERSION'
  */
 export const ENV_BUNDLE_PUBLIC_KEY = 'CORDIS_APP_BUNDLE_PUBLIC_KEY'
 
+/**
+ * 构建产物中插件来源模块的固定相对路径（相对 app.json 所在目录）。
+ *
+ * 源清单可以声明任意相对路径；`build` 统一输出到这里，并把产物清单里的
+ * `pluginSource` 改写成同一个值。运行期因此只按清单所在目录解析，不需要
+ * 额外的启动参数。
+ */
+export const PLUGIN_SOURCE_BUILT_PATH = 'server/plugin-source.js'
+
 /** 免 token 的健康检查端点 */
 export const HEALTH_PATH = '/__health'
 

@@ -97,6 +97,12 @@ body 暴露给插件的 UI 扩展点：pages（`PluginPageOutlet`）、slots
 决定一次安装/卸载在磁盘上做什么。`npm` 源用于项目模式；`bundle` 源用于打包
 模式，只接受签名插件包。
 
+**插件来源模块（`app.json.pluginSource`）**
+项目声明的、替代 bundle 来源默认读取逻辑的模块。导出
+`readArchive(spec, ctx)`，返回归档字节；只在打包形态加载。它是项目代码，与
+项目 server 入口同等可信，必须自行限制允许的 `spec`。`build` 把它打进
+`dist/server/plugin-source.js`，并改写产物清单指向同一路径。
+
 **安装事务（`PluginInstaller`）**
 所有来源共用的可靠性层：开始前快照事实文件并写事务日志，失败或进程死亡后回滚。
 项目模式快照 `package.json`、项目 lockfile、`app.json`；打包模式快照

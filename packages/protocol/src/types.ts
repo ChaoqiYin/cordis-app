@@ -89,6 +89,15 @@ export interface AppManifest {
   plugins?: string[]
   /** 项目 body 提供的 UI 能力；由 #5 的宿主契约消费 */
   ui?: UiCapabilities
+  /**
+   * 项目自定义的插件包来源模块，相对 app.json 所在目录。
+   *
+   * 只在打包形态生效（`start` 与桌面应用）：模块导出
+   * `readArchive(spec, ctx)`，用于替代默认的「只读本地文件」实现。
+   * `build` 会把它打进 `dist/server/plugin-source.js`，并把产物清单里的值
+   * 改写成该固定路径。
+   */
+  pluginSource?: string
 }
 
 /** plugin.json —— 插件通过它声明身份与能力。 */

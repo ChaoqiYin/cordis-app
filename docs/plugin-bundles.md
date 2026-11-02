@@ -166,6 +166,10 @@ writeFileSync(`hello-plugin-${version}.cordis-plugin`, createTarGz(files))
 
 - 归档来源默认只接受本地路径或 `file://`；远程 URL 必须由进程配置注入
   `readArchive`，HTTP 请求不能指定下载地址。
+- 项目也可以在 `app.json.pluginSource` 声明来源模块，导出
+  `readArchive(spec, ctx)`。它和进程配置注入的 `readArchive` 是同一个契约：
+  模块在 worker 启动时加载，`build` 把它打进 `dist/server/plugin-source.js`；
+  HTTP 请求同样只能传 `spec`，模块必须自行限制允许的取值。
 - 运行形态由进程配置决定（`mode: 'packaged'`）；HTTP 请求不能切换安装来源。
 - 解压后有总大小上限（默认 256 MB），避免压缩炸弹。
 - 拒绝重复路径、符号链接、硬链接、设备文件与 FIFO。

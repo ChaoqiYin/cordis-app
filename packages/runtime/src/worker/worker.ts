@@ -48,6 +48,7 @@ import {
 import * as builtin from '../builtin/index.js'
 import { PluginInstaller } from '../plugin/installer.js'
 import { BundleInstallSource } from '../plugin/bundle-source.js'
+import { loadProjectPluginSource, resolvePluginSourcePath } from '../plugin/project-source.js'
 import { loadPlugins } from '../plugin/loader.js'
 import { scanPluginRoots, type PluginRoot } from '../plugin/catalog.js'
 import { checkProjectFrameworkFile } from '../plugin/doctor.js'
@@ -159,6 +160,8 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
   // 应用清单只有一份：显式覆盖时（`cordis-app start`）就是 dist/app.json，
   // 启用顺序、UI 能力与安装期兼容性全部从它读取。
   const appJsonPath = options.appJson ?? layout.appJson
+  // 插件来源也在同一份清单里，提前读一次供安装器与插件加载共用。
+  const app = readAppManifest(appJsonPath)
   // 打包形态的 local 根是「项目源码插件」，产物已经进了 resources/plugins；
   // 再扫项目根只会让同一批插件以「内置 + 本地」重复出现。只有显式传入时
   // 才启用 local 根（例如测试或特殊部署），项目模式保持原有默认。
@@ -167,6 +170,27 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
   if (packaged && !userDataDir) {
     throw new Error('打包模式必须提供 userPluginsDir（可写用户插件根）')
   }
+
+  // 项目可以在 app.json.pluginSource 里声明自己的获取逻辑。显式传入的
+  // `bundle.readArchive`（嵌入方或测试）优先；都没有时才回退到默认实现。
+  // 来源模块在 worker 启动时加载，构建漏产物或导出写错要在这里失败，
+  // 而不是等到用户点安装时才发现。
+  let projectReadArchive: ((spec: string) => Promise<Uint8Array>) | undefined
+  if (packaged && userDataDir && !options.bundle?.readArchive && app?.pluginSource !== undefined) {
+    if (typeof app.pluginSource !== 'string') {
+      throw new Error('app.json.pluginSource 必须是字符串')
+    }
+    const sourcePath = resolvePluginSourcePath(appJsonPath, app.pluginSource)
+    const readArchive = await loadProjectPluginSource(sourcePath)
+    projectReadArchive = (spec) =>
+      readArchive(spec, {
+        projectRoot: layout.projectRoot,
+        appJsonPath,
+        userDataDir,
+        frameworkVersion,
+      })
+  }
+
   const bundleSource = packaged && userDataDir
     ? new BundleInstallSource({
         userDataDir,
@@ -175,7 +199,11 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
         ...(options.bundle?.publicKey ?? process.env[ENV_BUNDLE_PUBLIC_KEY]
           ? { publicKey: options.bundle?.publicKey ?? process.env[ENV_BUNDLE_PUBLIC_KEY]! }
           : {}),
-        ...(options.bundle?.readArchive ? { readArchive: options.bundle.readArchive } : {}),
+        ...(options.bundle?.readArchive
+          ? { readArchive: options.bundle.readArchive }
+          : projectReadArchive
+            ? { readArchive: projectReadArchive }
+            : {}),
       })
     : undefined
 
@@ -270,7 +298,6 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
 
   // 应用插件：使用启动时那一次扫描结果，再按 app.json 的启用顺序逐个挂载。
   // 失败不阻断其他插件。
-  const app = readAppManifest(appJsonPath)
   const enabledOrder = Array.isArray(app?.plugins)
     ? app.plugins.filter((id): id is string => typeof id === 'string')
     : undefined
