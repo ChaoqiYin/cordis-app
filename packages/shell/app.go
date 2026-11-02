@@ -29,20 +29,20 @@ var embeddedApp embed.FS
 
 // requiredAppFiles 是打包形态必须具备的产物。缺任何一个都说明打包漏步，
 // 必须直接失败并说清楚，而不是让用户面对一个空白窗口。
+//
+// 必须与 packages/shell/scripts/package-desktop.mjs 的 REQUIRED_DIST_FILES
+// 保持同一组：打包脚本在构建期放行、外壳在运行期才发现缺失的缺口，正是
+// package.json 这类「不显眼但必需」的文件最容易踩的坑。修改时两处同步。
 var requiredAppFiles = []string{
 	"app.json",
+	"package.json",
 	"server/index.js",
 	"resources/ui/index.html",
 }
 
-// releaseFunc 把 src 释放到 dataDir 下并返回释放目录。
-//
-// 抽成函数类型是为了测试能注入假的释放实现；真实实现是 releaseApp。
-type releaseFunc func(src fs.FS, dataDir string) (string, error)
-
 // prepareApp 把内嵌应用释放到数据目录，并把 layout 的打包字段补齐。
 // 开发形态不释放，原样返回。
-func prepareApp(l layout, release releaseFunc) (layout, error) {
+func prepareApp(l layout) (layout, error) {
 	if !l.packaged {
 		return l, nil
 	}
@@ -50,11 +50,11 @@ func prepareApp(l layout, release releaseFunc) (layout, error) {
 	if err != nil {
 		return l, fmt.Errorf("无法读取内嵌应用: %w", err)
 	}
-	return prepareAppFrom(l, root, release)
+	return prepareAppFrom(l, root)
 }
 
 // prepareAppFrom 是 prepareApp 的可测试实现：src 可以是任意 fs.FS。
-func prepareAppFrom(l layout, src fs.FS, release releaseFunc) (layout, error) {
+func prepareAppFrom(l layout, src fs.FS) (layout, error) {
 	if !l.packaged {
 		return l, nil
 	}
@@ -64,21 +64,23 @@ func prepareAppFrom(l layout, src fs.FS, release releaseFunc) (layout, error) {
 		}
 	}
 
-	dir, err := release(src, l.dataDir)
+	dir, err := releaseApp(src, l.dataDir)
 	if err != nil {
 		return l, err
 	}
 
+	// 释放目录是打包形态全部路径的唯一来源：资源根、清单与服务端入口都从
+	// releaseDir 派生，避免再各自推导一遍。
 	l.releaseDir = dir
 	l.projectRoot = l.dataDir
-	l.appJson = filepath.Join(dir, "app.json")
-	l.serverEntry = filepath.Join(dir, "server", "index.js")
-	l.resourcesDir = filepath.Join(dir, "resources")
+	l.appJson = filepath.Join(l.releaseDir, "app.json")
+	l.serverEntry = filepath.Join(l.releaseDir, "server", "index.js")
+	l.resourcesDir = filepath.Join(l.releaseDir, "resources")
 	l.userPluginsDir = filepath.Join(l.dataDir, "plugins")
 	l.mode = modePackaged
 
 	// 公钥是可选的：没有它 worker 保持 fail-closed，拒绝安装签名插件包。
-	keyFile := filepath.Join(dir, "bundle-public-key.pem")
+	keyFile := filepath.Join(l.releaseDir, "bundle-public-key.pem")
 	if _, statErr := os.Stat(keyFile); statErr == nil {
 		l.bundlePublicKeyFile = keyFile
 	}
@@ -88,14 +90,9 @@ func prepareAppFrom(l layout, src fs.FS, release releaseFunc) (layout, error) {
 // releaseApp 把内嵌应用释放到 <dataDir>/app/<内容哈希>。
 //
 // 哈希同时充当版本标记：同内容直接复用（第二次启动不写盘），内容变化生成
-// 新目录并在成功后清理旧版本。
+// 新目录并在成功后清理旧版本。先写隐藏临时目录再原子改名，失败不会留下
+// 半成品；清理失败不阻塞启动。
 func releaseApp(src fs.FS, dataDir string) (string, error) {
-	return releaseFS(src, dataDir)
-}
-
-// releaseFS 是通用的内容哈希释放实现：先写隐藏临时目录再原子改名，失败不会
-// 留下半成品；清理失败不阻塞启动。
-func releaseFS(src fs.FS, dataDir string) (string, error) {
 	hash, err := hashFS(src)
 	if err != nil {
 		return "", fmt.Errorf("计算内嵌应用哈希失败: %w", err)

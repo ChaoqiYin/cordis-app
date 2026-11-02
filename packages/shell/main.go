@@ -47,7 +47,7 @@ func main() {
 	// 资源根与服务端入口。开发形态的 resourcesDir 直接指向仓库 Vite 产物，
 	// 不需要释放。fatal 会跳过 defer，所以失败路径要显式释放锁。
 	if l.packaged {
-		l, err = prepareApp(l, releaseApp)
+		l, err = prepareApp(l)
 		if err != nil {
 			inst.release()
 			fatal(err)

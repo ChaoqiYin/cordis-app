@@ -73,7 +73,7 @@ func supervisorArgs(l layout) []string {
 		"--server-entry", l.serverEntry,
 		"--app-json", l.appJson,
 		"--user-plugins", l.userPluginsDir,
-		"--mode", modePackaged,
+		"--mode", l.mode,
 		"--worker", l.workerJS,
 	)
 }
@@ -200,19 +200,28 @@ func supervisorEnv(l layout) []string {
 // bundlePublicKey 解析可信公钥：启动环境 > 随包 PEM > 不注入。
 //
 // 环境变量的值是 PEM 内容而不是路径——worker 直接把它当 publicKey 用。
-// 文件不存在时不警告：没有公钥是合法的，worker 会保持 fail-closed。
+// 两个来源都没有（或随包文件读不出来）时只警告、不失败：没有公钥是合法
+// 配置，worker 会保持 fail-closed，拒绝安装签名插件包。
 func bundlePublicKey(l layout) string {
 	if key := os.Getenv("CORDIS_APP_BUNDLE_PUBLIC_KEY"); key != "" {
 		return key
 	}
 	if l.bundlePublicKeyFile == "" {
+		warnMissingPublicKey()
 		return ""
 	}
 	data, err := os.ReadFile(l.bundlePublicKeyFile)
 	if err != nil {
+		warnMissingPublicKey()
 		return ""
 	}
 	return string(data)
+}
+
+func warnMissingPublicKey() {
+	fmt.Fprintln(os.Stderr,
+		"警告：启动环境与随包 PEM 都没有提供插件包签名公钥；"+
+			"worker 将保持 fail-closed，拒绝安装签名插件包。")
 }
 
 func filterEnv(env []string, drop ...string) []string {

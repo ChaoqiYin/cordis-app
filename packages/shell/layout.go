@@ -129,6 +129,19 @@ func discoverLayout(dataFlag, resourcesFlag string) (layout, error) {
 	return l, nil
 }
 
+// findFirstExisting 返回候选列表中第一个存在的路径。
+//
+// supervisor 与 worker 的候选顺序（发布布局的 .mjs、.js，必要时再回退仓库
+// 构建产物）不同，所以只共享「按顺序取第一个存在项」这一步。
+func findFirstExisting(candidates []string) (string, bool) {
+	for _, candidate := range candidates {
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, true
+		}
+	}
+	return "", false
+}
+
 // findSupervisor 依次尝试发布布局里的 .mjs、.js，最后回退仓库构建产物。
 func findSupervisor(installDir string) (string, error) {
 	candidates := []string{
@@ -136,10 +149,8 @@ func findSupervisor(installDir string) (string, error) {
 		filepath.Join(installDir, "bin", "cordis-app-supervisor.js"),
 		filepath.Join(repoRoot(), "packages", "runtime", "lib", "supervisor", "main.js"),
 	}
-	for _, candidate := range candidates {
-		if _, err := os.Stat(candidate); err == nil {
-			return candidate, nil
-		}
+	if found, ok := findFirstExisting(candidates); ok {
+		return found, nil
 	}
 	return "", fmt.Errorf("找不到 supervisor 脚本（既没有 bin/cordis-app-supervisor.mjs，也没有构建产物）")
 }
@@ -150,10 +161,8 @@ func findWorker(installDir string) (string, error) {
 		filepath.Join(installDir, "bin", "cordis-app-worker.mjs"),
 		filepath.Join(installDir, "bin", "cordis-app-worker.js"),
 	}
-	for _, candidate := range candidates {
-		if _, err := os.Stat(candidate); err == nil {
-			return candidate, nil
-		}
+	if found, ok := findFirstExisting(candidates); ok {
+		return found, nil
 	}
 	return "", fmt.Errorf("打包形态缺少 worker（既没有 bin/cordis-app-worker.mjs，也没有 .js）")
 }
