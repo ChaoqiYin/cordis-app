@@ -333,6 +333,25 @@ test('restartWorker 连接失败也返回 StartAppError 并保留 cause', async 
   await app.stop()
 })
 
+/**
+ * 轮询健康检查，避免 CI 上握手与监听回调之间的短暂竞态。
+ */
+async function waitForHealth(port: number, timeoutMs = 10_000): Promise<Response> {
+  const deadline = Date.now() + timeoutMs
+  let lastError: unknown
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/__health`)
+      if (response.status === 200) return response
+      lastError = new Error(`健康检查返回 ${response.status}`)
+    } catch (error) {
+      lastError = error
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+  throw lastError ?? new Error('健康检查超时')
+}
+
 test('真实子进程生命周期：握手可访问，stop 后退出', async () => {
   const projectRoot = mkdtempSync(join(tmpdir(), 'cordis-start-app-real-'))
   writeFileSync(
@@ -343,7 +362,7 @@ test('真实子进程生命周期：握手可访问，stop 后退出', async () 
 
   const app = await startApp({ projectRoot, stderr: { write() {} }, timeoutMs: 20_000 })
   try {
-    const res = await fetch(`http://127.0.0.1:${app.port}/__health`)
+    const res = await waitForHealth(app.port)
     assert.equal(res.status, 200)
     const body = (await res.json()) as { ok: boolean }
     assert.equal(body.ok, true)
