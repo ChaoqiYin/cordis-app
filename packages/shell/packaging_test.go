@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -122,7 +123,7 @@ func TestPrepareAppDerivesPaths(t *testing.T) {
 	dataDir := t.TempDir()
 	l := layout{packaged: true, mode: "packaged", dataDir: dataDir}
 
-	got, err := prepareAppFrom(l, src, releaseApp)
+	got, err := prepareAppFrom(l, src)
 	if err != nil {
 		t.Fatalf("prepareAppFrom 失败: %v", err)
 	}
@@ -169,7 +170,7 @@ func TestPrepareAppFindsBundledPublicKey(t *testing.T) {
 	dataDir := t.TempDir()
 	l := layout{packaged: true, mode: "packaged", dataDir: dataDir}
 
-	got, err := prepareAppFrom(l, src, releaseApp)
+	got, err := prepareAppFrom(l, src)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,14 +181,14 @@ func TestPrepareAppFindsBundledPublicKey(t *testing.T) {
 }
 
 func TestPrepareAppRejectsMissingArtifacts(t *testing.T) {
-	for _, missing := range []string{"app.json", "server/index.js", "resources/ui/index.html"} {
+	for _, missing := range []string{"app.json", "package.json", "server/index.js", "resources/ui/index.html"} {
 		t.Run(missing, func(t *testing.T) {
 			src := sampleAppFS()
 			delete(src, missing)
 			dataDir := t.TempDir()
 			l := layout{packaged: true, mode: "packaged", dataDir: dataDir}
 
-			_, err := prepareAppFrom(l, src, releaseApp)
+			_, err := prepareAppFrom(l, src)
 			if err == nil {
 				t.Fatalf("缺少 %s 时应报错", missing)
 			}
@@ -204,7 +205,7 @@ func TestPrepareAppRejectsMissingArtifacts(t *testing.T) {
 func TestPrepareAppIgnoresDevelopmentMode(t *testing.T) {
 	dataDir := t.TempDir()
 	l := layout{packaged: false, mode: "project", dataDir: dataDir}
-	got, err := prepareAppFrom(l, fstest.MapFS{}, releaseApp)
+	got, err := prepareAppFrom(l, fstest.MapFS{})
 	if err != nil {
 		t.Fatalf("开发形态不该释放: %v", err)
 	}
@@ -398,13 +399,42 @@ func TestSupervisorEnvPublicKeyFromEnvironmentWins(t *testing.T) {
 	assertEnvKeyOnce(t, env, "CORDIS_APP_BUNDLE_PUBLIC_KEY", "ENV-KEY")
 }
 
-func TestSupervisorEnvMissingKeyFileIsSilent(t *testing.T) {
+func TestSupervisorEnvMissingKeyWarnsAndDoesNotInject(t *testing.T) {
 	t.Setenv("CORDIS_APP_BUNDLE_PUBLIC_KEY", "")
 	l := layout{dataDir: "/data", projectRoot: "/data", resourcesDir: "/res", bundlePublicKeyFile: "/nope/key.pem"}
-	env := supervisorEnv(l)
+
+	env, output := captureStderr(t, func() []string { return supervisorEnv(l) })
+
 	if _, ok := envValue(env, "CORDIS_APP_BUNDLE_PUBLIC_KEY"); ok {
 		t.Fatal("公钥文件不存在时不该注入")
 	}
+	if !strings.Contains(output, "签名公钥") || !strings.Contains(output, "fail-closed") {
+		t.Fatalf("没有公钥来源时应当警告并说明 fail-closed，实际输出: %q", output)
+	}
+}
+
+// captureStderr 在 fn 执行期间接管 os.Stderr，返回 fn 的结果与捕获到的输出。
+// 警告走 stderr，这样终端与日志都能看到，又不污染 stdout 的握手协议。
+func captureStderr[T any](t *testing.T, fn func() T) (T, string) {
+	t.Helper()
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := os.Stderr
+	os.Stderr = writer
+	defer func() { os.Stderr = original }()
+
+	result := fn()
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = reader.Close()
+	return result, string(data)
 }
 
 func envValue(env []string, key string) (string, bool) {

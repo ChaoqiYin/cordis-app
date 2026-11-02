@@ -19,7 +19,6 @@ import {
   readdirSync,
   rmSync,
 } from 'node:fs'
-import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -30,6 +29,10 @@ const repoRoot = resolve(shellDir, '..', '..')
 
 /**
  * 打包形态必须具备的 dist 产物。
+ *
+ * 必须与 packages/shell/app.go 的 requiredAppFiles 保持同一组：打包期放行、
+ * 运行期才报缺失的缺口，最容易出现在 package.json 这种「不显眼但必需」的
+ * 文件上。修改时两处同步。
  *
  * `package.json` 也在这里：Node 靠它把 `server/*.js` 按 ESM 解析，缺了它
  * 安装目录里的服务端产物会被当成 CommonJS 而直接失败。
@@ -317,18 +320,8 @@ export async function bundleRuntime({ entries, outDir, nodePaths }) {
   }
 }
 
-/** 与 Go 外壳 defaultDataDir 保持一致的平台默认数据目录。 */
-function defaultDataDir() {
-  const home = homedir()
-  switch (process.platform) {
-    case 'win32':
-      return join(process.env.APPDATA || join(home, 'AppData', 'Roaming'), 'cordis-app')
-    case 'darwin':
-      return join(home, 'Library', 'Application Support', 'cordis-app')
-    default:
-      return join(process.env.XDG_DATA_HOME || join(home, '.local', 'share'), 'cordis-app')
-  }
-}
+// 默认数据目录由 Go 外壳按平台解析；这里只提示可用 --data 覆盖，避免在
+// 脚本里维护第三份平台规则。
 
 function printUsage() {
   console.log(
@@ -425,7 +418,7 @@ export async function runPackage(options) {
   console.log(`  运行时      ${nodePath}`)
   console.log(`  supervisor  ${supervisorPath}`)
   console.log(`  worker      ${workerPath}`)
-  console.log(`  数据目录    ${defaultDataDir()}（默认，可用 --data 覆盖）`)
+  console.log('  数据目录    默认按平台标准目录（可用 --data 覆盖）')
   console.log(`启动：${exePath}`)
   if (publicKeyPath) {
     console.log('已随包分发签名公钥：bundle-public-key.pem')

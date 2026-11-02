@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -19,6 +19,8 @@ const here = fileURLToPath(new URL('.', import.meta.url))
 const scriptPath = join(here, 'package-desktop.mjs')
 // 冒烟测试用的 ws 由 runtime 包声明，工作区里只有它自己解析得到。
 const runtimeNodeModules = resolve(here, '..', '..', 'runtime', 'node_modules')
+const repoRoot = resolve(here, '..', '..', '..')
+const runtimeLib = join(repoRoot, 'packages', 'runtime', 'lib')
 
 function tempDir(t, prefix = 'cordis-package-') {
   const dir = mkdtempSync(join(tmpdir(), prefix))
@@ -264,4 +266,80 @@ test('bundleRuntime 产出可加载的 ESM：顶层 await、ws 与大消息掩�
     'utf8',
   )
   assert.doesNotMatch(supervisorSource, /from ['"](bufferutil|utf-8-validate)['"]/)
+})
+
+/**
+ * 返回真实 runtime 入口；缺产物时先尝试构建，构建不了就让调用方 SKIP。
+ *
+ * `pnpm test:shell` 不保证 runtime 已经构建过（CI 可能只跑这一步），所以在
+ * 测试内补一次构建。构建失败不伪装成通过：明确输出 SKIP 原因。
+ */
+function ensureRealRuntimeEntries(t) {
+  const entries = [
+    {
+      entry: join(runtimeLib, 'supervisor', 'main.js'),
+      outfile: 'cordis-app-supervisor.mjs',
+    },
+    {
+      entry: join(runtimeLib, 'worker', 'main.js'),
+      outfile: 'cordis-app-worker.mjs',
+    },
+  ]
+
+  if (entries.every(({ entry }) => existsSync(entry))) return entries
+
+  const build = spawnSync(
+    'pnpm',
+    ['--filter', '@cordis-app/runtime', 'build'],
+    { cwd: repoRoot, encoding: 'utf8' },
+  )
+  if (build.error || build.status !== 0) {
+    const reason = build.error
+      ? build.error.message
+      : (build.stderr || build.stdout || '').trim() || `退出码 ${build.status}`
+    t.skip(`无法构建 @cordis-app/runtime，跳过真实入口冒烟：${reason}`)
+    return undefined
+  }
+
+  const missing = entries.filter(({ entry }) => !existsSync(entry))
+  if (missing.length > 0) {
+    t.skip(
+      `构建后仍找不到真实入口，跳过真实入口冒烟：${missing
+        .map(({ entry }) => entry)
+        .join(', ')}`,
+    )
+    return undefined
+  }
+  return entries
+}
+
+test('真实入口冒烟：esbuild 产物可解析、无原生可选依赖、保留顶层 await', async (t) => {
+  const entries = ensureRealRuntimeEntries(t)
+  if (!entries) return
+
+  const outDir = tempDir(t, 'cordis-package-real-')
+  await bundleRuntime({ entries, outDir, nodePaths: [runtimeNodeModules] })
+
+  // 只做静态检查，不执行/导入产物：真实入口一运行就会拉起 supervisor 与 worker。
+  for (const { outfile } of entries) {
+    const file = join(outDir, outfile)
+    const check = spawnSync(process.execPath, ['--check', file], {
+      encoding: 'utf8',
+    })
+    assert.equal(check.status, 0, `${outfile} 不是合法的 ESM：${check.stderr}`)
+
+    const source = readFileSync(file, 'utf8')
+    assert.doesNotMatch(
+      source,
+      /(?:from\s+|import\s+|require\s*\(\s*)['"](?:bufferutil|utf-8-validate)['"]/,
+      `${outfile} 不能静态导入可选原生依赖`,
+    )
+  }
+
+  // supervisor 入口本身就是顶层 await；打包不能把它降级成 CJS 或包装掉。
+  const supervisorSource = readFileSync(
+    join(outDir, 'cordis-app-supervisor.mjs'),
+    'utf8',
+  )
+  assert.match(supervisorSource, /\bawait\s+supervisor\.start\(\)/)
 })

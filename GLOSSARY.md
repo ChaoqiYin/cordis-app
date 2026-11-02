@@ -131,8 +131,8 @@ id、版本与 hash。
 打包应用的可写用户数据根。默认按平台：macOS
 `~/Library/Application Support/cordis-app`、Windows `%APPDATA%\cordis-app`、
 Linux `${XDG_DATA_HOME:-~/.local/share}/cordis-app`；可用外壳的 `--data` 或
-`CORDIS_APP_DATA` 覆盖，`--data` 优先。包含释放目录、用户插件根、
-`installed.json`、`.cordis/` 与 `data/`。
+`CORDIS_APP_DATA` 覆盖，`--data` 优先。包含释放目录、用户插件根、`installed.json`、`.cordis/`、
+`data/` 与单实例锁 `shell.lock`。
 
 **释放目录**
 `<桌面数据目录>/app/<hash>/`。打包时内嵌的应用产物在首次启动后释放到这里；
