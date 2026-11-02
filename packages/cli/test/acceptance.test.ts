@@ -676,6 +676,110 @@ export default function apply(ctx) {
   }
 })
 
+test('npm 安装的插件经 build 进入打包形态：删除项目 node_modules 后仍能加载', async () => {
+  const work = mkdtempSync(join(tmpdir(), 'cordis-installed-plugin-'))
+  const projectRoot = join(work, 'demo')
+  const userDataDir = join(work, 'userdata')
+  const nodeModules = join(projectRoot, 'node_modules')
+  const movedNodeModules = join(projectRoot, 'node_modules.off')
+  const marker = 'INSTALLED_PLUGIN_BUNDLE_MARKER'
+  let nodeModulesMoved = false
+
+  mkdirSync(join(userDataDir, 'plugins'), { recursive: true })
+  try {
+    const io = {
+      out: () => {},
+      err: () => {},
+      frameworkVersion: FRAMEWORK_VERSION,
+    }
+    assert.equal(
+      await commandNew(parseArgs(['new', 'demo', '--project', projectRoot]), io),
+      0,
+    )
+
+    // 模拟 `add file:.../plugin` 之后的磁盘状态：插件包本身与它的依赖
+    // 都位于项目 node_modules 里，插件源码不在项目 plugins/ 下。
+    writeDependency(projectRoot, 'cordis-fake-dep', marker)
+    const pluginRoot = join(nodeModules, 'cordis-plugin-installed')
+    mkdirSync(pluginRoot, { recursive: true })
+    writeFileSync(
+      join(pluginRoot, 'package.json'),
+      JSON.stringify({
+        name: 'cordis-plugin-installed',
+        version: '1.0.0',
+        type: 'module',
+        peerDependencies: { 'cordis-app': `^${FRAMEWORK_VERSION}` },
+        dependencies: { 'cordis-fake-dep': '^1.0.0' },
+      }),
+    )
+    writeFileSync(
+      join(pluginRoot, 'plugin.json'),
+      JSON.stringify({
+        id: 'installed',
+        displayName: 'Installed Plugin',
+        server: 'server.js',
+      }),
+    )
+    writeFileSync(
+      join(pluginRoot, 'server.js'),
+      `import { marker } from 'cordis-fake-dep'
+export const inject = ['router']
+
+export function apply(ctx) {
+  ctx.router.get('/api/installed-plugin', (_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ marker, from: 'installed' }))
+  })
+}
+`,
+    )
+
+    const appJson = readJson(join(projectRoot, 'app.json'))
+    appJson.plugins = ['installed']
+    writeFileSync(join(projectRoot, 'app.json'), JSON.stringify(appJson, null, 2) + '\n')
+
+    const built = await buildProject({ projectRoot })
+    const pluginEntry = join(built.resourcesDir, 'plugins', 'installed', 'server.js')
+    assert.equal(existsSync(pluginEntry), true, '依赖根插件应被打进 resources/plugins')
+    const source = readFileSync(pluginEntry, 'utf8')
+    assert.match(source, new RegExp(marker), '插件产物应自包含其依赖')
+    assert.doesNotMatch(source, /from\s*['"]cordis-fake-dep['"]/, '插件产物不应保留裸导入')
+    assert.equal(existsSync(join(built.outDir, 'node_modules')), false, 'dist 不能携带 node_modules')
+
+    // 先改名再启动：产物若仍依赖项目 node_modules，这里会直接失败。
+    renameSync(nodeModules, movedNodeModules)
+    nodeModulesMoved = true
+
+    const { publicKey } = generateKeyPairSync('ed25519')
+    const worker = await startPackagedWorker(
+      projectRoot,
+      userDataDir,
+      publicKey.export({ type: 'spki', format: 'pem' }).toString(),
+      {
+        resourcesDir: built.resourcesDir,
+        serverEntry: built.serverEntry,
+        appJson: built.appJson,
+      },
+    )
+    try {
+      await waitForHealth(worker.base)
+      assert.deepEqual(worker.handle.failures, [], '打包形态不应有插件加载失败')
+      const res = await fetch(`${worker.base}/api/installed-plugin`, {
+        headers: { authorization: `Bearer ${worker.token}` },
+      })
+      assert.equal(res.status, 200, 'npm 安装的插件路由应在删除项目 node_modules 后仍可用')
+      assert.deepEqual(await res.json(), { marker, from: 'installed' })
+    } finally {
+      await worker.handle.close()
+    }
+  } finally {
+    if (nodeModulesMoved && existsSync(movedNodeModules)) {
+      renameSync(movedNodeModules, nodeModules)
+    }
+    rmSync(work, { recursive: true, force: true })
+  }
+})
+
 test('项目 body 示例保留全部 UI 出口，并能构建出可分发布局', async () => {
   const work = mkdtempSync(join(tmpdir(), 'cordis-body-'))
   const projectRoot = join(work, 'demo')

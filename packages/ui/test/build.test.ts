@@ -14,11 +14,13 @@ import {
   readdirSync,
   readFileSync,
   renameSync,
+  rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { SHARED_MODULE_TABLE, WS_PATH } from '@cordis-app/protocol'
 import {
@@ -110,6 +112,69 @@ function writeDependency(
   }
 }
 
+interface InstalledPluginOptions {
+  /** 插件 id；缺省取包名最后一段。 */
+  id?: string
+  /** 覆盖默认文件内容，用来注入依赖或 marker。 */
+  files?: Record<string, string>
+  /**
+   * 以符号链接安装，模拟 npm 的 `file:` 依赖。
+   *
+   * 源目录放在 `linked-plugins/`，与 `node_modules` 分开，链接目标才真实存在。
+   */
+  linked?: boolean
+}
+
+function writePluginFiles(
+  dir: string,
+  name: string,
+  id: string,
+  files: Record<string, string>,
+): void {
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(
+    join(dir, 'package.json'),
+    JSON.stringify({ name, version: '1.0.0', type: 'module' }),
+  )
+  const defaults: Record<string, string> = {
+    'plugin.json': JSON.stringify({
+      id,
+      displayName: id,
+      client: 'client.js',
+      server: 'server.js',
+    }),
+    'client.js': `export const marker = '${id}-client'\n`,
+    'server.js': `export default function apply() { return '${id}-server' }\n`,
+  }
+  for (const [file, contents] of Object.entries({ ...defaults, ...files })) {
+    const target = join(dir, file)
+    mkdirSync(dirname(target), { recursive: true })
+    writeFileSync(target, contents)
+  }
+}
+
+/** 在临时项目的 node_modules 里放一个已安装的插件包。 */
+function writeInstalledPlugin(
+  root: string,
+  name: string,
+  options: InstalledPluginOptions = {},
+): string {
+  const id = options.id ?? basename(name)
+  const files = options.files ?? {}
+  if (!options.linked) {
+    const dir = join(root, 'node_modules', name)
+    writePluginFiles(dir, name, id, files)
+    return dir
+  }
+
+  const source = join(root, 'linked-plugins', name.replace(/[\\/]/g, '__'))
+  writePluginFiles(source, name, id, files)
+  const target = join(root, 'node_modules', name)
+  mkdirSync(dirname(target), { recursive: true })
+  symlinkSync(source, target, 'dir')
+  return target
+}
+
 /** 递归找出目录下所有的 node_modules，用来证明发布产物没有携带依赖树。 */
 function findNodeModules(dir: string): string[] {
   if (!existsSync(dir)) return []
@@ -193,6 +258,107 @@ test('构建把项目 server 与本地插件的第三方依赖打进产物，dis
   assert.equal(server.default(), 'SELF_CONTAINED_MARKER')
   const plugin = await import(pathToFileURL(pluginEntry).href)
   assert.equal(plugin.default(), 'SELF_CONTAINED_MARKER')
+})
+
+test('build 把 node_modules 里的插件（含 scope 与 file: 链接）打进 resources/plugins', async () => {
+  const root = createProject()
+  writeDependency(root, 'fake-dep', {
+    files: { 'index.js': "export const marker = 'INSTALLED_PLUGIN_MARKER'\n" },
+  })
+  writeInstalledPlugin(root, 'installed-plugin', {
+    id: 'installed',
+    files: {
+      'server.js':
+        "import { marker } from 'fake-dep'\n" +
+        'export default function apply() { return marker }\n',
+    },
+  })
+  writeInstalledPlugin(root, '@scope/scoped-plugin', { id: 'scoped' })
+  writeInstalledPlugin(root, 'linked-plugin', { id: 'linked', linked: true })
+
+  const result = await buildProject({ projectRoot: root })
+
+  const ids = result.plugins.map((plugin) => plugin.id).sort()
+  assert.deepEqual(
+    ids,
+    ['demo', 'installed', 'linked', 'scoped'],
+    '本地插件与依赖根插件都应出现在构建结果里',
+  )
+
+  for (const id of ['installed', 'linked', 'scoped']) {
+    const pluginOut = join(result.resourcesDir, 'plugins', id)
+    assert.ok(existsSync(join(pluginOut, 'plugin.json')), `${id} 应产出 plugin.json`)
+    assert.ok(existsSync(join(pluginOut, 'client.js')), `${id} 应产出 client.js`)
+    assert.ok(existsSync(join(pluginOut, 'server.js')), `${id} 应产出 server.js`)
+  }
+
+  const installedSource = readFileSync(
+    join(result.resourcesDir, 'plugins', 'installed', 'server.js'),
+    'utf8',
+  )
+  assert.match(installedSource, /INSTALLED_PLUGIN_MARKER/, '依赖根插件也必须自包含其依赖')
+  assertNoBareImport(installedSource, 'fake-dep', '依赖根插件产物')
+
+  // 构建只读取 node_modules，不复制它。
+  assert.deepEqual(findNodeModules(result.outDir), [], 'dist 不能携带 node_modules')
+
+  // 产物搬到没有 node_modules 的环境后仍可加载。
+  rmSync(join(root, 'node_modules'), { recursive: true, force: true })
+  const built = await import(
+    pathToFileURL(join(result.resourcesDir, 'plugins', 'installed', 'server.js')).href
+  )
+  assert.equal(built.default(), 'INSTALLED_PLUGIN_MARKER')
+})
+
+test('本地插件与依赖插件同 id 时保留本地插件', async () => {
+  const root = createProject()
+  writeFileSync(
+    join(root, 'plugins', 'demo', 'server.js'),
+    "export default function apply() { return 'FROM_LOCAL' }\n",
+  )
+  writeInstalledPlugin(root, 'demo-plugin', {
+    id: 'demo',
+    files: {
+      'server.js': "export default function apply() { return 'FROM_DEPENDENCY' }\n",
+    },
+  })
+
+  const lines: string[] = []
+  const result = await buildProject({ projectRoot: root, log: (line) => lines.push(line) })
+
+  assert.equal(
+    result.plugins.filter((plugin) => plugin.id === 'demo').length,
+    1,
+    '同 id 只能产出一份插件',
+  )
+  const source = readFileSync(join(result.resourcesDir, 'plugins', 'demo', 'server.js'), 'utf8')
+  assert.match(source, /FROM_LOCAL/)
+  assert.doesNotMatch(source, /FROM_DEPENDENCY/)
+  assert.ok(
+    lines.some((line) => line.includes('本地插件优先')),
+    `构建日志应说明跳过了依赖插件：${lines.join(' | ')}`,
+  )
+})
+
+test('两个依赖插件 id 重复时构建失败，且不产出 dist', async () => {
+  const root = createProject()
+  writeInstalledPlugin(root, 'first-plugin', { id: 'duplicated' })
+  writeInstalledPlugin(root, 'second-plugin', { id: 'duplicated' })
+
+  await assert.rejects(() => buildProject({ projectRoot: root }), /插件 id 重复：duplicated/)
+  assert.equal(existsSync(join(root, 'dist')), false)
+})
+
+test('依赖插件入口缺失时构建失败，且不产出 dist', async () => {
+  const root = createProject()
+  const dir = writeInstalledPlugin(root, 'broken-plugin', { id: 'broken' })
+  rmSync(join(dir, 'server.js'))
+
+  await assert.rejects(
+    () => buildProject({ projectRoot: root }),
+    /插件 broken 的 server 入口不存在/,
+  )
+  assert.equal(existsSync(join(root, 'dist')), false)
 })
 
 test('服务端值导入 @cordis-app 内部包时构建失败，import type 通过', async () => {

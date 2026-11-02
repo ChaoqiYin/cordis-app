@@ -95,12 +95,18 @@ node packages/cli/lib/cli.js start --project /tmp/cordis-demo
 ├── resources/
 │   ├── ui/          前端壳与项目 body
 │   ├── shared/      React、React DOM、cordis-app/client
-│   └── plugins/     本地插件的前端与服务端产物
+│   └── plugins/     本地插件与 node_modules 中插件的前端/服务端产物
 └── server/index.js  项目后端产物
 ```
 
 `start` 从 `dist/` 读取 `app.json`、前端产物与 server 入口；可写的 `data/` 与
 运行时 `.cordis/` 仍按项目根定位。源码根没有 `app.json` 不影响 `start`。
+
+`build` 会扫描两个插件根：项目的 `plugins/`，以及项目 `node_modules/` 中带
+`plugin.json` 的包（包括 `@scope/name` 与 npm 的 `file:` 符号链接）。两处都用同一
+套预设重建入口，因此 `add` 安装的 npm 插件同样会进入 `dist/resources/plugins/`。
+同一个 id 同时出现在两处时保留本地插件；依赖根中 id 重复，或清单声明的入口
+缺失时构建硬失败，不会留下半新半旧的 `dist/`。
 
 ## 在另一个项目中使用（本地联调）
 
@@ -302,8 +308,9 @@ Linux `${XDG_DATA_HOME:-~/.local/share}/cordis-app`。可用外壳的
 
 - **`dev`**：与 `build` 使用同一个 `serverPreset`，项目 `server/` 与本地插件会
   现场构建到 `.cordis/dev/`，第三方依赖在每次重建时重新打包。
-- **`build`**：项目 `server/index.js` 与 `resources/plugins/*` 的服务端入口都会把
-  第三方依赖打进各自的 ESM 产物；`dist/` 不包含 `node_modules`。
+- **`build`**：项目 `server/index.js` 与 `resources/plugins/*` 的服务端入口（本地
+  插件与 `node_modules` 中的插件）都会把第三方依赖打进各自的 ESM 产物；`dist/`
+  不包含 `node_modules`。
 - **`start`**：只读取 `dist/` 的 `app.json`、前端产物与 server 入口，部署时不需要
   项目 `node_modules`。
 - **`package:desktop`**：在暂存与构建之前扫描项目 server 与各插件的服务端入口。
