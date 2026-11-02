@@ -24,7 +24,7 @@ jobs:
           version: 10.26.2
       - uses: actions/setup-node@v4
         with:
-          node-version: 20.19.0
+          node-version: 22.18.0
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
@@ -46,7 +46,7 @@ jobs:
           version: 10.26.2
       - uses: actions/setup-node@v4
         with:
-          node-version: 20.19.0
+          node-version: 22.18.0
           cache: pnpm
       - uses: actions/setup-go@v5
         with:

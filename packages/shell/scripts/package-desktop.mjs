@@ -295,8 +295,8 @@ export function optionalNativeModulesPlugin() {
 /**
  * 用 esbuild 把入口打成两个自包含的 ESM `.mjs`。
  *
- * `format: 'esm'` + `platform: 'node'` + `target: 'node20'` 与根 engines
- * （node >= 20.19）对齐；ESM 天然保留顶层 await。`nodePaths` 只用于测试
+ * `format: 'esm'` + `platform: 'node'` + `target: 'node22'` 与根 engines
+ * （node >= 22.18）对齐；ESM 天然保留顶层 await。`nodePaths` 只用于测试
  * 夹具解析工作区里的 ws，生产路径不需要。
  */
 export async function bundleRuntime({ entries, outDir, nodePaths }) {
@@ -310,7 +310,7 @@ export async function bundleRuntime({ entries, outDir, nodePaths }) {
       bundle: true,
       format: 'esm',
       platform: 'node',
-      target: 'node20',
+      target: 'node22',
       logLevel: 'warning',
       banner: { js: RUNTIME_BANNER },
       define: { ...RUNTIME_DEFINE },
