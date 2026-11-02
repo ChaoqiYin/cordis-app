@@ -24,7 +24,7 @@ import { basename, dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { build as esbuild } from 'esbuild'
 import { serverPreset } from '@cordis-app/preset'
-import { SHARED_MODULE_TABLE, WS_PATH } from '@cordis-app/protocol'
+import { SHARED_MODULE_TABLE, PLUGIN_SOURCE_BUILT_PATH, WS_PATH } from '@cordis-app/protocol'
 import {
   buildProject,
   createProjectDevServer,
@@ -631,5 +631,72 @@ test('缺少 body 时构建失败，且不留下可运行目录', async () => {
   rmSync(join(root, 'src', 'body.tsx'))
 
   await assert.rejects(() => buildProject({ projectRoot: root }), /body/)
+  assert.equal(existsSync(join(root, 'dist')), false)
+})
+
+test('build 把 pluginSource 打进 dist 并改写产物清单', async () => {
+  const root = createProject()
+  writeDependency(root, 'source-dep', {
+    type: 'module',
+    files: { 'index.js': 'export const SOURCE_MARKER = "SOURCE_DEP"\n' },
+  })
+  writeFileSync(
+    join(root, 'server', 'plugin-source.ts'),
+    `import { SOURCE_MARKER } from 'source-dep'
+export async function readArchive(spec: string): Promise<Uint8Array> {
+  return new TextEncoder().encode(spec + ':' + SOURCE_MARKER)
+}
+`,
+  )
+  const app = JSON.parse(readFileSync(join(root, 'app.json'), 'utf8'))
+  writeFileSync(
+    join(root, 'app.json'),
+    JSON.stringify({ ...app, pluginSource: 'server/plugin-source.ts' }),
+  )
+
+  const result = await buildProject({ projectRoot: root })
+
+  assert.equal(result.pluginSource, join(result.outDir, 'server', 'plugin-source.js'))
+  assert.ok(existsSync(result.pluginSource!))
+  const builtApp = JSON.parse(readFileSync(result.appJson, 'utf8'))
+  assert.equal(
+    builtApp.pluginSource,
+    PLUGIN_SOURCE_BUILT_PATH,
+    '产物清单必须指向构建后的固定位置',
+  )
+
+  const source = readFileSync(result.pluginSource!, 'utf8')
+  assert.match(source, /SOURCE_DEP/, '来源模块的第三方依赖应打进产物')
+  assertNoBareImport(source, 'source-dep', '插件来源产物')
+
+  const mod = await import(pathToFileURL(result.pluginSource!).href)
+  assert.equal(typeof mod.readArchive, 'function')
+  assert.equal(
+    new TextDecoder().decode(await mod.readArchive('demo', {})),
+    'demo:SOURCE_DEP',
+  )
+})
+
+test('build 拒绝项目根之外的 pluginSource，也不留下 dist', async () => {
+  const root = createProject()
+  const app = JSON.parse(readFileSync(join(root, 'app.json'), 'utf8'))
+  writeFileSync(
+    join(root, 'app.json'),
+    JSON.stringify({ ...app, pluginSource: '../outside.js' }),
+  )
+
+  await assert.rejects(() => buildProject({ projectRoot: root }), /不能指向项目根之外/)
+  assert.equal(existsSync(join(root, 'dist')), false)
+})
+
+test('build 在 pluginSource 文件缺失时失败', async () => {
+  const root = createProject()
+  const app = JSON.parse(readFileSync(join(root, 'app.json'), 'utf8'))
+  writeFileSync(
+    join(root, 'app.json'),
+    JSON.stringify({ ...app, pluginSource: 'server/missing.js' }),
+  )
+
+  await assert.rejects(() => buildProject({ projectRoot: root }), /找不到插件来源模块/)
   assert.equal(existsSync(join(root, 'dist')), false)
 })

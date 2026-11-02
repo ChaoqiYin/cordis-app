@@ -35,6 +35,7 @@ cordis-app 只支持**项目模式**：应用就是一个普通目录，`package
   "name": "demo",
   "version": "0.1.0",
   "plugins": ["hello"],
+  "pluginSource": "server/plugin-source.js",
   "ui": {
     "pages": true,
     "slots": ["header.right", "activity.bottom"],
@@ -46,6 +47,8 @@ cordis-app 只支持**项目模式**：应用就是一个普通目录，`package
 
 - `plugins` 的键是**插件 id**，不是 npm 包名；顺序即启用顺序。缺省或空数组表示
   「发现即启用」。
+- `pluginSource` 可选，声明项目自己的插件包来源模块，只在打包形态生效；详见
+  [项目自定义插件包来源](#项目自定义插件包来源)。
 - `ui` 是项目 body 能提供的能力。同一个形状也出现在 `plugin.json.ui`，表示插件
   **需要**的能力；两者不满足时只告警，不阻断服务端加载。
 - 框架版本约束只写在 `package.json`，`app.json` 不保存版本范围。
@@ -96,7 +99,9 @@ node packages/cli/lib/cli.js start --project /tmp/cordis-demo
 │   ├── ui/          前端壳与项目 body
 │   ├── shared/      React、React DOM、cordis-app/client
 │   └── plugins/     本地插件与 node_modules 中插件的前端/服务端产物
-└── server/index.js  项目后端产物
+└── server/
+    ├── index.js           项目后端产物
+    └── plugin-source.js   可选，项目声明的插件包来源
 ```
 
 `start` 从 `dist/` 读取 `app.json`、前端产物与 server 入口；可写的 `data/` 与
@@ -413,6 +418,46 @@ menus、settings 四个出口全部保留的写法。
 **只读安装目录**指代码与依赖安装后不再修改（桌面形态就是「桌面打包」一节的
 安装目录）；**可写用户数据**指 `<project>/data`（项目模式）或桌面数据目录
 （打包模式）。公共 `app.lock` 已移除。
+
+### 项目自定义插件包来源
+
+打包形态默认只接受本地路径或 `file://` 的 `.cordis-plugin`。项目若要从网络、
+内部制品库或自己的缓存取包，在 `app.json` 声明一个来源模块：
+
+```json
+{
+  "name": "demo",
+  "version": "0.1.0",
+  "pluginSource": "server/plugin-source.js"
+}
+```
+
+模块导出 `readArchive(spec, ctx)`，返回 `Uint8Array`。`ctx` 提供
+`projectRoot`、`appJsonPath`、`userDataDir` 与 `frameworkVersion`：
+
+```js
+// server/plugin-source.js
+export async function readArchive(spec, ctx) {
+  // spec 原样来自安装请求，必须由这里决定允许哪些来源。
+  if (!spec.startsWith('https://plugins.example.com/')) {
+    throw new Error(`不允许的插件包地址：${spec}`)
+  }
+  const response = await fetch(spec)
+  if (!response.ok) throw new Error(`下载插件包失败：${response.status}`)
+  return new Uint8Array(await response.arrayBuffer())
+}
+```
+
+`build` 用与服务端入口相同的预设把它打进 `dist/server/plugin-source.js`，第三方
+依赖同样在构建期自包含；产物 `app.json` 的 `pluginSource` 会被改写成这个固定
+路径，因此 `start` 与桌面释放目录都不需要额外启动参数。模块在 worker 启动时
+加载：清单声明了它但文件缺失或导出不正确，启动直接失败。嵌入方显式传入的
+`readArchive`（测试或宿主）优先于项目声明。
+
+安全边界：来源模块是项目代码，与项目 server 入口同等可信；HTTP 请求只能传
+`spec`，不能指定模块路径或替换实现。模块必须自行限制允许的 `spec`，否则任何
+能访问安装接口的人都能让它请求任意地址。来源模块只在打包形态启用，项目模式
+仍走 npm。
 
 ## 签名插件包
 

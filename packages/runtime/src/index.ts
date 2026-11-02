@@ -23,6 +23,12 @@ export {
 export { NpmInstallSource, NPM_LOCKFILE_NAMES, type NpmSourceOptions } from './plugin/npm-source.js'
 export { BundleInstallSource, type BundleSourceOptions } from './plugin/bundle-source.js'
 export {
+  loadProjectPluginSource,
+  resolvePluginSourcePath,
+  type PluginSourceContext,
+  type ProjectReadArchive,
+} from './plugin/project-source.js'
+export {
   BUNDLE_FILE,
   INSTALLED_FILE,
   BUNDLE_FORMAT_VERSION,

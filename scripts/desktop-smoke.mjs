@@ -79,6 +79,28 @@ function writeConsumerDependencies(projectRoot) {
   writeFileSync(packageJsonPath, JSON.stringify(pkg, null, 2) + '\n')
 }
 
+/**
+ * 声明一个项目自己的插件来源模块。
+ *
+ * 模块在 worker 启动时被加载；写标记文件来验证整条链路真的走到了释放目录，
+ * 而不是只检查构建产物里有没有这个文件。
+ */
+function addPluginSource(projectRoot) {
+  writeFileSync(
+    join(projectRoot, 'server', 'plugin-source.js'),
+    `import { writeFileSync } from 'node:fs'
+writeFileSync(new URL('./loaded.marker', import.meta.url), 'yes')
+export async function readArchive() {
+  throw new Error('桌面冒烟不应安装插件包')
+}
+`,
+  )
+  const appJsonPath = join(projectRoot, 'app.json')
+  const app = JSON.parse(readFileSync(appJsonPath, 'utf8'))
+  app.pluginSource = 'server/plugin-source.js'
+  writeFileSync(appJsonPath, JSON.stringify(app, null, 2) + '\n')
+}
+
 /** 等 stdout 上出现访问地址；子进程提前退出时立即失败。 */
 function waitForUrl(child, getStdout, getStderr) {
   return new Promise((resolveUrl, reject) => {
@@ -147,6 +169,7 @@ async function main() {
     // ① 使用方脚手架与本地联调安装方式。
     run(process.execPath, [frameworkCli, 'new', 'demo', '--project', projectRoot], { cwd: work })
     writeConsumerDependencies(projectRoot)
+    addPluginSource(projectRoot)
     run(npm, ['install', '--no-audit', '--no-fund'], { cwd: projectRoot })
 
     const installedCli = join(projectRoot, 'node_modules', 'cordis-app', 'bin', 'cordis-app.js')
@@ -227,6 +250,15 @@ async function main() {
     const app = JSON.parse(readFileSync(releasedApp, 'utf8'))
     if (app.name !== 'demo') {
       fail(`释放目录的 app.json.name = ${String(app.name)}，期望 demo`)
+    }
+
+    // 来源模块应随 build 进入释放目录，并在 worker 启动时被加载。
+    const releaseDir = dirname(releasedApp)
+    if (!existsSync(join(releaseDir, 'server', 'plugin-source.js'))) {
+      fail('释放目录缺少 server/plugin-source.js')
+    }
+    if (!existsSync(join(releaseDir, 'server', 'loaded.marker'))) {
+      fail('桌面形态启动时没有加载 app.json 声明的插件来源模块')
     }
 
     log('通过：build → package-desktop → 启动安装目录并加载 hello')

@@ -296,6 +296,7 @@ export async function commandBuild(args: ParsedArgs, io: CommandIO): Promise<num
     io.out(`  共享模块  ${join(result.resourcesDir, 'shared')}`)
     io.out(`  插件      ${join(result.resourcesDir, 'plugins')}`)
     io.out(`  服务端    ${result.serverEntry}`)
+    if (result.pluginSource) io.out(`  插件来源  ${result.pluginSource}`)
     return 0
   } catch (error) {
     io.err(`构建失败：${formatError(error)}`)
