@@ -2,8 +2,9 @@
  * 服务端产物在 Node 上运行所需的公共构建片段。
  *
  * 服务端预设与桌面运行时打包器（packages/shell/scripts/package-desktop.mjs）
- * 共用这里：两边都要让 CJS 依赖里的动态 `require` 可用，并把 `ws` 的可选
- * 原生依赖置空。复制两份实现迟早会漂移，所以只保留这一份。
+ * 共用这里的 banner 与可选原生依赖规则：两边都要让 CJS 依赖里的动态
+ * `require` 可用，并把 `ws` 的可选原生依赖置空。这里共享的是这些片段，
+ * 不是整个 esbuild 配置；复制两份规则迟早会漂移，所以只保留这一份。
  */
 
 import type { Plugin } from 'esbuild'
@@ -65,7 +66,7 @@ export function internalPackageGuardPlugin(): Plugin {
         errors: [
           {
             text:
-              `“${args.path}” 是 @cordis-app 内部包，不能从服务端入口值导入` +
+              `“${args.path}” 是 @cordis-app 内部包，不能在插件入口值导入` +
               `（导入方：${args.importer}）。` +
               '服务端运行时能力请从 ctx 获取；只需要类型时改用 `import type`。',
           },

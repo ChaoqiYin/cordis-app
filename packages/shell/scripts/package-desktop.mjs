@@ -219,60 +219,101 @@ function applyStaging(plan) {
 /**
  * 收集内置插件的清单。
  *
- * 清单损坏时跳过：构建阶段已经校验过插件，发布门禁只扫描能识别的入口；
- * 不因为一个读不懂的文件在这里制造误导性的失败。
+ * 发布门禁必须失败关闭：`plugin.json` 存在却读不懂，或者清单声明了 `server`
+ * 却没有对应的入口文件，都记为错误。跳过这些插件会让不完整产物绕过扫描。
  */
 function collectPluginManifests(distDir) {
   const pluginsDir = join(distDir, 'resources', 'plugins')
-  if (!existsSync(pluginsDir)) return []
+  if (!existsSync(pluginsDir)) return { manifests: [], errors: [] }
 
   const manifests = []
+  const errors = []
   for (const entry of readdirSync(pluginsDir, { withFileTypes: true })) {
     if (!entry.isDirectory() || entry.name.startsWith('.')) continue
     const manifestPath = join(pluginsDir, entry.name, 'plugin.json')
     if (!existsSync(manifestPath)) continue
+
+    let manifest
     try {
-      const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
-      if (manifest && typeof manifest === 'object' && !Array.isArray(manifest)) {
-        manifests.push({ dir: entry.name, manifest })
-      }
-    } catch {
-      // 忽略
+      manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      errors.push(`插件清单无法解析：${manifestPath}（${reason}）`)
+      continue
     }
+    if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) {
+      errors.push(`插件清单不是对象：${manifestPath}`)
+      continue
+    }
+
+    if (typeof manifest.server === 'string' && manifest.server !== '') {
+      const serverPath = join(pluginsDir, entry.name, manifest.server)
+      if (!existsSync(serverPath)) {
+        errors.push(`插件清单声明的服务端入口不存在：${serverPath}`)
+      }
+    }
+    manifests.push({ dir: entry.name, manifest })
   }
-  return manifests
+  return { manifests, errors }
 }
 
 /**
  * 校验 dist 里的服务端产物是否还能在运行时解析依赖。
  *
- * 白名单只有 Node 内置模块与 `cordis-app`；其余裸导入（包括 `@cordis-app/*`）
- * 都说明构建期没有把依赖打进产物，桌面安装目录启动后会失败。
+ * 白名单只有 Node 内置模块（`node:*` 或无前缀，如 `events`）与 `cordis-app`；
+ * 其余裸导入（包括 `@cordis-app/*`）都说明构建期没有把依赖打进产物，桌面安装
+ * 目录启动后会失败。
+ *
+ * 插件清单本身损坏或与文件不匹配时同样失败，避免门禁被一个读不懂的入口绕过。
  */
 export function validateBareImports(distDir) {
-  const pluginManifests = collectPluginManifests(distDir)
+  const { manifests: pluginManifests, errors } = collectPluginManifests(distDir)
   const violations = []
   for (const target of planBareImportScan({ distDir, pluginManifests })) {
     if (!existsSync(target.file)) continue
     violations.push(...scanBareImports(readFileSync(target.file, 'utf8'), target.label))
   }
-  return { ok: violations.length === 0, violations }
+  return { ok: errors.length === 0 && violations.length === 0, violations, errors }
 }
 
 function printBareImportViolations(violations) {
   if (violations.length === 0) return
 
-  console.error('服务端产物包含未内联的第三方依赖，无法打包：')
+  console.error('服务端产物包含没有打进产物（不自包含）的第三方依赖，无法打包：')
   for (const { file, specifier } of violations) {
     console.error(`  ${file}  →  ${specifier}`)
   }
   console.error(
-    '白名单只有 node:* 与 cordis-app；请把这些包声明在项目或插件的依赖里，' +
-      '然后重新执行 cordis-app build，让构建期把依赖打进产物。',
+    '白名单只有 Node 内置模块（`node:*` 或无前缀，如 `events`）与 `cordis-app`；' +
+      '请把这些包声明在项目或插件的依赖里，然后重新执行 cordis-app build，' +
+      '让构建期把依赖打进产物。',
   )
 }
 
+function printManifestErrors(errors) {
+  if (errors.length === 0) return
+
+  console.error('插件清单校验失败，无法打包：')
+  for (const error of errors) console.error(`  ${error}`)
+}
+
 // ---------------------------------------------------------------- 运行时打包
+
+/**
+ * 确认 preset 构建产物存在，缺失时给出可执行的修复提示。
+ *
+ * 直接从源码仓库运行脚本时，`packages/preset/lib` 可能还没构建；原始
+ * `MODULE_NOT_FOUND` 会让人误以为是依赖没装。`existsSync` 可注入，便于测试。
+ */
+export function assertPresetLib(presetLibPath, deps = {}) {
+  const exists = deps.existsSync ?? existsSync
+  if (exists(presetLibPath)) return presetLibPath
+
+  throw new Error(
+    `找不到 @cordis-app/preset 构建产物：${presetLibPath}。` +
+      '先执行 pnpm build:preset（或 pnpm build / pnpm package:desktop）。',
+  )
+}
 
 /**
  * 用 esbuild 把入口打成两个自包含的 ESM `.mjs`。
@@ -286,10 +327,10 @@ function printBareImportViolations(violations) {
  */
 export async function bundleRuntime({ entries, outDir, nodePaths }) {
   const { build } = await import('esbuild')
+  const presetLib = join(repoRoot, 'packages', 'preset', 'lib', 'index.js')
+  assertPresetLib(presetLib)
   const { RUNTIME_BANNER, RUNTIME_DEFINE, optionalNativeModulesPlugin } =
-    await import(
-      pathToFileURL(join(repoRoot, 'packages', 'preset', 'lib', 'index.js')).href
-    )
+    await import(pathToFileURL(presetLib).href)
   mkdirSync(outDir, { recursive: true })
 
   for (const { entry, outfile } of entries) {
@@ -347,6 +388,7 @@ export async function runPackage(options) {
   const bareImports = validateBareImports(distDir)
   if (!bareImports.ok) {
     printBareImportViolations(bareImports.violations)
+    printManifestErrors(bareImports.errors)
     return 1
   }
 

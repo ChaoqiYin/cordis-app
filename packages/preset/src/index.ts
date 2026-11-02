@@ -39,7 +39,7 @@ function common(options: PresetOptions, browser: boolean): BuildOptions {
     outfile: options.outfile,
     absWorkingDir: options.root,
     bundle: true,
-    // 框架与插件都要求 Node 24 / 现代浏览器，不需要降级语法
+    // target 维持现状；运行环境要求以根 engines（node >= 22.18）为准
     target: browser ? 'es2022' : 'node24',
     platform: browser ? 'browser' : 'node',
     format: 'esm',
@@ -69,7 +69,7 @@ export function serverPreset(options: PresetOptions): BuildOptions {
     ...build,
     external: [CORE_PACKAGE],
     banner: { js: RUNTIME_BANNER },
-    define: { ...RUNTIME_DEFINE },
+    define: { ...build.define, ...RUNTIME_DEFINE },
     plugins: [optionalNativeModulesPlugin(), internalPackageGuardPlugin()],
   }
 }
@@ -85,6 +85,7 @@ export function clientPreset(options: PresetOptions): BuildOptions {
   return {
     ...build,
     external: [...SHARED_MODULES],
+    plugins: [internalPackageGuardPlugin()],
     // 前端产物要能独立分发：CSS 之类的资源内联进去，避免额外的相对路径
     loader: {
       '.woff2': 'dataurl',

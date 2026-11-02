@@ -28,7 +28,7 @@
 依赖项目或插件目录的 `node_modules`。
 
 - `serverPreset` 默认用 esbuild 打包第三方依赖；保持 external 的只有 Node 内置
-  模块（`node:*`）与 `cordis-app` 的类型面。
+  模块（`node:*` 或无前缀，如 `events`）与 `cordis-app` 的类型面。
 - `@cordis-app/*` 是框架内部包，不属于公开的框架提供依赖；值导入在构建期失败。
 - `dev`、`build`、`start`、`package:desktop` 与签名插件安装五条路径共用这一条
   规则，不增加 `distribution` 预设、开关或环境变量。
