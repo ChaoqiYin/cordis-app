@@ -21,6 +21,10 @@ server 与 client 入口（路径由 plugin.json 指向）
 元数据与 `peerDependencies`（框架契约）；`dependencies` 仅作为开发与构建期的解析
 输入，不会进入归档的运行路径。
 
+Node 版本契约只承诺使用 `serverPreset` / `clientPreset` 构建的产物；作者自定义
+esbuild 配置不在契约内，详见
+[ADR 0002](./adr/0002-node-version-contract.md)。
+
 `bundle.json` 字段：
 
 | 字段 | 必填 | 说明 |
