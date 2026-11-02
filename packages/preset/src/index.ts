@@ -14,6 +14,7 @@
 import type { BuildOptions } from 'esbuild'
 import { SHARED_MODULES, CORE_PACKAGE } from './shared.js'
 import {
+  NODE_TARGET,
   RUNTIME_BANNER,
   RUNTIME_DEFINE,
   internalPackageGuardPlugin,
@@ -39,8 +40,8 @@ function common(options: PresetOptions, browser: boolean): BuildOptions {
     outfile: options.outfile,
     absWorkingDir: options.root,
     bundle: true,
-    // target 维持现状；运行环境要求以根 engines（node >= 22.18）为准
-    target: browser ? 'es2022' : 'node24',
+    // 服务端产物与桌面 runtime 共用 NODE_TARGET；浏览器目标不属于 Node 版本契约
+    target: browser ? 'es2022' : NODE_TARGET,
     platform: browser ? 'browser' : 'node',
     format: 'esm',
     sourcemap: options.sourcemap ?? true,
@@ -101,6 +102,7 @@ export function clientPreset(options: PresetOptions): BuildOptions {
 export { SHARED_MODULES, CORE_PACKAGE, isShared } from './shared.js'
 export type { SharedModule } from './shared.js'
 export {
+  NODE_TARGET,
   RUNTIME_BANNER,
   RUNTIME_DEFINE,
   internalPackageGuardPlugin,
