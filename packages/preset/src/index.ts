@@ -2,7 +2,8 @@
  * 插件打包预设。
  *
  * 两条独立的构建路径，产物形态不同：
- *   - 服务端入口（Node）→ ESM，外部化 peers 与 node 内置模块
+ *   - 服务端入口（Node）→ ESM，第三方依赖打包进产物，只外部化 cordis-app
+ *     与 Node 内置模块
  *   - 前端入口（浏览器）→ ESM，外部化共享白名单，由 import map 提供
  *
  * 之所以不提供「一条命令打完两者」的封装，是因为它们的目标平台与 external
@@ -12,6 +13,12 @@
 
 import type { BuildOptions } from 'esbuild'
 import { SHARED_MODULES, CORE_PACKAGE } from './shared.js'
+import {
+  RUNTIME_BANNER,
+  RUNTIME_DEFINE,
+  internalPackageGuardPlugin,
+  optionalNativeModulesPlugin,
+} from './runtime.js'
 
 export interface PresetOptions {
   /** 入口文件，相对插件根目录 */
@@ -32,7 +39,7 @@ function common(options: PresetOptions, browser: boolean): BuildOptions {
     outfile: options.outfile,
     absWorkingDir: options.root,
     bundle: true,
-    // 框架与插件都要求 Node 24 / 现代浏览器，不需要降级语法
+    // target 维持现状；运行环境要求以根 engines（node >= 22.18）为准
     target: browser ? 'es2022' : 'node24',
     platform: browser ? 'browser' : 'node',
     format: 'esm',
@@ -49,20 +56,21 @@ function common(options: PresetOptions, browser: boolean): BuildOptions {
 /**
  * 服务端入口的构建配置。
  *
- * `packages: 'external'` 让所有 npm 依赖留在 node_modules 里由 Node 解析——
- * 包括多版本共存的情况。插件作者不需要关心哪些该 external，
- * 也不会因为打包进 lodash 而在另一个插件需要不同版本时冲突。
+ * 服务端产物必须自包含：第三方 npm 依赖由 esbuild 打进产物，运行时不从
+ * 项目或插件目录的 `node_modules` 解析。唯一保持 external 的是 `cordis-app`
+ * ——它是 peerDependency，只提供类型面，属于框架提供依赖。
  *
- * 例外是 `cordis-app`：它是 peerDependency，由框架提供，必须 external 且
- * 由安装阶段的校验保证只有一份。
+ * 动态 `require` 与 `ws` 的可选原生依赖由 runtime.ts 的共享片段处理，
+ * 桌面运行时打包器使用同一份实现。
  */
 export function serverPreset(options: PresetOptions): BuildOptions {
   const build = common(options, false)
   return {
     ...build,
-    // 不 bundle 任何包：服务端的模块解析交给 Node，这正是多版本共存的落点
-    packages: 'external',
     external: [CORE_PACKAGE],
+    banner: { js: RUNTIME_BANNER },
+    define: { ...build.define, ...RUNTIME_DEFINE },
+    plugins: [optionalNativeModulesPlugin(), internalPackageGuardPlugin()],
   }
 }
 
@@ -77,6 +85,7 @@ export function clientPreset(options: PresetOptions): BuildOptions {
   return {
     ...build,
     external: [...SHARED_MODULES],
+    plugins: [internalPackageGuardPlugin()],
     // 前端产物要能独立分发：CSS 之类的资源内联进去，避免额外的相对路径
     loader: {
       '.woff2': 'dataurl',
@@ -91,3 +100,9 @@ export function clientPreset(options: PresetOptions): BuildOptions {
 
 export { SHARED_MODULES, CORE_PACKAGE, isShared } from './shared.js'
 export type { SharedModule } from './shared.js'
+export {
+  RUNTIME_BANNER,
+  RUNTIME_DEFINE,
+  internalPackageGuardPlugin,
+  optionalNativeModulesPlugin,
+} from './runtime.js'

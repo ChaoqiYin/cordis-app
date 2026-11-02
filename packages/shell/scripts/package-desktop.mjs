@@ -21,6 +21,7 @@ import {
 } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
+import { isBuiltin } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -52,33 +53,6 @@ const STAGED_PRESERVE = ['.gitignore', '.gitkeep']
 
 /** 随包的签名公钥文件名，必须与 Go 侧 prepareApp 的约定一致。 */
 const BUNDLE_PUBLIC_KEY_NAME = 'bundle-public-key.pem'
-
-/** 需要解析成内联空模块的可选原生依赖。 */
-const OPTIONAL_NATIVE_MODULE_PATTERN = /^(bufferutil|utf-8-validate)$/
-
-/**
- * 用 createRequire 补齐 ESM 下的 require。
- *
- * ws 的 CJS 产物里有 `require('events')` 之类的动态 require；esbuild 转成
- * ESM 后会走 `__require`，没有这个 banner 就会在加载时抛
- * 「Dynamic require of "events" is not supported」。
- */
-const RUNTIME_BANNER = [
-  "import { createRequire as __cordisAppCreateRequire } from 'node:module';",
-  'const require = __cordisAppCreateRequire(import.meta.url);',
-].join('\n')
-
-/**
- * 关闭 ws 的可选原生加速分支。
- *
- * 空模块能让 esbuild 完成解析，但 ws 会在 `require` 成功后改用
- * `bufferUtil.mask/unmask`；空对象没有这些函数，大消息就会在运行期崩溃。
- * 显式定义这两个开关，让 ws 走自带的纯 JS 回退。
- */
-const RUNTIME_DEFINE = {
-  'process.env.WS_NO_BUFFER_UTIL': '"true"',
-  'process.env.WS_NO_UTF_8_VALIDATE': '"true"',
-}
 
 // ---------------------------------------------------------------- 纯函数
 
@@ -124,23 +98,43 @@ export function isBareSpecifier(specifier) {
 }
 
 /**
- * 扫描一段 ESM/CJS 源码里的裸导入。
+ * 发布产物允许保留的裸导入。
  *
- * 这是发布前的粗筛，不是完整的模块解析器：它只回答「产物里有没有 Node
- * 运行时可能找不到的包名」。注释里的字符串可能被误报，但宁可多报。
+ * 框架提供的服务端依赖只有两类：不带前缀的 Node 内置模块（例如 `events`）
+ * 与 `cordis-app` 的类型面（含子路径）。`@cordis-app/*` 是框架内部包，
+ * 不属于公开契约，必须判为违规。
+ */
+export function isAllowedBareSpecifier(specifier) {
+  return (
+    isBuiltin(specifier) ||
+    specifier === 'cordis-app' ||
+    specifier.startsWith('cordis-app/')
+  )
+}
+
+/**
+ * 扫描一段 ESM/CJS 源码里未被框架提供的裸导入。
+ *
+ * 这是发布门禁的粗筛，不是完整的模块解析器：它只回答「产物里有没有运行
+ * 时可能找不到的包名」。注释里的字符串可能被误报，但宁可多报。
+ *
+ * `__require` 是 esbuild 把 CJS 依赖的动态 `require` 转换后的产物；漏掉它
+ * 会放过真正的外部依赖。
  */
 export function scanBareImports(source, file) {
   const patterns = [
     /\bimport\s+(?:[^'"]*?\s+from\s+)?['"]([^'"]+)['"]/g,
     /\bexport\s+(?:[^'"]*?\s+from\s+)['"]([^'"]+)['"]/g,
     /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
-    /\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
+    /\b(?:__)?require\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
   ]
 
   const specifiers = new Set()
   for (const pattern of patterns) {
     for (const match of source.matchAll(pattern)) {
-      if (isBareSpecifier(match[1])) specifiers.add(match[1])
+      if (isBareSpecifier(match[1]) && !isAllowedBareSpecifier(match[1])) {
+        specifiers.add(match[1])
+      }
     }
   }
 
@@ -225,75 +219,107 @@ function applyStaging(plan) {
 /**
  * 收集内置插件的清单。
  *
- * 清单损坏时跳过：构建阶段已经校验过插件，这里只做发布前提示，不该因为
- * 一个读不懂的文件阻断打包。
+ * 发布门禁必须失败关闭：`plugin.json` 存在却读不懂，或者清单声明了 `server`
+ * 却没有对应的入口文件，都记为错误。跳过这些插件会让不完整产物绕过扫描。
  */
 function collectPluginManifests(distDir) {
   const pluginsDir = join(distDir, 'resources', 'plugins')
-  if (!existsSync(pluginsDir)) return []
+  if (!existsSync(pluginsDir)) return { manifests: [], errors: [] }
 
   const manifests = []
+  const errors = []
   for (const entry of readdirSync(pluginsDir, { withFileTypes: true })) {
     if (!entry.isDirectory() || entry.name.startsWith('.')) continue
     const manifestPath = join(pluginsDir, entry.name, 'plugin.json')
     if (!existsSync(manifestPath)) continue
+
+    let manifest
     try {
-      const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
-      if (manifest && typeof manifest === 'object' && !Array.isArray(manifest)) {
-        manifests.push({ dir: entry.name, manifest })
-      }
-    } catch {
-      // 忽略
+      manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      errors.push(`插件清单无法解析：${manifestPath}（${reason}）`)
+      continue
     }
+    if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) {
+      errors.push(`插件清单不是对象：${manifestPath}`)
+      continue
+    }
+
+    if (typeof manifest.server === 'string' && manifest.server !== '') {
+      const serverPath = join(pluginsDir, entry.name, manifest.server)
+      if (!existsSync(serverPath)) {
+        errors.push(`插件清单声明的服务端入口不存在：${serverPath}`)
+      }
+    }
+    manifests.push({ dir: entry.name, manifest })
   }
-  return manifests
+  return { manifests, errors }
 }
 
-/** 读取并扫描服务端产物，返回需要提示的裸导入。 */
-export function collectBareImportWarnings(distDir) {
-  const pluginManifests = collectPluginManifests(distDir)
-  const warnings = []
+/**
+ * 校验 dist 里的服务端产物是否还能在运行时解析依赖。
+ *
+ * 白名单只有 Node 内置模块（`node:*` 或无前缀，如 `events`）与 `cordis-app`；
+ * 其余裸导入（包括 `@cordis-app/*`）都说明构建期没有把依赖打进产物，桌面安装
+ * 目录启动后会失败。
+ *
+ * 插件清单本身损坏或与文件不匹配时同样失败，避免门禁被一个读不懂的入口绕过。
+ */
+export function validateBareImports(distDir) {
+  const { manifests: pluginManifests, errors } = collectPluginManifests(distDir)
+  const violations = []
   for (const target of planBareImportScan({ distDir, pluginManifests })) {
     if (!existsSync(target.file)) continue
-    warnings.push(...scanBareImports(readFileSync(target.file, 'utf8'), target.label))
+    violations.push(...scanBareImports(readFileSync(target.file, 'utf8'), target.label))
   }
-  return warnings
+  return { ok: errors.length === 0 && violations.length === 0, violations, errors }
 }
 
-function printBareImportWarnings(warnings) {
-  if (warnings.length === 0) return
+function printBareImportViolations(violations) {
+  if (violations.length === 0) return
 
-  console.warn('警告：服务端产物包含未内联的第三方依赖，安装后可能启动失败。')
-  for (const { file, specifier } of warnings) {
-    console.warn(`  ${file}  →  ${specifier}`)
+  console.error('服务端产物包含没有打进产物（不自包含）的第三方依赖，无法打包：')
+  for (const { file, specifier } of violations) {
+    console.error(`  ${file}  →  ${specifier}`)
   }
-  console.warn(
-    "当前服务端预设使用 packages: 'external'，这些依赖不会随包分发；" +
-      '请把服务端依赖内联进产物，或等待 distribution 预设。',
+  console.error(
+    '白名单只有 Node 内置模块（`node:*` 或无前缀，如 `events`）与 `cordis-app`；' +
+      '请把这些包声明在项目或插件的依赖里，然后重新执行 cordis-app build，' +
+      '让构建期把依赖打进产物。',
   )
+}
+
+function printManifestErrors(errors) {
+  if (errors.length === 0) return
+
+  console.error('插件清单校验失败，无法打包：')
+  for (const error of errors) console.error(`  ${error}`)
 }
 
 // ---------------------------------------------------------------- 运行时打包
 
-/** 把可选原生依赖解析成内联空模块。 */
-export function optionalNativeModulesPlugin() {
-  return {
-    name: 'cordis-app-optional-native-modules',
-    setup(build) {
-      build.onResolve(
-        { filter: OPTIONAL_NATIVE_MODULE_PATTERN },
-        (args) => ({ path: args.path, namespace: 'cordis-app-empty' }),
-      )
-      build.onLoad({ filter: /.*/, namespace: 'cordis-app-empty' }, () => ({
-        contents: 'export {}',
-        loader: 'js',
-      }))
-    },
-  }
+/**
+ * 确认 preset 构建产物存在，缺失时给出可执行的修复提示。
+ *
+ * 直接从源码仓库运行脚本时，`packages/preset/lib` 可能还没构建；原始
+ * `MODULE_NOT_FOUND` 会让人误以为是依赖没装。`existsSync` 可注入，便于测试。
+ */
+export function assertPresetLib(presetLibPath, deps = {}) {
+  const exists = deps.existsSync ?? existsSync
+  if (exists(presetLibPath)) return presetLibPath
+
+  throw new Error(
+    `找不到 @cordis-app/preset 构建产物：${presetLibPath}。` +
+      '先执行 pnpm build:preset（或 pnpm build / pnpm package:desktop）。',
+  )
 }
 
 /**
  * 用 esbuild 把入口打成两个自包含的 ESM `.mjs`。
+ *
+ * banner、可选原生依赖的空模块与 `WS_NO_*` 定义来自 @cordis-app/preset 的
+ * 共享片段：服务端预设与桌面运行时打包器必须是同一套规则。
  *
  * `format: 'esm'` + `platform: 'node'` + `target: 'node22'` 与根 engines
  * （node >= 22.18）对齐；ESM 天然保留顶层 await。`nodePaths` 只用于测试
@@ -301,6 +327,10 @@ export function optionalNativeModulesPlugin() {
  */
 export async function bundleRuntime({ entries, outDir, nodePaths }) {
   const { build } = await import('esbuild')
+  const presetLib = join(repoRoot, 'packages', 'preset', 'lib', 'index.js')
+  assertPresetLib(presetLib)
+  const { RUNTIME_BANNER, RUNTIME_DEFINE, optionalNativeModulesPlugin } =
+    await import(pathToFileURL(presetLib).href)
   mkdirSync(outDir, { recursive: true })
 
   for (const { entry, outfile } of entries) {
@@ -354,12 +384,18 @@ export async function runPackage(options) {
     return 1
   }
 
+  // 发布门禁：不完整的产物不能进入暂存、runtime 打包或 go build。
+  const bareImports = validateBareImports(distDir)
+  if (!bareImports.ok) {
+    printBareImportViolations(bareImports.violations)
+    printManifestErrors(bareImports.errors)
+    return 1
+  }
+
   if (publicKeyPath && !existsSync(publicKeyPath)) {
     console.error(`找不到签名公钥：${publicKeyPath}`)
     return 1
   }
-
-  printBareImportWarnings(collectBareImportWarnings(distDir))
 
   applyStaging(
     planStaging({ distDir, shellAppDir, publicKeyPath }),

@@ -42,11 +42,19 @@ test('前端预设外部化全部共享模块', () => {
   assert.equal(build.format, 'esm')
 })
 
-test('服务端预设把依赖留给 Node 解析，只外部化核心包', () => {
+test('服务端预设把第三方依赖打进产物，只外部化核心包', () => {
   const build = serverPreset({ entry: 'src/index.ts', root: '/tmp/p' })
-  assert.equal(build.packages, 'external', '普通依赖必须由 Node 解析，否则多版本无法共存')
-  assert.deepEqual(build.external, ['cordis-app'])
+  assert.equal(build.packages, undefined, '第三方依赖必须由 esbuild 打包，产物运行时不解析 node_modules')
+  assert.deepEqual(build.external, ['cordis-app'], '只有框架提供的 cordis-app 可以留在产物外')
   assert.equal(build.platform, 'node')
+  assert.equal(build.bundle, true)
+})
+
+test('服务端预设提供 CJS 动态 require 与 ws 纯 JS 回退所需的运行期配置', () => {
+  const build = serverPreset({ entry: 'src/index.ts', root: '/tmp/p' })
+  assert.match(build.banner?.js ?? '', /createRequire/, 'CJS 依赖里的动态 require 需要 createRequire banner')
+  assert.equal(build.define?.['process.env.WS_NO_BUFFER_UTIL'], '"true"')
+  assert.equal(build.define?.['process.env.WS_NO_UTF_8_VALIDATE'], '"true"')
 })
 
 test('import map 里出现的每个说明符都在预设白名单内', () => {

@@ -1,8 +1,18 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  rmdirSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { join, relative, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { spawnSync } from 'node:child_process'
 
@@ -10,8 +20,10 @@ import {
   validateDist,
   planStaging,
   scanBareImports,
+  validateBareImports,
   planBareImportScan,
   parseArgs,
+  assertPresetLib,
   bundleRuntime,
 } from './package-desktop.mjs'
 
@@ -21,11 +33,65 @@ const scriptPath = join(here, 'package-desktop.mjs')
 const runtimeNodeModules = resolve(here, '..', '..', 'runtime', 'node_modules')
 const repoRoot = resolve(here, '..', '..', '..')
 const runtimeLib = join(repoRoot, 'packages', 'runtime', 'lib')
+const shellAppDir = resolve(here, '..', 'app')
 
 function tempDir(t, prefix = 'cordis-package-') {
   const dir = mkdtempSync(join(tmpdir(), prefix))
   t.after(() => rmSync(dir, { recursive: true, force: true }))
   return dir
+}
+
+/**
+ * 递归快照一棵目录树：相对路径 → 内容 hash 或目录标记。
+ *
+ * 用来证明发布门禁在失败路径上没有改动外壳的暂存目录，而不是假设它本来
+ * 就是空的——开发者跑过 `package:desktop` 后目录里通常有产物。
+ */
+function snapshotTree(root) {
+  const snapshot = new Map()
+  if (!existsSync(root)) return snapshot
+
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name)
+      const key = relative(root, full)
+      if (entry.isDirectory()) {
+        snapshot.set(`${key}/`, 'dir')
+        walk(full)
+      } else if (entry.isFile()) {
+        snapshot.set(
+          key,
+          createHash('sha256').update(readFileSync(full)).digest('hex'),
+        )
+      }
+    }
+  }
+  walk(root)
+  return snapshot
+}
+
+/** 写一个最小可打包项目；`serverSource` 决定裸导入门禁是否失败。 */
+function writeProject(t, serverSource = "import lodash from 'lodash'\n") {
+  const root = tempDir(t)
+  const project = join(root, 'project')
+  const dist = join(project, 'dist')
+  for (const relativePath of [
+    'app.json',
+    'package.json',
+    'server/index.js',
+    'resources/ui/index.html',
+  ]) {
+    mkdirSync(join(dist, relativePath, '..'), { recursive: true })
+    writeFileSync(join(dist, relativePath), 'x')
+  }
+  writeFileSync(join(dist, 'server', 'index.js'), serverSource)
+
+  return {
+    project,
+    dist,
+    out: join(root, 'install'),
+    root,
+  }
 }
 
 test('validateDist 报出缺少的必要产物', (t) => {
@@ -90,25 +156,134 @@ test('planStaging 把可选公钥复制成随包 PEM', () => {
   })
 })
 
-test('scanBareImports 只报告非 node:、非相对的模块', () => {
+test('scanBareImports 放行 Node 内置与框架提供依赖，报告其余裸导入', () => {
   const source = `
     import { readFile } from 'node:fs/promises'
     import path from 'node:path'
+    import { EventEmitter } from 'events'
+    import type { Server } from 'cordis-app'
+    import { definePlugin } from 'cordis-app/server'
     import local from './local.js'
     import absolute from '/abs/module.js'
     import lodash from 'lodash'
+    import protocol from '@cordis-app/protocol'
     export { thing } from 'left-pad'
     const lazy = await import('dynamic-dep')
     const legacy = require('cjs-dep')
+    const bundled = __require("esbuild-dep")
   `
 
-  const warnings = scanBareImports(source, 'server/index.js')
+  const violations = scanBareImports(source, 'server/index.js')
 
   assert.deepEqual(
-    warnings.map((warning) => warning.specifier).sort(),
-    ['cjs-dep', 'dynamic-dep', 'left-pad', 'lodash'],
+    violations.map((violation) => violation.specifier).sort(),
+    ['@cordis-app/protocol', 'cjs-dep', 'dynamic-dep', 'esbuild-dep', 'left-pad', 'lodash'],
   )
-  assert.ok(warnings.every((warning) => warning.file === 'server/index.js'))
+  assert.ok(violations.every((violation) => violation.file === 'server/index.js'))
+})
+
+test('validateBareImports 放行只含白名单导入的 dist', (t) => {
+  const dist = join(tempDir(t), 'dist')
+  mkdirSync(join(dist, 'server'), { recursive: true })
+  writeFileSync(
+    join(dist, 'server', 'index.js'),
+    `
+      import { readFile } from 'node:fs/promises'
+      import { EventEmitter } from 'events'
+      import type { Server } from 'cordis-app'
+      import { definePlugin } from 'cordis-app/server'
+      import local from './local.js'
+    `,
+  )
+
+  assert.deepEqual(validateBareImports(dist), {
+    ok: true,
+    violations: [],
+    errors: [],
+  })
+})
+
+test('validateBareImports 报告项目与插件服务端的违规文件与包名', (t) => {
+  const dist = join(tempDir(t), 'dist')
+  const pluginDir = join(dist, 'resources', 'plugins', 'hello')
+  mkdirSync(join(dist, 'server'), { recursive: true })
+  mkdirSync(pluginDir, { recursive: true })
+  writeFileSync(
+    join(dist, 'server', 'index.js'),
+    "import lodash from 'lodash'\n",
+  )
+  writeFileSync(
+    join(pluginDir, 'plugin.json'),
+    JSON.stringify({ id: 'hello', server: 'server.js' }),
+  )
+  writeFileSync(
+    join(pluginDir, 'server.js'),
+    "import protocol from '@cordis-app/protocol'\n",
+  )
+
+  assert.deepEqual(validateBareImports(dist), {
+    ok: false,
+    violations: [
+      { file: 'server/index.js', specifier: 'lodash' },
+      { file: 'resources/plugins/hello/server.js', specifier: '@cordis-app/protocol' },
+    ],
+    errors: [],
+  })
+})
+
+test('validateBareImports 在插件清单损坏时失败并指出清单路径', (t) => {
+  const dist = join(tempDir(t), 'dist')
+  const pluginDir = join(dist, 'resources', 'plugins', 'broken')
+  const manifestPath = join(pluginDir, 'plugin.json')
+  mkdirSync(join(dist, 'server'), { recursive: true })
+  mkdirSync(pluginDir, { recursive: true })
+  writeFileSync(join(dist, 'server', 'index.js'), "import 'node:fs'\n")
+  writeFileSync(manifestPath, '{ not json')
+
+  const result = validateBareImports(dist)
+
+  assert.equal(result.ok, false)
+  assert.deepEqual(result.violations, [])
+  assert.equal(result.errors.length, 1)
+  assert.ok(result.errors[0].includes(manifestPath), `错误应指出清单路径：${result.errors[0]}`)
+})
+
+test('validateBareImports 在插件声明 server 但文件缺失时失败', (t) => {
+  const dist = join(tempDir(t), 'dist')
+  const pluginDir = join(dist, 'resources', 'plugins', 'hello')
+  const expectedPath = join(pluginDir, 'server.js')
+  mkdirSync(join(dist, 'server'), { recursive: true })
+  mkdirSync(pluginDir, { recursive: true })
+  writeFileSync(join(dist, 'server', 'index.js'), "import 'node:fs'\n")
+  writeFileSync(
+    join(pluginDir, 'plugin.json'),
+    JSON.stringify({ id: 'hello', server: 'server.js' }),
+  )
+
+  const result = validateBareImports(dist)
+
+  assert.equal(result.ok, false)
+  assert.deepEqual(result.violations, [])
+  assert.equal(result.errors.length, 1)
+  assert.ok(result.errors[0].includes(expectedPath), `错误应指出缺失入口：${result.errors[0]}`)
+})
+
+test('validateBareImports 允许没有 server 入口的插件', (t) => {
+  const dist = join(tempDir(t), 'dist')
+  const pluginDir = join(dist, 'resources', 'plugins', 'ui-only')
+  mkdirSync(join(dist, 'server'), { recursive: true })
+  mkdirSync(pluginDir, { recursive: true })
+  writeFileSync(join(dist, 'server', 'index.js'), "import 'node:fs'\n")
+  writeFileSync(
+    join(pluginDir, 'plugin.json'),
+    JSON.stringify({ id: 'ui-only', client: 'client.js' }),
+  )
+
+  assert.deepEqual(validateBareImports(dist), {
+    ok: true,
+    violations: [],
+    errors: [],
+  })
 })
 
 test('planBareImportScan 包含项目 server 与内置插件服务端入口', () => {
@@ -157,6 +332,85 @@ test('缺少 dist 必要文件时命令非零退出并指出缺失项', (t) => {
   assert.match(result.stderr, /server\/index\.js/)
   assert.match(result.stderr, /resources\/ui\/index\.html/)
 })
+
+test('白名单外裸导入在暂存与打包前非零退出，不留下半成品', (t) => {
+  const { project, dist, out } = writeProject(t)
+  const pluginDir = join(dist, 'resources', 'plugins', 'hello')
+  mkdirSync(pluginDir, { recursive: true })
+  writeFileSync(
+    join(pluginDir, 'plugin.json'),
+    JSON.stringify({ id: 'hello', server: 'server.js' }),
+  )
+  writeFileSync(
+    join(pluginDir, 'server.js'),
+    "import protocol from '@cordis-app/protocol'\n",
+  )
+
+  // 不假设 app/ 为空：跑过 package:desktop 的开发者目录里通常已有暂存产物。
+  // 断言的是「这次运行没有改动它」，而不是「它必须为空」。
+  const before = snapshotTree(shellAppDir)
+
+  const result = spawnSync(
+    process.execPath,
+    [scriptPath, '--project', project, '--out', out],
+    { encoding: 'utf8' },
+  )
+
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /server\/index\.js/)
+  assert.match(result.stderr, /lodash/)
+  assert.match(result.stderr, /resources\/plugins\/hello\/server\.js/)
+  assert.match(result.stderr, /@cordis-app\/protocol/)
+  assert.match(result.stderr, /重新执行 cordis-app build/)
+  assert.doesNotMatch(result.stderr, /packages: 'external'/)
+  assert.doesNotMatch(result.stderr, /distribution 预设/)
+  assert.equal(existsSync(out), false, '失败时不应生成安装目录')
+  assert.deepEqual(snapshotTree(shellAppDir), before, '失败时不得修改外壳 app 目录')
+})
+
+test('门禁失败时不删除外壳 app 里已有的暂存文件', (t) => {
+  const { project, out } = writeProject(t)
+  const serverDir = join(shellAppDir, 'server')
+  const serverExisted = existsSync(serverDir)
+  const sentinel = join(serverDir, 'test-sentinel.txt')
+
+  mkdirSync(serverDir, { recursive: true })
+  writeFileSync(sentinel, 'keep-me')
+  t.after(() => {
+    // 只清理本用例创建的东西；不碰目录里任何已有产物。
+    rmSync(sentinel, { force: true })
+    if (
+      !serverExisted &&
+      existsSync(serverDir) &&
+      readdirSync(serverDir).length === 0
+    ) {
+      rmdirSync(serverDir)
+    }
+  })
+
+  const before = snapshotTree(shellAppDir)
+  const result = spawnSync(
+    process.execPath,
+    [scriptPath, '--project', project, '--out', out],
+    { encoding: 'utf8' },
+  )
+
+  assert.equal(result.status, 1)
+  assert.equal(readFileSync(sentinel, 'utf8'), 'keep-me', '已有暂存文件必须保留')
+  assert.deepEqual(snapshotTree(shellAppDir), before, '测试不得修改外壳 app 目录')
+  assert.equal(existsSync(out), false, '失败时不应生成安装目录')
+})
+
+test('assertPresetLib 在 preset 产物缺失时提示先构建', () => {
+  const presetLib = '/repo/packages/preset/lib/index.js'
+
+  assert.throws(
+    () => assertPresetLib(presetLib, { existsSync: () => false }),
+    /pnpm build:preset/,
+  )
+  assert.equal(assertPresetLib(presetLib, { existsSync: () => true }), presetLib)
+})
+
 
 test('bundleRuntime 把可选原生依赖内联为空模块', async (t) => {
   const root = tempDir(t, 'cordis-package-empty-')

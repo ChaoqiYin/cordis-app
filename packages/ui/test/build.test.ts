@@ -6,12 +6,32 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import {
+  cpSync,
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  writeFileSync,
+} from 'node:fs'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { SHARED_MODULE_TABLE, WS_PATH } from '@cordis-app/protocol'
-import { buildProject, createProjectDevServer, swapIntoPlace } from '../src/build/index.ts'
+import {
+  buildProject,
+  createProjectDevServer,
+  createProjectWatcher,
+  swapIntoPlace,
+} from '../src/build/index.ts'
+
+const here = dirname(fileURLToPath(import.meta.url))
+// test/ → ui/ → packages/ → 仓库根
+const repo = join(here, '..', '..', '..')
+const runtimeNodeModules = join(repo, 'packages', 'runtime', 'node_modules')
 
 /** 取一个当前空闲的端口，避免测试与开发者本机的 5173 冲突。 */
 function freePort(): Promise<number> {
@@ -62,6 +82,57 @@ function createProject(): string {
   return root
 }
 
+/** 在临时项目的 node_modules 里放一个假 npm 依赖。 */
+function writeDependency(
+  root: string,
+  name: string,
+  options: {
+    type?: 'module' | 'commonjs'
+    main?: string
+    files: Record<string, string>
+  },
+): void {
+  const dir = join(root, 'node_modules', name)
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(
+    join(dir, 'package.json'),
+    JSON.stringify({
+      name,
+      version: '1.0.0',
+      type: options.type ?? 'module',
+      main: options.main ?? 'index.js',
+    }),
+  )
+  for (const [file, contents] of Object.entries(options.files)) {
+    const target = join(dir, file)
+    mkdirSync(dirname(target), { recursive: true })
+    writeFileSync(target, contents)
+  }
+}
+
+/** 递归找出目录下所有的 node_modules，用来证明发布产物没有携带依赖树。 */
+function findNodeModules(dir: string): string[] {
+  if (!existsSync(dir)) return []
+  const found: string[] = []
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name)
+    if (entry.name === 'node_modules') {
+      found.push(full)
+      continue
+    }
+    if (entry.isDirectory()) found.push(...findNodeModules(full))
+  }
+  return found
+}
+
+function assertNoBareImport(source: string, specifier: string, label: string): void {
+  const escaped = specifier.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const pattern = new RegExp(
+    `(?:\\bfrom\\s+|\\bimport\\s+|\\bimport\\s*\\(\\s*|\\brequire\\s*\\(\\s*)['"]${escaped}['"]`,
+  )
+  assert.doesNotMatch(source, pattern, `${label} 不应保留 ${specifier} 的裸导入`)
+}
+
 test('build 产出发布布局，body 与 server 都来自项目源码', async () => {
   const root = createProject()
   const result = await buildProject({ projectRoot: root })
@@ -87,6 +158,201 @@ test('build 产出发布布局，body 与 server 都来自项目源码', async (
   const server = readFileSync(result.serverEntry, 'utf8')
   assert.match(server, /apply/, '项目 server 入口应被打包成可 import 的 ESM')
   assert.doesNotMatch(server, /interface|: number/, 'TypeScript 类型应被剥离')
+})
+
+test('构建把项目 server 与本地插件的第三方依赖打进产物，dist 不含 node_modules', async () => {
+  const root = createProject()
+  writeDependency(root, 'fake-dep', {
+    files: { 'index.js': "export const marker = 'SELF_CONTAINED_MARKER'\n" },
+  })
+  writeFileSync(
+    join(root, 'server', 'index.ts'),
+    "import { marker } from 'fake-dep'\nexport default function apply() { return marker }\n",
+  )
+  writeFileSync(
+    join(root, 'plugins', 'demo', 'server.js'),
+    "import { marker } from 'fake-dep'\nexport default function apply() { return marker }\n",
+  )
+
+  const result = await buildProject({ projectRoot: root })
+  const pluginEntry = join(result.resourcesDir, 'plugins', 'demo', 'server.js')
+
+  const serverSource = readFileSync(result.serverEntry, 'utf8')
+  assert.match(serverSource, /SELF_CONTAINED_MARKER/, '项目 server 产物应包含依赖代码')
+  assertNoBareImport(serverSource, 'fake-dep', '项目 server 产物')
+
+  const pluginSource = readFileSync(pluginEntry, 'utf8')
+  assert.match(pluginSource, /SELF_CONTAINED_MARKER/, '本地插件 server 产物应包含依赖代码')
+  assertNoBareImport(pluginSource, 'fake-dep', '本地插件产物')
+
+  assert.deepEqual(findNodeModules(result.outDir), [], 'dist 不能携带 node_modules')
+
+  // 发布产物搬到没有项目 node_modules 的地方也必须能加载。
+  renameSync(join(root, 'node_modules'), join(root, 'node_modules.off'))
+  const server = await import(pathToFileURL(result.serverEntry).href)
+  assert.equal(server.default(), 'SELF_CONTAINED_MARKER')
+  const plugin = await import(pathToFileURL(pluginEntry).href)
+  assert.equal(plugin.default(), 'SELF_CONTAINED_MARKER')
+})
+
+test('服务端值导入 @cordis-app 内部包时构建失败，import type 通过', async () => {
+  const valueRoot = createProject()
+  writeFileSync(
+    join(valueRoot, 'server', 'index.ts'),
+    "import { WS_PATH } from '@cordis-app/protocol'\n" +
+      'export default function apply() { return WS_PATH }\n',
+  )
+
+  await assert.rejects(
+    () => buildProject({ projectRoot: valueRoot }),
+    (error: Error) => {
+      assert.match(error.message, /@cordis-app\/protocol/, '错误应指出违规说明符')
+      assert.match(error.message, /server\/index\.ts/, '错误应指出导入方文件')
+      assert.match(error.message, /import type/, '错误应给出修复方向')
+      return true
+    },
+  )
+
+  const typeRoot = createProject()
+  writeFileSync(
+    join(typeRoot, 'server', 'index.ts'),
+    "import type { PluginManifest } from '@cordis-app/protocol'\n" +
+      'export default function apply(_manifest?: PluginManifest) {}\n',
+  )
+  const result = await buildProject({ projectRoot: typeRoot })
+  assert.ok(existsSync(result.serverEntry), 'import type 在转译前被擦除，不应触发内部包边界')
+})
+
+test('客户端值导入 @cordis-app 内部包时构建失败，import type 通过', async () => {
+  const valueRoot = createProject()
+  writeFileSync(
+    join(valueRoot, 'plugins', 'demo', 'plugin.json'),
+    JSON.stringify({ id: 'demo', displayName: 'Demo', client: 'client.ts' }),
+  )
+  writeFileSync(
+    join(valueRoot, 'plugins', 'demo', 'client.ts'),
+    "import { WS_PATH } from '@cordis-app/protocol'\nexport const marker = WS_PATH\n",
+  )
+
+  await assert.rejects(
+    () => buildProject({ projectRoot: valueRoot }),
+    (error: Error) => {
+      assert.match(error.message, /@cordis-app\/protocol/, '错误应指出违规说明符')
+      assert.match(error.message, /client\.ts/, '错误应指出导入方文件')
+      assert.match(error.message, /import type/, '错误应给出修复方向')
+      return true
+    },
+  )
+
+  const typeRoot = createProject()
+  writeFileSync(
+    join(typeRoot, 'plugins', 'demo', 'plugin.json'),
+    JSON.stringify({ id: 'demo', displayName: 'Demo', client: 'client.ts' }),
+  )
+  writeFileSync(
+    join(typeRoot, 'plugins', 'demo', 'client.ts'),
+    "import type { PluginManifest } from '@cordis-app/protocol'\n" +
+      'export const manifest: PluginManifest | undefined = undefined\n',
+  )
+  const result = await buildProject({ projectRoot: typeRoot })
+  assert.ok(
+    existsSync(join(result.resourcesDir, 'plugins', 'demo', 'client.ts')),
+    'import type 在转译前被擦除，不应触发客户端内部包边界',
+  )
+})
+
+test('CJS 依赖里的动态 require 在 ESM 产物中可用', async () => {
+  const root = createProject()
+  writeDependency(root, 'dynamic-cjs', {
+    type: 'commonjs',
+    main: 'index.cjs',
+    files: {
+      'index.cjs':
+        "const builtin = ['node', 'path'].join(':')\n" +
+        'module.exports = function resolveFile() {\n' +
+        "  return require(builtin).basename('/tmp/example/hello.txt')\n" +
+        '}\n',
+    },
+  })
+  writeFileSync(
+    join(root, 'server', 'index.ts'),
+    "import resolveFile from 'dynamic-cjs'\n" +
+      'export default function apply() { return resolveFile() }\n',
+  )
+
+  const result = await buildProject({ projectRoot: root })
+  const built = await import(pathToFileURL(result.serverEntry).href)
+  assert.equal(built.default(), 'hello.txt', 'createRequire banner 必须让动态 require 在 ESM 里工作')
+})
+
+test('ws 的服务端入口构建后可用，可选原生依赖不留在产物里', async () => {
+  const root = createProject()
+  // 模拟插件作者普通安装的 npm 依赖；ws 由 @cordis-app/runtime 声明。
+  mkdirSync(join(root, 'node_modules'), { recursive: true })
+  cpSync(join(runtimeNodeModules, 'ws'), join(root, 'node_modules', 'ws'), {
+    recursive: true,
+    dereference: true,
+  })
+  writeFileSync(
+    join(root, 'server', 'index.ts'),
+    "import * as bufferutil from 'bufferutil'\n" +
+      "import * as utf8 from 'utf-8-validate'\n" +
+      "import { WebSocket } from 'ws'\n" +
+      'export default function apply() {\n' +
+      '  return {\n' +
+      '    keys: [...Object.keys(bufferutil), ...Object.keys(utf8)],\n' +
+      "    hasWebSocket: typeof WebSocket === 'function',\n" +
+      '    noBufferUtil: process.env.WS_NO_BUFFER_UTIL,\n' +
+      '    noUtf8: process.env.WS_NO_UTF_8_VALIDATE,\n' +
+      '  }\n' +
+      '}\n',
+  )
+
+  const result = await buildProject({ projectRoot: root })
+  const source = readFileSync(result.serverEntry, 'utf8')
+  assertNoBareImport(source, 'bufferutil', '服务端产物')
+  assertNoBareImport(source, 'utf-8-validate', '服务端产物')
+
+  const built = await import(pathToFileURL(result.serverEntry).href)
+  assert.deepEqual(built.default(), {
+    keys: [],
+    hasWebSocket: true,
+    noBufferUtil: 'true',
+    noUtf8: 'true',
+  })
+})
+
+test('dev watcher 使用同一预设，.cordis/dev 产物自包含', async () => {
+  const root = createProject()
+  writeDependency(root, 'fake-dep', {
+    files: { 'index.js': "export const marker = 'DEV_MARKER'\n" },
+  })
+  writeFileSync(
+    join(root, 'server', 'index.ts'),
+    "import { marker } from 'fake-dep'\nexport default function apply() { return marker }\n",
+  )
+  writeFileSync(
+    join(root, 'plugins', 'demo', 'server.js'),
+    "import { marker } from 'fake-dep'\nexport default function apply() { return marker }\n",
+  )
+
+  const watcher = await createProjectWatcher({ projectRoot: root })
+  try {
+    const serverSource = readFileSync(watcher.serverEntry, 'utf8')
+    assert.match(serverSource, /DEV_MARKER/, 'dev server 产物应包含依赖代码')
+    assertNoBareImport(serverSource, 'fake-dep', 'dev server 产物')
+
+    const pluginSource = readFileSync(
+      join(watcher.localPluginsDir, 'demo', 'server.js'),
+      'utf8',
+    )
+    assert.match(pluginSource, /DEV_MARKER/, 'dev 本地插件产物应包含依赖代码')
+    assertNoBareImport(pluginSource, 'fake-dep', 'dev 本地插件产物')
+
+    assert.deepEqual(findNodeModules(watcher.devRoot), [], '.cordis/dev 不能携带 node_modules')
+  } finally {
+    await watcher.close()
+  }
 })
 
 test('dev 代理的 WebSocket 路径与前端连接路径一致', async () => {

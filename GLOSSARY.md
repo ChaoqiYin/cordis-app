@@ -115,8 +115,21 @@ worker 启动前的兼容性检查：项目 `package.json` 声明的 `cordis-app
 
 **插件包（`.cordis-plugin`）**
 tar.gz 归档，包含 `plugin.json`、`package.json`、server/client 产物与
-`bundle.json`。内容 hash 排除 `bundle.json` 自身；签名为 Ed25519，覆盖
-id、版本与 hash。
+`bundle.json`。第三方依赖已在构建期进入产物，归档不包含 `node_modules`。
+`package.json` 只保留元数据与 `peerDependencies`（框架契约）；`dependencies`
+只是开发/构建期的解析输入，运行时不安装。内容 hash 排除 `bundle.json` 自身；
+签名为 Ed25519，覆盖 id、版本与 hash。
+
+**自包含**
+模块产物在运行时不依赖项目或插件目录下的 `node_modules`；它需要的非框架
+代码已经随产物提供。第三方依赖由模块作者负责，框架只提供构建机制，不替
+模块安装。
+
+**框架提供依赖**
+由宿主而不是模块产物提供的依赖。服务端是 Node 内置模块（`node:*`）与
+`cordis-app` 的类型面；客户端是共享模块（React、`cordis-app/client`）。
+这些在构建时保持 external，不进入模块产物。`@cordis-app/*` 是框架内部包，
+不属于公开的框架提供依赖。
 
 **`installed.json`**
 打包模式的安装事实，写在 `<桌面数据目录>/installed.json`。记录每个插件的版本、
@@ -192,3 +205,5 @@ supervisor stdout 上唯一的字符串契约：
   别名（见「`--data` 与 `--project`」）。
 - **可写安装目录**：桌面安装目录在运行期只读，应用产物释放到桌面数据目录后
   才写入。
+- **distribution 预设 / 把服务端依赖留给 Node 解析**：已废弃。服务端产物一律
+  在构建期自包含；不存在第二个 distribution 模式。

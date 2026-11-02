@@ -122,7 +122,7 @@ pnpm package:desktop --project /tmp/cordis-demo --out /tmp/cordis-demo-install
 /tmp/cordis-demo-install/cordis-app --url --data /tmp/cordis-demo-data
 ```
 
-`package:desktop` 先执行 `pnpm build:runtime`，再把 `dist/` 暂存进外壳、用
+`package:desktop` 先构建 preset 与 runtime，再把 `dist/` 暂存进外壳、用
 esbuild 打包 supervisor 与 worker、`go build` 外壳，并复制当前平台的 Node 到
 `bin/`。`--out` 目录可以不存在。可选参数
 `--bundle-public-key <PEM 文件>` 让签名公钥随包分发。
@@ -184,7 +184,7 @@ find "$DATA/app" -mindepth 1 -maxdepth 1 -type d -name '[0-9a-f]*' | wc -l
 ```
 
 如果第一条探测不是 200，先看 `/tmp/cordis-demo.log`：通常是端口被占用、
-`dist/` 缺产物，或服务端产物里有未内联的第三方依赖。
+`dist/` 缺产物，或服务端产物里有没打进产物（不自包含）的第三方依赖。
 
 ### 安装目录与数据目录
 
@@ -246,18 +246,36 @@ Linux `${XDG_DATA_HOME:-~/.local/share}/cordis-app`。可用外壳的
 出的值；用户 shell 里残留的 `CORDIS_APP_PROJECT` 等配置不会劫持 supervisor
 的项目根或资源根。
 
-### 服务端依赖必须自包含
+### 服务端依赖在构建期自包含
 
-`cordis-app build` 的服务端预设仍是 `packages: 'external'`：项目
-`server/index.js` 与内置插件的服务端产物里，第三方裸导入不会被打进产物。
-桌面形态的产物搬到数据目录后，Node 不会再去项目的 `node_modules` 解析它们，
-因此：
+唯一规则：**非框架提供的额外包由模块作者在构建期自包含**。服务端产物不在运行时
+从项目或插件目录的 `node_modules` 解析依赖。
 
-- 脚手架与示例插件只含类型导入，默认闭环不受影响；
-- 如果服务端产物带有运行时第三方依赖，`package:desktop` 会在打包前扫描
-  `server/index.js` 与各插件的服务端入口，并打印警告（列出文件与包名）；
-- 这只是发布前的粗筛，不替代真实启动验证。当前版本还没有能自动内联这些
-  依赖的 distribution 预设。
+框架提供的服务端依赖只有 Node 内置模块（`node:*` 或无前缀，如 `events`）与
+`cordis-app` 的类型面，
+构建时保持 external。`@cordis-app/*` 是框架内部包，不属于公开契约，值导入在
+构建期失败。
+
+五条路径共用这一条规则：
+
+- **`dev`**：与 `build` 使用同一个 `serverPreset`，项目 `server/` 与本地插件会
+  现场构建到 `.cordis/dev/`，第三方依赖在每次重建时重新打包。
+- **`build`**：项目 `server/index.js` 与 `resources/plugins/*` 的服务端入口都会把
+  第三方依赖打进各自的 ESM 产物；`dist/` 不包含 `node_modules`。
+- **`start`**：只读取 `dist/` 的 `app.json`、前端产物与 server 入口，部署时不需要
+  项目 `node_modules`。
+- **`package:desktop`**：在暂存与构建之前扫描项目 server 与各插件的服务端入口。
+  白名单外的裸导入会硬失败，列出文件与包名，且不生成安装目录。遇到这种情况时，
+  检查依赖是否已声明在项目或插件的 `package.json` 中，然后重新执行
+  `cordis-app build`。
+- **签名插件**：作者用 `@cordis-app/preset` 的 `serverPreset` / `clientPreset`
+  构建入口。`.cordis-plugin` 只含构建产物，不含 `node_modules`；`package.json`
+  只保留元数据与 `peerDependencies`，`dependencies` 只是构建输入，运行时不安装。
+  安装与启动不需要 npm 或网络。
+
+取舍（每个插件各带一份第三方依赖、模块级单例不跨插件共享、`dev` 重建更重、
+不支持原生 `.node` addon）记录在
+[ADR 0001](./docs/adr/0001-self-contained-server-builds.md)。
 
 ### 不在范围内
 
@@ -349,8 +367,11 @@ menus、settings 四个出口全部保留的写法。
 ## 签名插件包
 
 `.cordis-plugin` 是 tar.gz，包含 `plugin.json`、`package.json`、server/client
-产物与 `bundle.json`。`bundle.json` 记录内容 hash、Ed25519 签名与 peer 范围；
-安装时先比 hash、再验签名，任何一步失败都不改动用户插件目录。
+产物与 `bundle.json`。归档**不包含 `node_modules`**：第三方依赖已由作者在构建期
+打进 server/client 产物。`package.json` 只保留元数据与 `peerDependencies`；
+`dependencies` 是构建输入，安装与运行时不解析、也不安装。`bundle.json` 记录内容
+hash、Ed25519 签名与 peer 范围；安装时先比 hash、再验签名，任何一步失败都不改动
+用户插件目录。
 
 格式、hash 规范化、签名载荷与密钥管理见
 [docs/plugin-bundles.md](./docs/plugin-bundles.md)。
