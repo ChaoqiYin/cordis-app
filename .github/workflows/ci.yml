@@ -34,6 +34,23 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
 
+  consumer:
+    name: 消费方冒烟（npm file: → build → start）
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10.26.2
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.22.2
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm test:consumer
+
   shell:
     name: Go 外壳（Linux 构建与测试）
     runs-on: ubuntu-22.04
