@@ -15,6 +15,12 @@ bundle.json        版本、内容 hash、签名、peer 范围、UI 需求
 server 与 client 入口（路径由 plugin.json 指向）
 ```
 
+归档**只包含构建产物，不包含 `node_modules`**。第三方依赖由作者在构建期用
+`@cordis-app/preset` 的 `serverPreset` / `clientPreset` 打进 server/client 产物，
+安装与运行时不执行 npm，也不从插件目录解析依赖。因此 `package.json` 只保留
+元数据与 `peerDependencies`（框架契约）；`dependencies` 仅作为开发与构建期的解析
+输入，不会进入归档的运行路径。
+
 `bundle.json` 字段：
 
 | 字段 | 必填 | 说明 |
@@ -115,6 +121,10 @@ writeFileSync(`hello-plugin-${version}.cordis-plugin`, createTarGz(files))
 ```
 
 `bundle.json` 必须在计算 hash **之后**加入，因为 hash 不覆盖它自身。
+
+打包器只收集构建产物；不要遍历或复制 `node_modules`。插件作者先在插件工程里用
+`serverPreset` / `clientPreset` 构建入口，再按上面的文件清单生成归档，运行时不
+安装 `dependencies`。
 
 ## 6. 安装行为
 

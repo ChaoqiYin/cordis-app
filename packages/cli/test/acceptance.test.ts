@@ -29,6 +29,8 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
+import { build as esbuild } from 'esbuild'
+import { serverPreset } from '@cordis-app/preset'
 import { ClientRuntime, RuntimeContext } from '@cordis-app/ui'
 import { buildProject } from '@cordis-app/ui/build'
 import {
@@ -49,6 +51,7 @@ import {
   createTarGz,
   findFreePort,
   generateToken,
+  readTarGz,
   scanPluginRoots,
   startWorker,
 } from '@cordis-app/runtime'
@@ -90,8 +93,19 @@ interface TestBundle {
   manifest: BundleManifest
 }
 
+interface BuildBundleOptions {
+  id?: string
+  displayName?: string
+  /** 已构建的服务端入口内容；缺省用不带依赖的最小实现。 */
+  server?: string
+}
+
 /** 用一次性 Ed25519 密钥构造一个合法的签名插件包。 */
-function buildBundle(): TestBundle {
+function buildBundle(options: BuildBundleOptions = {}): TestBundle {
+  const id = options.id ?? 'hello'
+  const version = '1.0.0'
+  const peer = { 'cordis-app': '^1.0.0' }
+  const ui = PLUGIN_UI
   const { privateKey, publicKey } = generateKeyPairSync('ed25519')
   const files = new Map<string, Uint8Array>()
   files.set(
@@ -99,13 +113,13 @@ function buildBundle(): TestBundle {
     Buffer.from(
       JSON.stringify(
         {
-          id: 'hello',
-          displayName: 'Hello',
+          id,
+          displayName: options.displayName ?? 'Hello',
           description: '验收测试用的假插件',
-          version: '1.0.0',
+          version,
           server: 'server.js',
           client: 'client.js',
-          ui: PLUGIN_UI,
+          ui,
         },
         null,
         2,
@@ -117,39 +131,33 @@ function buildBundle(): TestBundle {
     Buffer.from(
       JSON.stringify(
         {
-          name: 'cordis-plugin-hello',
-          version: '1.0.0',
+          name: `cordis-plugin-${id}`,
+          version,
           type: 'module',
-          peerDependencies: { 'cordis-app': '^1.0.0' },
+          peerDependencies: peer,
         },
         null,
         2,
       ),
     ),
   )
-  files.set('server.js', Buffer.from(PLUGIN_SERVER))
+  files.set('server.js', Buffer.from(options.server ?? PLUGIN_SERVER))
   files.set('client.js', Buffer.from(PLUGIN_CLIENT))
 
   const hash = computeBundleHash(files)
   const signature = sign(
     null,
-    bundleSignaturePayload({
-      id: 'hello',
-      version: '1.0.0',
-      hash,
-      peer: { 'cordis-app': '^1.0.0' },
-      ui: PLUGIN_UI,
-    }),
+    bundleSignaturePayload({ id, version, hash, peer, ui }),
     privateKey,
   ).toString('base64')
   const manifest: BundleManifest = {
-    id: 'hello',
-    version: '1.0.0',
+    id,
+    version,
     hash,
     signature,
     algorithm: 'ed25519',
-    peer: { 'cordis-app': '^1.0.0' },
-    ui: PLUGIN_UI,
+    peer,
+    ui,
   }
   files.set(BUNDLE_FILE, Buffer.from(JSON.stringify(manifest, null, 2)))
   return {
@@ -201,8 +209,7 @@ async function waitForHealth(base: string, timeoutMs = 10_000): Promise<void> {
 }
 
 /** 在项目 node_modules 里放一个假 npm 依赖；构建期必须把它打进产物。 */
-function writeProjectDependency(root: string, name: string): string {
-  const marker = 'PROCESS_SELF_CONTAINED_MARKER'
+function writeDependency(root: string, name: string, marker: string): string {
   const dir = join(root, 'node_modules', name)
   mkdirSync(dir, { recursive: true })
   writeFileSync(
@@ -211,6 +218,24 @@ function writeProjectDependency(root: string, name: string): string {
   )
   writeFileSync(join(dir, 'index.js'), `export const marker = '${marker}'\n`)
   return marker
+}
+
+function writeProjectDependency(root: string, name: string): string {
+  return writeDependency(root, name, 'PROCESS_SELF_CONTAINED_MARKER')
+}
+
+/** 用插件作者实际使用的 `serverPreset` 构建插件服务端入口。 */
+async function buildPluginServer(
+  pluginRoot: string,
+  entry: string,
+  outfile: string,
+): Promise<string> {
+  await esbuild({
+    ...serverPreset({ entry, outfile, root: pluginRoot, minify: false, sourcemap: false }),
+    absWorkingDir: pluginRoot,
+    logLevel: 'silent',
+  })
+  return readFileSync(join(pluginRoot, outfile), 'utf8')
 }
 
 async function fetchManifest(base: string, token: string): Promise<ClientManifest> {
@@ -488,6 +513,164 @@ export function apply(ctx) {
   } finally {
     if (nodeModulesMoved && existsSync(movedNodeModules)) {
       renameSync(movedNodeModules, nodeModules)
+    }
+    rmSync(work, { recursive: true, force: true })
+  }
+})
+
+test('签名插件包在构建期自包含：删除源 node_modules 后安装、启动与路由仍可用', async () => {
+  const work = mkdtempSync(join(tmpdir(), 'cordis-signed-self-contained-'))
+  const projectRoot = join(work, 'demo')
+  const userDataDir = join(work, 'userdata')
+  const pluginSource = join(work, 'plugin-source')
+  const projectNodeModules = join(projectRoot, 'node_modules')
+  const movedNodeModules = join(projectRoot, 'node_modules.off')
+  const pluginMarker = 'SIGNED_PLUGIN_DEP_MARKER'
+  let nodeModulesMoved = false
+  let worker: Awaited<ReturnType<typeof startPackagedWorker>> | undefined
+
+  try {
+    const io = {
+      out: () => {},
+      err: () => {},
+      frameworkVersion: FRAMEWORK_VERSION,
+    }
+    assert.equal(
+      await commandNew(parseArgs(['new', 'demo', '--project', projectRoot]), io),
+      0,
+    )
+
+    // 插件作者视角：依赖写在临时插件目录的 node_modules，源码直接按包名导入。
+    mkdirSync(join(pluginSource, 'lib'), { recursive: true })
+    writeFileSync(
+      join(pluginSource, 'plugin.json'),
+      JSON.stringify({
+        id: 'plugin-dependency',
+        displayName: 'Plugin Dependency',
+        version: '1.0.0',
+        server: 'lib/server.js',
+      }),
+    )
+    writeFileSync(
+      join(pluginSource, 'package.json'),
+      JSON.stringify({
+        name: 'cordis-plugin-dependency',
+        version: '1.0.0',
+        type: 'module',
+        peerDependencies: { 'cordis-app': `^${FRAMEWORK_VERSION}` },
+        dependencies: { 'cordis-plugin-dep': '^1.0.0' },
+      }),
+    )
+    writeDependency(pluginSource, 'cordis-plugin-dep', pluginMarker)
+    writeFileSync(
+      join(pluginSource, 'server-entry.js'),
+      `import { marker } from 'cordis-plugin-dep'
+export const inject = ['router']
+
+export function apply(ctx) {
+  ctx.router.get('/api/plugin-dependency', (_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+    res.end(JSON.stringify({ marker, from: 'signed-plugin' }))
+  })
+}
+`,
+    )
+
+    const serverSource = await buildPluginServer(
+      pluginSource,
+      'server-entry.js',
+      'lib/server.js',
+    )
+    assert.match(serverSource, new RegExp(pluginMarker), '第三方依赖代码必须进入插件产物')
+    assert.doesNotMatch(
+      serverSource,
+      /(?:from\s*|import\s*\(\s*|require\s*\(\s*)["']cordis-plugin-dep["']/,
+      '构建后的插件服务端不得保留假依赖的裸导入',
+    )
+
+    // 构建完成后删掉源码依赖：打包、安装、运行都不再需要它。
+    rmSync(join(pluginSource, 'node_modules'), { recursive: true, force: true })
+
+    const bundle = buildBundle({
+      id: 'plugin-dependency',
+      displayName: 'Plugin Dependency',
+      server: serverSource,
+    })
+    const bundlePath = join(work, 'plugin-dependency.cordis-plugin')
+    writeFileSync(bundlePath, bundle.bytes)
+
+    // 归档只含构建产物：解析 tar 条目，而不是只看文件系统。
+    const archiveFiles = readTarGz(readFileSync(bundlePath))
+    const archiveEntries = [...archiveFiles.keys()]
+    assert.ok(archiveEntries.includes('server.js'), '归档必须包含服务端产物')
+    assert.deepEqual(
+      archiveEntries.filter((name) => name.split('/').includes('node_modules')),
+      [],
+      '归档不得包含 node_modules',
+    )
+
+    // 项目侧也放一个构建期依赖，证明 dist 与签名插件同时自包含。
+    const projectMarker = writeDependency(projectRoot, 'cordis-fake-dep', 'PROJECT_DEP_MARKER')
+    writeFileSync(
+      join(projectRoot, 'server', 'index.js'),
+      `import { marker } from 'cordis-fake-dep'
+export default function apply(ctx) {
+  ctx.router.get('/api/project-dependency', (_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ marker, from: 'project' }))
+  })
+}
+`,
+    )
+    const built = await buildProject({ projectRoot })
+    assert.equal(existsSync(join(built.outDir, 'node_modules')), false, 'dist 不能携带 node_modules')
+
+    const installed = await new PluginInstaller({
+      projectRoot,
+      frameworkVersion: FRAMEWORK_VERSION,
+      source: new BundleInstallSource({
+        userDataDir,
+        frameworkVersion: FRAMEWORK_VERSION,
+        publicKey: bundle.publicKey,
+        appJsonPath: join(projectRoot, 'app.json'),
+        readArchive: async () => readFileSync(bundlePath),
+      }),
+      run: async () => {
+        throw new Error('签名插件安装不得执行包管理器')
+      },
+    }).install(bundlePath)
+    assert.equal(installed.id, 'plugin-dependency')
+    assert.equal(installed.version, '1.0.0')
+    assert.equal(
+      existsSync(join(userDataDir, 'plugins', 'plugin-dependency@1.0.0', 'server.js')),
+      true,
+    )
+
+    // 启动前改名：项目 server 与插件 server 若还依赖 node_modules，这里会失败。
+    renameSync(projectNodeModules, movedNodeModules)
+    nodeModulesMoved = true
+
+    worker = await startPackagedWorker(projectRoot, userDataDir, bundle.publicKey, {
+      resourcesDir: built.resourcesDir,
+      serverEntry: built.serverEntry,
+      appJson: built.appJson,
+    })
+    await waitForHealth(worker.base)
+
+    const headers = { authorization: `Bearer ${worker.token}` }
+    for (const [path, expected] of [
+      ['/api/project-dependency', { marker: projectMarker, from: 'project' }],
+      ['/api/plugin-dependency', { marker: pluginMarker, from: 'signed-plugin' }],
+    ] as const) {
+      const res = await fetch(`${worker.base}${path}`, { headers })
+      assert.equal(res.status, 200, `${path} 应在删除 node_modules 后仍可用`)
+      assert.deepEqual(await res.json(), expected)
+    }
+    assert.deepEqual(worker.handle.failures, [])
+  } finally {
+    await worker?.handle.close()
+    if (nodeModulesMoved && existsSync(movedNodeModules)) {
+      renameSync(movedNodeModules, projectNodeModules)
     }
     rmSync(work, { recursive: true, force: true })
   }
