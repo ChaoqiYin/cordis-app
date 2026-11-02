@@ -494,6 +494,7 @@ examples/
 | `pnpm typecheck` | 全仓类型检查 |
 | `pnpm test` | 全仓测试（Node 侧） |
 | `pnpm test:consumer` | 真实消费方冒烟：npm `file:` 接入 → `add` → `build` → 删除 `node_modules` → `start` |
+| `pnpm test:desktop` | 桌面形态冒烟：`build` → `package-desktop` → 启动安装目录并加载插件 |
 | `pnpm test:shell` | Go 外壳测试 |
 | `pnpm build:shell` | 构建外壳二进制 |
 

@@ -49,6 +49,32 @@ func sampleAppFS() fstest.MapFS {
 	}
 }
 
+func TestResolveInstallDirKeepsTempInstallWithBundledNode(t *testing.T) {
+	install := packagedInstall(t)
+	if got := resolveInstallDir(filepath.Join(install, "cordis-app"), ""); got != install {
+		t.Fatalf("临时目录中的安装目录被当成 go run：installDir = %q，期望 %q", got, install)
+	}
+}
+
+func TestResolveInstallDirFallsBackToRepoRootForTempBinary(t *testing.T) {
+	exe := filepath.Join(t.TempDir(), "go-build123", "exe", "main")
+	got := resolveInstallDir(exe, "")
+	if got == filepath.Dir(exe) {
+		t.Fatal("临时目录且没有随包 node 时应退回仓库根")
+	}
+	if _, err := os.Stat(filepath.Join(got, "pnpm-workspace.yaml")); err != nil {
+		t.Fatalf("回退目录不是仓库根：%q（%v）", got, err)
+	}
+}
+
+func TestResolveInstallDirOverrideWins(t *testing.T) {
+	override := filepath.Join(t.TempDir(), "custom")
+	exe := filepath.Join(t.TempDir(), "cordis-app")
+	if got := resolveInstallDir(exe, override); got != override {
+		t.Fatalf("installDir = %q，期望显式覆盖 %q", got, override)
+	}
+}
+
 func TestDiscoverLayoutInstallDirOverrideWinsOverTempBinary(t *testing.T) {
 	install := packagedInstall(t)
 	dataDir := filepath.Join(t.TempDir(), "data")

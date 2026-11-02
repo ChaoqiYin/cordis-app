@@ -54,18 +54,9 @@ func discoverLayout(dataFlag, resourcesFlag string) (layout, error) {
 	if err != nil {
 		return layout{}, fmt.Errorf("无法定位可执行文件: %w", err)
 	}
-	installDir := filepath.Dir(exe)
-	if override := os.Getenv("CORDIS_APP_INSTALL_DIR"); override != "" {
-		installDir = override
-	} else if isTempBinary(exe) {
-		// `go run` 把二进制放在临时目录，此时 installDir 毫无意义，直接用仓库根
-		installDir = repoRoot()
-	}
+	installDir := resolveInstallDir(exe, os.Getenv("CORDIS_APP_INSTALL_DIR"))
 
-	nodeName := "node"
-	if runtime.GOOS == "windows" {
-		nodeName = "node.exe"
-	}
+	nodeName := nodeBinaryName()
 
 	// packaged 的唯一判据是随包分发的 node 在不在。判断「安装目录下有没有 bin/」
 	// 不够：仓库根下也有 bin/ 的可能是别的东西。
@@ -209,6 +200,35 @@ func repoRoot() string {
 		}
 		dir = parent
 	}
+}
+
+// resolveInstallDir 决定安装目录。
+//
+// 显式覆盖优先。`go run` 把二进制放在临时目录，此时 installDir 毫无意义，
+// 退回仓库根；但「安装目录恰好在临时目录」同样常见（解压后直接运行、CI
+// 夹具），所以临时路径只有在本级没有随包 node 时才按 go run 处理。
+func resolveInstallDir(exe, override string) string {
+	if override != "" {
+		return override
+	}
+	dir := filepath.Dir(exe)
+	if isTempBinary(exe) && !hasPackagedNode(dir) {
+		return repoRoot()
+	}
+	return dir
+}
+
+// hasPackagedNode 判断目录是否是安装目录：唯一判据是随包分发的 node。
+func hasPackagedNode(dir string) bool {
+	_, err := os.Stat(filepath.Join(dir, "bin", nodeBinaryName()))
+	return err == nil
+}
+
+func nodeBinaryName() string {
+	if runtime.GOOS == "windows" {
+		return "node.exe"
+	}
+	return "node"
 }
 
 // isTempBinary 判断是否由 `go run` 启动（二进制在系统临时目录里）。
