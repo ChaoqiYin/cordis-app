@@ -98,6 +98,15 @@ test('参数映射保留 --app-json 与 --worker', () => {
   assert.equal(options.mode, 'packaged')
 })
 
+test('参数映射保留 --port 并校验范围', () => {
+  const args = readSupervisorArgs(['--project', '/projects/demo', '--port', '41234'])
+  assert.equal(args.port, 41234)
+  assert.equal(toSupervisorOptions(args).port, 41234)
+
+  assert.throws(() => readSupervisorArgs(['--port', '0']), /1-65535/)
+  assert.throws(() => readSupervisorArgs(['--port', '70000']), /1-65535/)
+})
+
 test('buildWorkerEnv 转发签名公钥，未设置时不产生空值键', () => {
   const previous = process.env[ENV_BUNDLE_PUBLIC_KEY]
   const base = {

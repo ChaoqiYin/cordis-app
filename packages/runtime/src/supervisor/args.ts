@@ -9,6 +9,8 @@ export interface SupervisorArgs {
   localPluginsDir?: string
   userPluginsDir?: string
   mode?: RuntimeMode
+  /** 指定 worker 监听端口；缺省由 supervisor 找空闲端口 */
+  port?: number
   /**
    * 覆盖 worker 入口。
    *
@@ -29,6 +31,7 @@ export function readSupervisorArgs(argv: string[]): SupervisorArgs {
   let userPluginsDir: string | undefined
   let mode: RuntimeMode | undefined
   let workerPath: string | undefined
+  let port: number | undefined
   let dev = false
 
   for (let i = 0; i < argv.length; i++) {
@@ -41,6 +44,7 @@ export function readSupervisorArgs(argv: string[]): SupervisorArgs {
     else if (arg === '--local-plugins') localPluginsDir = argv[++i]
     else if (arg === '--user-plugins') userPluginsDir = argv[++i]
     else if (arg === '--mode') mode = parseRuntimeMode(argv[++i])
+    else if (arg === '--port') port = parsePort(argv[++i])
     else if (arg === '--worker') workerPath = argv[++i]
     else if (arg === '--dev') dev = true
   }
@@ -53,9 +57,18 @@ export function readSupervisorArgs(argv: string[]): SupervisorArgs {
     ...(localPluginsDir ? { localPluginsDir } : {}),
     ...(userPluginsDir ? { userPluginsDir } : {}),
     ...(mode ? { mode } : {}),
+    ...(port ? { port } : {}),
     ...(workerPath ? { workerPath } : {}),
     dev,
   }
+}
+
+function parsePort(raw: string | undefined): number {
+  const port = Number(raw)
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+    throw new Error(`--port 需要一个 1-65535 的整数，收到 ${raw}`)
+  }
+  return port
 }
 
 /**
@@ -73,6 +86,7 @@ export function toSupervisorOptions(args: SupervisorArgs): SupervisorOptions {
     ...(args.localPluginsDir ? { localPluginsDir: args.localPluginsDir } : {}),
     ...(args.userPluginsDir ? { userPluginsDir: args.userPluginsDir } : {}),
     ...(args.mode ? { mode: args.mode } : {}),
+    ...(args.port ? { port: args.port } : {}),
     ...(args.workerPath ? { workerPath: args.workerPath } : {}),
     ...(args.dev ? { dev: true } : {}),
   }
