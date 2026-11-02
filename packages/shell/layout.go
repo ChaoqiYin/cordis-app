@@ -8,31 +8,47 @@ import (
 	"runtime"
 )
 
+// 运行形态。与 protocol 包的 RuntimeMode 取值保持一致。
+const (
+	modeProject  = "project"
+	modePackaged = "packaged"
+)
+
 // layout 是外壳需要知道的全部磁盘位置。
 //
-// 刻意只保留「在哪找 node」「在哪找 supervisor」「UI 在哪」「数据放哪」四项：
-// 外壳一旦开始理解 app.json 或插件目录，它就成了第二个配置解析器。
+// 外壳不做配置解析：打包形态的资源根、清单与服务端入口都由 prepareApp 从
+// 已释放目录推导出来，外壳只负责把它们原样交给 supervisor。
 type layout struct {
 	installDir   string
 	dataDir      string
+	projectRoot  string
 	resourcesDir string
-	nodeBin      string
-	supervisorJS string
-	// packaged 表示这是「有 bin/ 目录的正式安装布局」而非仓库内 go run。
-	// 它决定两件事：是否释放内嵌 UI、是否裁掉用户环境的 PATH。
-	packaged bool
+
+	serverEntry         string
+	appJson             string
+	userPluginsDir      string
+	bundlePublicKeyFile string
+	nodeBin             string
+	supervisorJS        string
+	workerJS            string
+	mode                string
+	releaseDir          string
+	packaged            bool
 }
 
 // discoverLayout 解析安装目录布局：
 //
 //	<install-dir>/
 //	├── cordis-app[.exe]
-//	├── bin/node[.exe]
-//	├── bin/cordis-app-supervisor.js
-//	└── resources/ui/
+//	└── bin/
+//	    ├── node[.exe]
+//	    ├── cordis-app-supervisor.mjs
+//	    └── cordis-app-worker.mjs
 //
 // 仓库内开发时（go run ./packages/shell）不存在这套布局，因此找不到就退回
 // 「用当前 node + 仓库里的 supervisor 产物」，让 `go run` 也能跑起来。
+//
+// CORDIS_APP_INSTALL_DIR 是测试 seam：它一旦设置就优先于「临时二进制」判定。
 func discoverLayout(dataFlag, resourcesFlag string) (layout, error) {
 	exe, err := os.Executable()
 	if err != nil {
@@ -41,14 +57,12 @@ func discoverLayout(dataFlag, resourcesFlag string) (layout, error) {
 	installDir := filepath.Dir(exe)
 	if override := os.Getenv("CORDIS_APP_INSTALL_DIR"); override != "" {
 		installDir = override
-	}
-	// `go run` 把二进制放在临时目录，此时 installDir 毫无意义，直接用仓库根
-	if isTempBinary(exe) {
+	} else if isTempBinary(exe) {
+		// `go run` 把二进制放在临时目录，此时 installDir 毫无意义，直接用仓库根
 		installDir = repoRoot()
 	}
 
 	nodeName := "node"
-	supervisorName := "cordis-app-supervisor.js"
 	if runtime.GOOS == "windows" {
 		nodeName = "node.exe"
 	}
@@ -67,14 +81,17 @@ func discoverLayout(dataFlag, resourcesFlag string) (layout, error) {
 		}
 	}
 
-	supervisorJS := filepath.Join(installDir, "bin", supervisorName)
-	if _, statErr := os.Stat(supervisorJS); statErr != nil {
-		// 仓库内：runtime 包的构建产物
-		candidate := filepath.Join(repoRoot(), "packages", "runtime", "lib", "supervisor", "main.js")
-		if _, err := os.Stat(candidate); err != nil {
-			return layout{}, fmt.Errorf("找不到 supervisor 脚本（既没有 bin/%s，也没有构建产物）", supervisorName)
+	supervisorJS, err := findSupervisor(installDir)
+	if err != nil {
+		return layout{}, err
+	}
+
+	workerJS := ""
+	if packaged {
+		workerJS, err = findWorker(installDir)
+		if err != nil {
+			return layout{}, err
 		}
-		supervisorJS = candidate
 	}
 
 	dataDir := dataFlag
@@ -85,24 +102,60 @@ func discoverLayout(dataFlag, resourcesFlag string) (layout, error) {
 		dataDir = defaultDataDir()
 	}
 
-	resourcesDir := resourcesFlag
-	if resourcesDir == "" {
-		if packaged {
-			resourcesDir = filepath.Join(installDir, "resources")
-		} else {
-			// 开发环境：直接吃 Vite 产物，不经过释放步骤
-			resourcesDir = filepath.Join(repoRoot(), "packages", "ui", "dist")
-		}
-	}
-
-	return layout{
-		installDir:   installDir,
-		dataDir:      dataDir,
-		resourcesDir: resourcesDir,
+	l := layout{
+		installDir: installDir,
+		dataDir:    dataDir,
+		// 外壳对用户的 --data 始终是「数据目录」；交给 supervisor 时一律叫
+		// --project（可写数据目录），不再使用有歧义的 --data 别名。
+		projectRoot:  dataDir,
 		nodeBin:      nodeBin,
 		supervisorJS: supervisorJS,
+		workerJS:     workerJS,
 		packaged:     packaged,
-	}, nil
+		mode:         modeProject,
+	}
+
+	if packaged {
+		l.mode = modePackaged
+		l.userPluginsDir = filepath.Join(dataDir, "plugins")
+		// 资源根/清单/服务端入口由 prepareApp 在释放完成后填充。
+	} else if resourcesFlag != "" {
+		l.resourcesDir = resourcesFlag
+	} else {
+		// 开发环境：直接吃 Vite 产物，不经过释放步骤
+		l.resourcesDir = filepath.Join(repoRoot(), "packages", "ui", "dist")
+	}
+
+	return l, nil
+}
+
+// findSupervisor 依次尝试发布布局里的 .mjs、.js，最后回退仓库构建产物。
+func findSupervisor(installDir string) (string, error) {
+	candidates := []string{
+		filepath.Join(installDir, "bin", "cordis-app-supervisor.mjs"),
+		filepath.Join(installDir, "bin", "cordis-app-supervisor.js"),
+		filepath.Join(repoRoot(), "packages", "runtime", "lib", "supervisor", "main.js"),
+	}
+	for _, candidate := range candidates {
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("找不到 supervisor 脚本（既没有 bin/cordis-app-supervisor.mjs，也没有构建产物）")
+}
+
+// findWorker 查找打包后的 worker 入口。打包形态必须有它，否则启动失败。
+func findWorker(installDir string) (string, error) {
+	candidates := []string{
+		filepath.Join(installDir, "bin", "cordis-app-worker.mjs"),
+		filepath.Join(installDir, "bin", "cordis-app-worker.js"),
+	}
+	for _, candidate := range candidates {
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("打包形态缺少 worker（既没有 bin/cordis-app-worker.mjs，也没有 .js）")
 }
 
 // defaultDataDir 与 protocol 包的 defaultDataDir 保持一致。

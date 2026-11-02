@@ -31,15 +31,6 @@ func main() {
 		fatal(err)
 	}
 
-	// 释放内嵌 UI 必须在 supervisor 之前：worker 一启动就会去读 resources/ui。
-	// 开发模式下 resourcesDir 指向 packages/ui/dist，那里是 Vite 的产出本身，
-	// 释放只会把源码树写坏，所以只对正式安装布局执行。
-	if l.packaged {
-		if packageErr := releaseResources(l); packageErr != nil {
-			fatal(packageErr)
-		}
-	}
-
 	// 单实例锁必须最先拿：第二个实例的正确行为是「把已有窗口提到前台」，
 	// 而不是再 fork 一个 supervisor 去抢同一个数据目录。
 	inst, alreadyRunning, err := acquireSingleInstanceLock(l.dataDir)
@@ -52,8 +43,20 @@ func main() {
 	}
 	defer inst.release()
 
+	// 释放内嵌应用必须在取得锁之后、supervisor 之前：worker 一启动就会去读
+	// 资源根与服务端入口。开发形态的 resourcesDir 直接指向仓库 Vite 产物，
+	// 不需要释放。fatal 会跳过 defer，所以失败路径要显式释放锁。
+	if l.packaged {
+		l, err = prepareApp(l, releaseApp)
+		if err != nil {
+			inst.release()
+			fatal(err)
+		}
+	}
+
 	sh, err := startSupervisor(l)
 	if err != nil {
+		inst.release()
 		fatal(err)
 	}
 	defer sh.stop()
