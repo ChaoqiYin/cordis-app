@@ -53,33 +53,6 @@ const STAGED_PRESERVE = ['.gitignore', '.gitkeep']
 /** 随包的签名公钥文件名，必须与 Go 侧 prepareApp 的约定一致。 */
 const BUNDLE_PUBLIC_KEY_NAME = 'bundle-public-key.pem'
 
-/** 需要解析成内联空模块的可选原生依赖。 */
-const OPTIONAL_NATIVE_MODULE_PATTERN = /^(bufferutil|utf-8-validate)$/
-
-/**
- * 用 createRequire 补齐 ESM 下的 require。
- *
- * ws 的 CJS 产物里有 `require('events')` 之类的动态 require；esbuild 转成
- * ESM 后会走 `__require`，没有这个 banner 就会在加载时抛
- * 「Dynamic require of "events" is not supported」。
- */
-const RUNTIME_BANNER = [
-  "import { createRequire as __cordisAppCreateRequire } from 'node:module';",
-  'const require = __cordisAppCreateRequire(import.meta.url);',
-].join('\n')
-
-/**
- * 关闭 ws 的可选原生加速分支。
- *
- * 空模块能让 esbuild 完成解析，但 ws 会在 `require` 成功后改用
- * `bufferUtil.mask/unmask`；空对象没有这些函数，大消息就会在运行期崩溃。
- * 显式定义这两个开关，让 ws 走自带的纯 JS 回退。
- */
-const RUNTIME_DEFINE = {
-  'process.env.WS_NO_BUFFER_UTIL': '"true"',
-  'process.env.WS_NO_UTF_8_VALIDATE': '"true"',
-}
-
 // ---------------------------------------------------------------- 纯函数
 
 /**
@@ -275,25 +248,11 @@ function printBareImportWarnings(warnings) {
 
 // ---------------------------------------------------------------- 运行时打包
 
-/** 把可选原生依赖解析成内联空模块。 */
-export function optionalNativeModulesPlugin() {
-  return {
-    name: 'cordis-app-optional-native-modules',
-    setup(build) {
-      build.onResolve(
-        { filter: OPTIONAL_NATIVE_MODULE_PATTERN },
-        (args) => ({ path: args.path, namespace: 'cordis-app-empty' }),
-      )
-      build.onLoad({ filter: /.*/, namespace: 'cordis-app-empty' }, () => ({
-        contents: 'export {}',
-        loader: 'js',
-      }))
-    },
-  }
-}
-
 /**
  * 用 esbuild 把入口打成两个自包含的 ESM `.mjs`。
+ *
+ * banner、可选原生依赖的空模块与 `WS_NO_*` 定义来自 @cordis-app/preset 的
+ * 共享片段：服务端预设与桌面运行时打包器必须是同一套规则。
  *
  * `format: 'esm'` + `platform: 'node'` + `target: 'node22'` 与根 engines
  * （node >= 22.18）对齐；ESM 天然保留顶层 await。`nodePaths` 只用于测试
@@ -301,6 +260,10 @@ export function optionalNativeModulesPlugin() {
  */
 export async function bundleRuntime({ entries, outDir, nodePaths }) {
   const { build } = await import('esbuild')
+  const { RUNTIME_BANNER, RUNTIME_DEFINE, optionalNativeModulesPlugin } =
+    await import(
+      pathToFileURL(join(repoRoot, 'packages', 'preset', 'lib', 'index.js')).href
+    )
   mkdirSync(outDir, { recursive: true })
 
   for (const { entry, outfile } of entries) {
