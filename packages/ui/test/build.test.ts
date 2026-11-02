@@ -128,7 +128,7 @@ function findNodeModules(dir: string): string[] {
 function assertNoBareImport(source: string, specifier: string, label: string): void {
   const escaped = specifier.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   const pattern = new RegExp(
-    `(?:\\bfrom\\s+|\\bimport\\s*\\(\\s*|\\brequire\\s*\\(\\s*)['"]${escaped}['"]`,
+    `(?:\\bfrom\\s+|\\bimport\\s+|\\bimport\\s*\\(\\s*|\\brequire\\s*\\(\\s*)['"]${escaped}['"]`,
   )
   assert.doesNotMatch(source, pattern, `${label} 不应保留 ${specifier} 的裸导入`)
 }
@@ -221,6 +221,44 @@ test('服务端值导入 @cordis-app 内部包时构建失败，import type 通�
   )
   const result = await buildProject({ projectRoot: typeRoot })
   assert.ok(existsSync(result.serverEntry), 'import type 在转译前被擦除，不应触发内部包边界')
+})
+
+test('客户端值导入 @cordis-app 内部包时构建失败，import type 通过', async () => {
+  const valueRoot = createProject()
+  writeFileSync(
+    join(valueRoot, 'plugins', 'demo', 'plugin.json'),
+    JSON.stringify({ id: 'demo', displayName: 'Demo', client: 'client.ts' }),
+  )
+  writeFileSync(
+    join(valueRoot, 'plugins', 'demo', 'client.ts'),
+    "import { WS_PATH } from '@cordis-app/protocol'\nexport const marker = WS_PATH\n",
+  )
+
+  await assert.rejects(
+    () => buildProject({ projectRoot: valueRoot }),
+    (error: Error) => {
+      assert.match(error.message, /@cordis-app\/protocol/, '错误应指出违规说明符')
+      assert.match(error.message, /client\.ts/, '错误应指出导入方文件')
+      assert.match(error.message, /import type/, '错误应给出修复方向')
+      return true
+    },
+  )
+
+  const typeRoot = createProject()
+  writeFileSync(
+    join(typeRoot, 'plugins', 'demo', 'plugin.json'),
+    JSON.stringify({ id: 'demo', displayName: 'Demo', client: 'client.ts' }),
+  )
+  writeFileSync(
+    join(typeRoot, 'plugins', 'demo', 'client.ts'),
+    "import type { PluginManifest } from '@cordis-app/protocol'\n" +
+      'export const manifest: PluginManifest | undefined = undefined\n',
+  )
+  const result = await buildProject({ projectRoot: typeRoot })
+  assert.ok(
+    existsSync(join(result.resourcesDir, 'plugins', 'demo', 'client.ts')),
+    'import type 在转译前被擦除，不应触发客户端内部包边界',
+  )
 })
 
 test('CJS 依赖里的动态 require 在 ESM 产物中可用', async () => {

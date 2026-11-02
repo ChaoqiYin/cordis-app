@@ -184,7 +184,7 @@ find "$DATA/app" -mindepth 1 -maxdepth 1 -type d -name '[0-9a-f]*' | wc -l
 ```
 
 如果第一条探测不是 200，先看 `/tmp/cordis-demo.log`：通常是端口被占用、
-`dist/` 缺产物，或服务端产物里有未内联的第三方依赖。
+`dist/` 缺产物，或服务端产物里有没打进产物（不自包含）的第三方依赖。
 
 ### 安装目录与数据目录
 
@@ -251,7 +251,8 @@ Linux `${XDG_DATA_HOME:-~/.local/share}/cordis-app`。可用外壳的
 唯一规则：**非框架提供的额外包由模块作者在构建期自包含**。服务端产物不在运行时
 从项目或插件目录的 `node_modules` 解析依赖。
 
-框架提供的服务端依赖只有 Node 内置模块（`node:*`）与 `cordis-app` 的类型面，
+框架提供的服务端依赖只有 Node 内置模块（`node:*` 或无前缀，如 `events`）与
+`cordis-app` 的类型面，
 构建时保持 external。`@cordis-app/*` 是框架内部包，不属于公开契约，值导入在
 构建期失败。
 
