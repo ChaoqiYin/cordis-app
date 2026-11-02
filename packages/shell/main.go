@@ -7,10 +7,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -117,7 +119,32 @@ func main() {
 		return
 	}
 
-	runWindow(addr.url, sh, *debug)
+	// 打包形态的 app.json 路径要等 prepareApp 释放完才确定，读标题放在这里。
+	runWindow(addr.url, sh, *debug, appWindowTitle(l.appJson))
+}
+
+// appWindowTitle 读 app.json 的 name 作为窗口标题。
+//
+// 缺文件、JSON 损坏或 name 为空都回退到框架名：窗口标题不值得阻止启动。
+func appWindowTitle(appJsonPath string) string {
+	if appJsonPath == "" {
+		return windowTitle
+	}
+	data, err := os.ReadFile(appJsonPath)
+	if err != nil {
+		return windowTitle
+	}
+	var app struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(data, &app); err != nil {
+		return windowTitle
+	}
+	name := strings.TrimSpace(app.Name)
+	if name == "" {
+		return windowTitle
+	}
+	return name
 }
 
 func fatal(err error) {

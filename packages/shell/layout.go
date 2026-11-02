@@ -110,11 +110,15 @@ func discoverLayout(dataFlag, resourcesFlag string) (layout, error) {
 		l.mode = modePackaged
 		l.userPluginsDir = filepath.Join(dataDir, "plugins")
 		// 资源根/清单/服务端入口由 prepareApp 在释放完成后填充。
-	} else if resourcesFlag != "" {
-		l.resourcesDir = resourcesFlag
 	} else {
-		// 开发环境：直接吃 Vite 产物，不经过释放步骤
-		l.resourcesDir = filepath.Join(repoRoot(), "packages", "ui", "dist")
+		// 项目模式的 app.json 就在项目根；打包形态等 prepareApp 释放后再填。
+		l.appJson = filepath.Join(dataDir, "app.json")
+		if resourcesFlag != "" {
+			l.resourcesDir = resourcesFlag
+		} else {
+			// 开发环境：直接吃 Vite 产物，不经过释放步骤
+			l.resourcesDir = filepath.Join(repoRoot(), "packages", "ui", "dist")
+		}
 	}
 
 	return l, nil

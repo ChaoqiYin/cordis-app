@@ -14,6 +14,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -214,9 +215,18 @@ async function main() {
     if (!client.ok) fail(`hello 前端入口返回 ${client.status}`)
     await client.arrayBuffer()
 
-    // 数据目录应已释放出内嵌应用；再启动一次会走同一份缓存。
-    if (!existsSync(join(dataDir, 'app'))) {
-      fail(`桌面程序没有释放内嵌应用到 ${join(dataDir, 'app')}`)
+    // 数据目录应已释放出内嵌应用；窗口标题读的就是这份 app.json 的 name。
+    const releaseRoot = join(dataDir, 'app')
+    const releasedApp = existsSync(releaseRoot)
+      ? readdirSync(releaseRoot, { withFileTypes: true })
+          .filter((entry) => entry.isDirectory())
+          .map((entry) => join(releaseRoot, entry.name, 'app.json'))
+          .find((path) => existsSync(path))
+      : undefined
+    if (!releasedApp) fail(`桌面程序没有释放内嵌应用到 ${releaseRoot}`)
+    const app = JSON.parse(readFileSync(releasedApp, 'utf8'))
+    if (app.name !== 'demo') {
+      fail(`释放目录的 app.json.name = ${String(app.name)}，期望 demo`)
     }
 
     log('通过：build → package-desktop → 启动安装目录并加载 hello')

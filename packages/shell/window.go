@@ -33,7 +33,7 @@ func activateWindow() {
 // runWindow 开窗并进入事件循环，直到窗口关闭或 supervisor 退出。
 //
 // 外壳不做任何导航拦截或注入：页面就是普通的网页，它唯一知道的东西是 URL。
-func runWindow(url string, sh *supervisor, debug bool) {
+func runWindow(url string, sh *supervisor, debug bool, title string) {
 	w := webview.New(debug)
 	if w == nil {
 		fmt.Fprintln(os.Stderr, "无法创建窗口")
@@ -41,7 +41,7 @@ func runWindow(url string, sh *supervisor, debug bool) {
 	}
 	defer w.Destroy()
 
-	w.SetTitle(windowTitle)
+	w.SetTitle(title)
 	w.SetSize(windowWidth, windowHeight, webview.HintNone)
 	w.Navigate(url)
 
@@ -50,7 +50,7 @@ func runWindow(url string, sh *supervisor, debug bool) {
 	go func() {
 		sh.waitExit()
 		w.Dispatch(func() {
-			w.SetTitle(windowTitle + "（服务已停止）")
+			w.SetTitle(title + "（服务已停止）")
 			w.Eval(`document.body.innerHTML =
 				'<div style="font:15px/1.7 -apple-system,Segoe UI,sans-serif;padding:48px;color:#666">' +
 				'后台服务已停止，请重新启动应用。</div>'`)
