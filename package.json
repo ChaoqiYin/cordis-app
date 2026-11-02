@@ -21,6 +21,7 @@
     "test:shell": "pnpm --filter @cordis-app/preset... build && cd packages/shell && go test ./... && node --test scripts/*.test.mjs",
     "typecheck": "pnpm -r --filter \"./packages/**\" --filter \"./examples/**\" run typecheck",
     "test": "pnpm -r --filter \"./packages/**\" --filter \"./examples/**\" run test",
+    "test:consumer": "node scripts/consumer-smoke.mjs",
     "dev": "pnpm --filter @cordis-app/ui run dev",
     "clean": "rm -rf packages/*/dist packages/*/lib packages/*/node_modules"
   },
