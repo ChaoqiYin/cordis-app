@@ -13,10 +13,11 @@ import { mkdirSync, mkdtempSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Supervisor, buildWorkerEnv } from '../lib/supervisor/supervisor.js'
-import { readSupervisorArgs } from '../lib/supervisor/args.js'
+import { readSupervisorArgs, toSupervisorOptions } from '../lib/supervisor/args.js'
 import {
   decodeHandshake,
   ENV_APP_JSON,
+  ENV_BUNDLE_PUBLIC_KEY,
   ENV_MODE,
   ENV_USER_PLUGINS,
   FRAMEWORK_VERSION,
@@ -73,6 +74,55 @@ test('运行形态与用户插件根从 supervisor 参数传到 worker 环境', 
   assert.equal(env[ENV_APP_JSON], '/projects/demo/dist/app.json')
 
   assert.throws(() => readSupervisorArgs(['--mode', 'weird']), /未知运行形态/)
+})
+
+test('参数映射保留 --app-json 与 --worker', () => {
+  const args = readSupervisorArgs([
+    '--project',
+    '/projects/demo',
+    '--app-json',
+    '/projects/demo/dist/app.json',
+    '--worker',
+    '/opt/cordis/bin/cordis-app-worker.mjs',
+    '--mode',
+    'packaged',
+  ])
+  assert.equal(args.appJson, '/projects/demo/dist/app.json')
+  assert.equal(args.workerPath, '/opt/cordis/bin/cordis-app-worker.mjs')
+
+  // 入口必须用这个映射构造 Supervisor，否则 --app-json / --worker 会被静默丢弃。
+  const options = toSupervisorOptions(args)
+  assert.equal(options.projectRoot, '/projects/demo')
+  assert.equal(options.appJson, '/projects/demo/dist/app.json')
+  assert.equal(options.workerPath, '/opt/cordis/bin/cordis-app-worker.mjs')
+  assert.equal(options.mode, 'packaged')
+})
+
+test('buildWorkerEnv 转发签名公钥，未设置时不产生空值键', () => {
+  const previous = process.env[ENV_BUNDLE_PUBLIC_KEY]
+  const base = {
+    port: 5140,
+    token: 'token',
+    projectRoot: '/projects/demo',
+    version: '1.0.0',
+  }
+  try {
+    process.env[ENV_BUNDLE_PUBLIC_KEY] = 'trusted-public-key-pem'
+    const env = buildWorkerEnv(base)
+    assert.equal(env[ENV_BUNDLE_PUBLIC_KEY], 'trusted-public-key-pem')
+
+    delete process.env[ENV_BUNDLE_PUBLIC_KEY]
+    const withoutKey = buildWorkerEnv(base)
+    assert.equal(withoutKey[ENV_BUNDLE_PUBLIC_KEY], undefined)
+    assert.equal(
+      Object.hasOwn(withoutKey, ENV_BUNDLE_PUBLIC_KEY),
+      false,
+      '未设置时不应产生空值键',
+    )
+  } finally {
+    if (previous === undefined) delete process.env[ENV_BUNDLE_PUBLIC_KEY]
+    else process.env[ENV_BUNDLE_PUBLIC_KEY] = previous
+  }
 })
 
 test('握手行只出现在 stdout，格式可解析', async () => {
