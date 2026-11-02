@@ -18,7 +18,7 @@
     "build:cli": "pnpm --filter @cordis-app/cli run build",
     "build:shell": "pnpm build:ui && mkdir -p dist && cd packages/shell && go build -o ../../dist/cordis-app .",
     "package:desktop": "pnpm build:runtime && node packages/shell/scripts/package-desktop.mjs",
-    "test:shell": "cd packages/shell && go test ./... && node --test scripts/*.test.mjs",
+    "test:shell": "pnpm --filter @cordis-app/preset... build && cd packages/shell && go test ./... && node --test scripts/*.test.mjs",
     "typecheck": "pnpm -r --filter \"./packages/**\" --filter \"./examples/**\" run typecheck",
     "test": "pnpm -r --filter \"./packages/**\" --filter \"./examples/**\" run test",
     "dev": "pnpm --filter @cordis-app/ui run dev",
