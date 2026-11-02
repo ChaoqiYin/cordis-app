@@ -129,6 +129,12 @@ func releaseFS(src fs.FS, dataDir string) (string, error) {
 		return "", fmt.Errorf("释放应用产物失败: %w", err)
 	}
 
+	// go:embed 不保留空目录，但运行期布局要求 resources/plugins 始终存在：
+	// worker 的内置插件根就是它，即使这一版没有随包插件也要能扫描。
+	if err := os.MkdirAll(filepath.Join(tmp, "resources", "plugins"), 0o755); err != nil {
+		return "", fmt.Errorf("无法创建内置插件目录: %w", err)
+	}
+
 	if err := os.Rename(tmp, target); err != nil {
 		// Windows 上 rename 不会覆盖已存在的目标。如果目标已经出现（例如
 		// 并发启动或上一次启动刚好完成），仍然视为成功。

@@ -96,6 +96,120 @@ node packages/cli/lib/cli.js start --project /tmp/cordis-demo
 `start` 从 `dist/` 读取 `app.json`、前端产物与 server 入口；可写的 `data/` 与
 运行时 `.cordis/` 仍按项目根定位。源码根没有 `app.json` 不影响 `start`。
 
+## 桌面打包
+
+仓库提供一条本机打包命令，把项目的 `dist/` 连同 Node 运行时、supervisor 与
+worker 装进一个可直接运行的桌面安装目录。前置条件是仓库已执行
+`pnpm install && pnpm build`，且项目已执行 `cordis-app build`。
+
+下面的 `cordis-app` 指仓库里的 CLI；没有全局安装时等价地使用
+`node packages/cli/lib/cli.js`。
+
+完整链路（命令都在仓库根执行）：
+
+```bash
+# 1. 新建并构建项目
+cordis-app new demo --project /tmp/cordis-demo
+cordis-app build --project /tmp/cordis-demo
+
+# 2. 产出桌面安装目录（只构建宿主平台）
+pnpm package:desktop --project /tmp/cordis-demo --out /tmp/cordis-demo-install
+
+# 3. 启动：默认打开桌面窗口
+/tmp/cordis-demo-install/cordis-app
+
+#    只打印访问地址并交给系统浏览器，适合脚本验收
+/tmp/cordis-demo-install/cordis-app --url --data /tmp/cordis-demo-data
+```
+
+`package:desktop` 先执行 `pnpm build:runtime`，再把 `dist/` 暂存进外壳、用
+esbuild 打包 supervisor 与 worker、`go build` 外壳，并复制当前平台的 Node 到
+`bin/`。`--out` 目录可以不存在。可选参数
+`--bundle-public-key <PEM>` 让签名公钥随包分发。
+
+启动后可以用这三条探测（端口取自 `--url` 打印的地址）：
+
+```bash
+curl -s http://127.0.0.1:<port>/__health          # {"ok":true,"version":"1.0.0"}
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:<port>/
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:<port>/__shared/react.js
+```
+
+### 安装目录与数据目录
+
+安装目录在运行期只读：
+
+```
+<out>/
+├── cordis-app                 可执行文件（Windows 为 cordis-app.exe）
+└── bin/
+    ├── node[.exe]             随包 Node.js，目标机器无需预装
+    ├── cordis-app-supervisor.mjs
+    └── cordis-app-worker.mjs
+```
+
+首次启动时，外壳把内嵌的应用产物释放到可写的数据目录：
+
+```
+<dataDir>/
+├── app/<hash>/                释放目录（路径 + 内容的哈希）
+│   ├── app.json
+│   ├── package.json
+│   ├── server/index.js
+│   ├── resources/
+│   │   ├── ui/
+│   │   ├── shared/
+│   │   └── plugins/
+│   └── bundle-public-key.pem  可选，随包分发的公钥
+├── plugins/                   用户安装的签名插件（首次安装后出现）
+├── installed.json             插件安装事实（首次安装后出现）
+├── .cordis/                   runtime.json、tmp/、logs/、安装事务日志
+├── data/                      插件数据与用户配置
+└── shell.lock                 单实例锁
+```
+
+`<dataDir>` 默认按平台取标准目录：macOS
+`~/Library/Application Support/cordis-app`、Windows `%APPDATA%\cordis-app`、
+Linux `${XDG_DATA_HOME:-~/.local/share}/cordis-app`。可用外壳的
+`--data <目录>` 或环境变量 `CORDIS_APP_DATA` 覆盖，`--data` 优先。
+
+释放目录名是内嵌产物的内容哈希：同一份内容第二次启动直接复用，不重复写盘；
+内容变化（升级）会生成新目录，并在取得单实例锁后清理旧目录。释放先写
+`.tmp-*` 再原子改名，异常退出不会留下半成品。
+
+### 签名公钥
+
+打包形态只接受签名插件包。可信公钥按以下优先级解析，只使用第一个命中的来源：
+
+1. 启动外壳时的环境变量 `CORDIS_APP_BUNDLE_PUBLIC_KEY`，值是 PEM 内容，不是路径；
+2. 打包时通过 `--bundle-public-key <PEM>` 随包分发的 `bundle-public-key.pem`；
+3. 两者都没有：不向 worker 注入公钥。
+
+第 3 种情况下 worker 保持 fail-closed：安装任何 `.cordis-plugin` 都会被拒绝
+（错误信息为「未配置插件包签名公钥，拒绝安装未受信任的插件包」），不会退化成
+「跳过签名校验」。外壳会先移除继承来的 `CORDIS_APP_*` 变量，再写入本次解析
+出的值；用户 shell 里残留的 `CORDIS_APP_PROJECT` 等配置不会劫持 supervisor
+的项目根或资源根。
+
+### 服务端依赖必须自包含
+
+`cordis-app build` 的服务端预设仍是 `packages: 'external'`：项目
+`server/index.js` 与内置插件的服务端产物里，第三方裸导入不会被打进产物。
+桌面形态的产物搬到数据目录后，Node 不会再去项目的 `node_modules` 解析它们，
+因此：
+
+- 脚手架与示例插件只含类型导入，默认闭环不受影响；
+- 如果服务端产物带有运行时第三方依赖，`package:desktop` 会在打包前扫描
+  `server/index.js` 与各插件的服务端入口，并打印警告（列出文件与包名）；
+- 这只是发布前的粗筛，不替代真实启动验证。当前版本还没有能自动内联这些
+  依赖的 distribution 预设。
+
+### 不在范围内
+
+桌面打包本轮不包含：安装器与卸载器、代码签名与公证、自动更新、跨平台交叉
+打包（Windows/macOS/Linux 各自在宿主平台构建），也不新增 `cordis-app package`
+子命令。
+
 ## 项目 body 与 `cordis-app/ui`
 
 body 决定布局，框架只固定宿主职责和四个出口。`cordis-app/ui` 导出：
@@ -154,6 +268,9 @@ menus、settings 四个出口全部保留的写法。
 | 3 | `<project>/node_modules` | 扫描 | 不扫描 | `add` 安装的项目依赖 |
 | 4 | `<userData>/plugins` | 有则扫描 | 扫描 | 打包应用的用户安装目录 |
 
+`<userData>` 是打包形态的可写用户数据根：`cordis-app start` 用
+`<project>/data`，桌面应用用「桌面打包」一节定义的桌面数据目录。
+
 ¹ 打包应用的源码插件已由 `build` 复制进 `resources/plugins`；再扫源码根会让同一
 批插件重复出现。显式传入 `localPluginsDir` 时本地根仍然生效（`dev` 就靠它指向
 `.cordis/dev/plugins`）。打包模式同样不扫描 `node_modules`，避免加载未经签名
@@ -170,8 +287,9 @@ menus、settings 四个出口全部保留的写法。
   事实写入 `<userData>/installed.json`，不运行 npm。
 
 两种来源共用同一个安装事务：开始前快照事实文件并写事务日志，失败或被中断时回滚。
-**只读安装目录**指代码与依赖安装后不再修改；**可写用户数据**指 `<project>/data`
-（项目模式）或 `<userData>`（打包模式）。公共 `app.lock` 已移除。
+**只读安装目录**指代码与依赖安装后不再修改（桌面形态就是「桌面打包」一节的
+安装目录）；**可写用户数据**指 `<project>/data`（项目模式）或桌面数据目录
+（打包模式）。公共 `app.lock` 已移除。
 
 ## 签名插件包
 

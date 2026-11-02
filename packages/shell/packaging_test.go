@@ -241,6 +241,27 @@ func TestReleaseAppIsIdempotent(t *testing.T) {
 	assertNoTempDirs(t, filepath.Join(dataDir, "app"))
 }
 
+func TestReleaseAppAlwaysCreatesBuiltinPluginDir(t *testing.T) {
+	// go:embed 不保留空目录：内嵌产物缺少 resources/plugins 时，释放阶段仍要补上，
+	// 否则打包形态的内置插件根会随「这一版有没有插件」而变化。
+	src := fstest.MapFS{
+		"app.json":                {Data: []byte(`{"name":"demo"}`)},
+		"server/index.js":         {Data: []byte("export default () => {}\n")},
+		"resources/ui/index.html": {Data: []byte("<html>demo</html>")},
+	}
+	dir, err := releaseApp(src, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(filepath.Join(dir, "resources", "plugins"))
+	if err != nil {
+		t.Fatalf("释放目录必须包含 resources/plugins: %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatal("resources/plugins 应当是目录")
+	}
+}
+
 func TestReleaseAppContentChangeCleansOldVersion(t *testing.T) {
 	dataDir := t.TempDir()
 	oldDir, err := releaseApp(sampleAppFS(), dataDir)
