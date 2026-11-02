@@ -5,20 +5,26 @@
  */
 
 import type { ConfigStore, Kernel, KernelContext } from '@cordis-app/kernel'
-import { resolveLayout, type ClientManifest, type PluginFailure } from '@cordis-app/protocol'
+import type { ClientManifest, PluginFailure } from '@cordis-app/protocol'
 import { parseJson, readBody, sendError, sendJson } from '../builtin/http-utils.js'
-import { findPlugin, scanPlugins } from '../plugin/catalog.js'
+import { findPlugin, type PluginScan } from '../plugin/catalog.js'
 import type { PluginInstaller } from '../plugin/installer.js'
 
 export interface ApiOptions {
   kernel: Kernel
-  instanceDir: string
+  /** 项目根；插件、配置、数据都从这里推导 */
+  projectRoot: string
   dataDir: string
   /** 安装器由 worker 持有：启动恢复与设置页安装必须走同一个实例 */
   installer: PluginInstaller
   config: ConfigStore
   getManifest(): ClientManifest
   setManifest(next: ClientManifest): void
+  /**
+   * 与启动扫描完全相同的发现逻辑。每次请求重新扫描，安装/卸载后列表立即反映
+   * 新状态，且不需要 API 自己知道四个根在哪里。
+   */
+  scan(): PluginScan
   failures: PluginFailure[]
   /** 由 worker 注入：请求优雅重启 */
   requestRestart?: () => void
@@ -26,12 +32,11 @@ export interface ApiOptions {
 
 export function installRoutes(ctx: KernelContext, options: ApiOptions): void {
   const { installer } = options
-  const nodeModulesDir = resolveLayout(options.dataDir).nodeModulesDir
 
   /** 插件列表：已安装的全集（含只贡献服务端能力的），设置页据此渲染。 */
   ctx.router.get('/api/plugins', (_req, res) => {
     const manifest = options.getManifest()
-    const scan = scanPlugins(nodeModulesDir)
+    const scan = options.scan()
     sendJson(res, 200, {
       plugins: scan.plugins.map((plugin) => {
         const client = manifest.plugins[plugin.id]
@@ -41,10 +46,11 @@ export function installRoutes(ctx: KernelContext, options: ApiOptions): void {
           packageName: plugin.packageName,
           displayName: client?.displayName ?? plugin.manifest.displayName ?? plugin.id,
           version: plugin.packageJson.version,
+          rootKind: plugin.rootKind,
           files: client?.files ?? [],
         }
       }),
-      failures: [...scan.failures, ...options.failures],
+      failures: mergeFailures(scan.failures, options.failures),
     })
   })
 
@@ -69,13 +75,15 @@ export function installRoutes(ctx: KernelContext, options: ApiOptions): void {
   ctx.router.delete('/api/plugins/:id', async (req, res, params) => {
     const id = params.id!
     // 路径参数来自列表里的插件 id；安装器只认包名，必须在这里完成身份转换。
-    const plugin = findPlugin(scanPlugins(nodeModulesDir), id)
+    const plugin = findPlugin(options.scan(), id)
     if (!plugin) {
       sendError(res, 404, 'not_found', `未安装插件 ${id}`)
       return
     }
     try {
-      const result = await installer.remove(plugin.packageName)
+      // 用插件 id 而不是包名：bundle 来源以 id 为目录身份，npm 源会在内部
+      // 把 id 归一成包名。设置页不需要知道这次运行用的是哪种来源。
+      const result = await installer.remove(plugin.id)
       options.config.delete(plugin.id)
       sendJson(res, 200, result)
       options.requestRestart?.()
@@ -104,7 +112,7 @@ export function installRoutes(ctx: KernelContext, options: ApiOptions): void {
   ctx.router.get('/api/runtime', (_req, res) => {
     sendJson(res, 200, {
       version: options.getManifest().version,
-      instanceDir: options.instanceDir,
+      projectRoot: options.projectRoot,
       dataDir: options.dataDir,
     })
   })
@@ -120,4 +128,18 @@ export function installRoutes(ctx: KernelContext, options: ApiOptions): void {
     sendJson(res, 202, { restarting: true })
     options.requestRestart?.()
   })
+}
+
+/**
+ * 合并「当前扫描」与「启动加载」两批失败。
+ *
+ * 启动失败里已经包含扫描失败；重新扫描后同一条失败会再次出现。按 id + 原因
+ * 去重，既保留加载期的新失败，也不会让设置页把同一条冲突显示两遍。
+ */
+function mergeFailures(current: PluginFailure[], startup: PluginFailure[]): PluginFailure[] {
+  const merged = new Map<string, PluginFailure>()
+  for (const failure of [...current, ...startup]) {
+    merged.set(`${failure.id}\0${failure.reason}`, failure)
+  }
+  return [...merged.values()]
 }

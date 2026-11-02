@@ -65,7 +65,7 @@ export default function activate(ctx: ClientContext) {
             <dt style={{ opacity: 0.6 }}>本插件被访问</dt>
             <dd style={{ margin: 0 }}>{response.visits} 次</dd>
             <dt style={{ opacity: 0.6 }}>数据存放</dt>
-            <dd style={{ margin: 0 }}>instances/default/data/hello/</dd>
+            <dd style={{ margin: 0 }}>项目 data/hello/visits.txt</dd>
           </dl>
         ) : (
           <p style={{ opacity: 0.6 }}>正在请求服务端…</p>

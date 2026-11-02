@@ -50,7 +50,7 @@ test('服务端预设把依赖留给 Node 解析，只外部化核心包', () =>
 })
 
 test('import map 里出现的每个说明符都在预设白名单内', () => {
-  const html = readFileSync(join(repo, 'packages', 'ui', 'src', 'ui', 'App.tsx'), 'utf8')
+  const html = readFileSync(join(repo, 'packages', 'ui', 'src', 'host', 'index.ts'), 'utf8')
   // 只要宿主与插件都从裸模块名导入，构建时就会走同一条 external 规则
   assert.match(html, /from 'cordis-app\/client'/)
 })

@@ -48,28 +48,47 @@ export interface RuntimeFile {
   startedAt: string
 }
 
-/** app.json —— 用户编辑的唯一应用清单。 */
+/** body 声明自己实际提供的 UI 能力。 */
+export interface UiCapabilities {
+  pages: boolean
+  slots: string[]
+  menus: string[]
+  settings: boolean
+}
+
+/**
+ * 插件在 `plugin.json` 里声明的 UI 需求。
+ *
+ * 是 `UiCapabilities` 的 partial：插件只写自己依赖的出口，未写的表示不关心。
+ * #4 只负责把这份声明带到前端清单，#5 才做 body 能力匹配。
+ */
+export type PluginUiRequirements = Partial<UiCapabilities>
+
+/**
+ * 插件 UI 需求与 body 能力的匹配分级。
+ *
+ * - `full`：插件声明的每个出口都能被 body 提供。
+ * - `backend-only`：body 已声明能力，但缺少部分出口；插件服务端仍可加载。
+ * - `incompatible`：body 完全没有声明能力，有 UI 需求的插件没有一个出口可用。
+ */
+export type UiCompatibility = 'full' | 'backend-only' | 'incompatible'
+
+/**
+ * app.json —— 用户编辑的唯一应用清单。
+ *
+ * 不保存框架版本与插件版本范围：依赖的唯一真源是项目 `package.json`。
+ */
 export interface AppManifest {
   name: string
   version: string
   icon?: string
-  /** 框架版本范围，安装时校验兼容性 */
-  framework: string
-  /** 直接依赖：插件名 → 版本范围 */
-  plugins: Record<string, string>
-}
-
-/** app.lock —— 解析结果，记录事实。 */
-export interface AppLock {
-  lockfileVersion: 1
-  plugins: Record<string, LockedPlugin>
-}
-
-export interface LockedPlugin {
-  version: string
-  resolved: string
-  integrity?: string
-  dependencies?: Record<string, string>
+  /**
+   * 启用顺序，按插件 id 记录。
+   * 缺省或为空表示「发现即启用」；未列出的已发现插件默认仍然启用。
+   */
+  plugins?: string[]
+  /** 项目 body 提供的 UI 能力；由 #5 的宿主契约消费 */
+  ui?: UiCapabilities
 }
 
 /** plugin.json —— 插件通过它声明身份与能力。 */
@@ -83,6 +102,8 @@ export interface PluginManifest {
   server?: string
   /** 前端入口，可选 */
   client?: string
+  /** UI 出口需求；只做声明，v1 不因此阻断服务端加载 */
+  ui?: PluginUiRequirements
   /** 能力声明，仅用于安装 UI 展示，运行时不拦截 */
   capabilities?: PluginCapability[]
 }
@@ -92,7 +113,13 @@ export type PluginCapability = 'fs:read' | 'fs:write' | 'net' | 'process' | 'sto
 /** 前端启动时拉取的插件清单。 */
 export interface ClientManifest {
   version: string
+  /** body 宿主契约版本，插件/市场据此判断 UI 兼容性 */
+  uiContractVersion: number
+  /** body 声明的能力，来自 app.json.ui */
+  ui?: UiCapabilities
   plugins: Record<string, ClientPluginEntry>
+  /** 扫描、doctor 与加载阶段的失败记录；前端无需再额外请求 */
+  failures?: PluginFailure[]
 }
 
 export interface ClientPluginEntry {
@@ -100,6 +127,8 @@ export interface ClientPluginEntry {
   displayName?: string
   /** 入口 + 预加载清单，全部为同源绝对路径 */
   files: string[]
+  /** 插件声明的 UI 出口需求 */
+  ui?: PluginUiRequirements
   /** 服务端在加载时导出的初始状态 */
   data?: unknown
 }
@@ -107,9 +136,18 @@ export interface ClientPluginEntry {
 /** 安装动作的结果，供 CLI 与 HTTP 共用。 */
 export interface InstallResult {
   id: string
+  /** 已安装的插件版本；来源能确定时填写 */
+  version?: string
   /** 是否触发 worker 重启 */
   restarted: boolean
   reason: string
+  /**
+   * 插件 UI 需求与当前 body 能力的匹配结果。
+   *
+   * 由安装器用 `matchUiCapabilities` 计算；缺失能力只影响 UI 可用性，
+   * 不代表安装失败。字段暂时可选，安装器（#6）开始填充后即可视为必填。
+   */
+  uiCompatibility?: UiCompatibility
 }
 
 /** 统一错误载荷。 */

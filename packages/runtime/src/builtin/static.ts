@@ -1,9 +1,10 @@
 /**
  * static 内置插件：静态资源与插件前端资源分发。
  *
- * 路径前缀 `/__plugins/<包目录>/` 同时服务两件事：据此定位 node_modules 中的
- * 实际文件，以及让浏览器做缓存分区。卸载插件后该前缀返回 404，旧页面残留的
- * 请求不会打到别的插件上。
+ * 插件资源前缀 `/__plugins/<插件 id>/...` 先查 worker 启动时生成的 id→根映射，
+ * 再在命中的插件根内安全解析剩余路径。URL 不直接对应磁盘布局：插件包放在
+ * node_modules 的扁平目录、作用域目录，还是项目 plugins/ 下，URL 都只认 id。
+ * 卸载插件后映射里没有这个 id，旧页面残留的请求不会打到别的插件上。
  */
 
 import { createReadStream, statSync } from 'node:fs'
@@ -15,10 +16,41 @@ import { mimeType, safeJoin, sendError } from './http-utils.js'
 export interface StaticOptions {
   /** 框架 UI 产物目录（resources/ui） */
   uiDir?: string
-  /** 插件前端资源的根目录（通常为实例的 node_modules） */
-  pluginsDir?: string
+  /** worker 扫描得到的 id → 插件根目录映射；静态服务不再自己扫描 */
+  pluginRoots?: ReadonlyMap<string, string>
   /** 框架共享模块的产物目录 */
   sharedDir?: string
+}
+
+/**
+ * 把 `/__plugins/<id>/<file>` 解析成插件根内的实际文件。
+ *
+ * 返回 undefined 表示「这个 URL 不归插件静态资源管」或「路径越界」。id 只用于
+ * 查表，不参与路径拼接；文件路径交给 safeJoin，保留它对 `..` 与 NUL 的拦截。
+ */
+export function resolvePluginFile(
+  pathname: string,
+  roots: ReadonlyMap<string, string>,
+): string | undefined {
+  if (!pathname.startsWith(PLUGINS_PREFIX + '/')) return undefined
+
+  const rest = pathname.slice(PLUGINS_PREFIX.length + 1)
+  const slash = rest.indexOf('/')
+  const rawId = slash === -1 ? rest : rest.slice(0, slash)
+
+  let id: string
+  try {
+    id = decodeURIComponent(rawId)
+  } catch {
+    return undefined
+  }
+  if (!id || id.includes('\0')) return undefined
+
+  const root = roots.get(id)
+  if (!root) return undefined
+
+  const filePath = slash === -1 ? '' : rest.slice(slash + 1)
+  return safeJoin(root, filePath)
 }
 
 interface Mount {
@@ -79,10 +111,9 @@ export function apply(ctx: KernelContext, config: StaticOptions) {
     const exact = files.get(view.pathname)
     if (exact && serveFile(view, exact)) return
 
-    // /__plugins/<包目录>/... → <pluginsDir>/<包目录>/<plugin.json 的 client 目录>/...
-    if (config.pluginsDir && view.pathname.startsWith(PLUGINS_PREFIX + '/')) {
-      const rest = view.pathname.slice(PLUGINS_PREFIX.length + 1)
-      const target = safeJoin(config.pluginsDir, rest)
+    // /__plugins/<插件 id>/... → id→root 映射 → safeJoin(root, 剩余路径)
+    if (config.pluginRoots && view.pathname.startsWith(PLUGINS_PREFIX + '/')) {
+      const target = resolvePluginFile(view.pathname, config.pluginRoots)
       if (target && serveFile(view, target)) return
       sendError(view.res, 404, 'not_found', '插件资源不存在')
       return

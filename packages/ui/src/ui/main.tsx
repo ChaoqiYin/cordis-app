@@ -16,7 +16,15 @@
 import { createRoot } from 'react-dom/client'
 import type { ReactNode } from 'react'
 import './styles.css'
-import { App } from './App.js'
+// body 是项目替换点：仓库内由 vite 配置指向默认实现，项目构建/开发由
+// `@cordis-app/ui/build` 指向项目的 src/body.tsx。壳逻辑只有这一份。
+import Body from 'virtual:cordis-app/body'
+import {
+  BodyHost,
+  installHistoryListener,
+  warnUiCompatibility,
+  warnUiContractVersion,
+} from 'cordis-app/ui'
 import { MANIFEST_PATH, type ClientManifest } from '@cordis-app/protocol/client'
 import {
   ClientRuntime,
@@ -59,6 +67,8 @@ async function main(): Promise<void> {
 
   const connection = connect(runtime)
   mountStatusBar(connection)
+  // 浏览器前进/后退只挂一次；SSR 下返回 no-op
+  installHistoryListener()
 
   connection.onReconnected(async () => {
     // 重启后插件可能已增删，重新拉清单并重放加载；旧实例会被逐个替换
@@ -71,15 +81,27 @@ async function main(): Promise<void> {
 
   root.render(
     <RuntimeContext.Provider value={runtime}>
-      <App />
+      <BodyHost>
+        <Body />
+      </BodyHost>
     </RuntimeContext.Provider>,
   )
 }
 
 async function loadAllPlugins(runtime: ClientRuntime): Promise<void> {
   const manifest = await runtime.http.get<ClientManifest>(MANIFEST_PATH, { retries: 3 })
-  // 插件之间互不阻塞：一个失败不该让其他插件的页面也消失
-  await Promise.all(Object.values(manifest.plugins).map((entry) => runtime.loadPlugin(entry)))
+
+  // 契约版本不一致只警告：旧 body 仍可能渲染大部分内容，强行中断更糟
+  warnUiContractVersion(manifest.uiContractVersion)
+
+  // 插件之间互不阻塞：一个失败不该让其他插件的页面也消失；
+  // UI 能力缺失同样只警告，服务端插件继续加载
+  await Promise.all(
+    Object.values(manifest.plugins).map((entry) => {
+      warnUiCompatibility(entry.id, entry.ui, manifest.ui)
+      return runtime.loadPlugin(entry)
+    }),
+  )
 }
 
 /** 重启期间的状态条。挂在 body 上，不参与 React 树，与被等待的页面互不影响。 */

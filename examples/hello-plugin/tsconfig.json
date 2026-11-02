@@ -13,10 +13,7 @@
     "forceConsistentCasingInFileNames": true,
     "noEmit": true,
     "allowImportingTsExtensions": true,
-    "types": ["node"],
-    "paths": {
-      "cordis-app/client": ["../../packages/ui/src/client/index.ts"]
-    }
+    "types": ["node"]
   },
   "include": ["src", "test"]
 }

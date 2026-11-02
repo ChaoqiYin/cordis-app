@@ -7,7 +7,15 @@ import { readSupervisorArgs } from './args.js'
 import { Supervisor } from './supervisor.js'
 
 const options = readSupervisorArgs(process.argv.slice(2))
-const supervisor = new Supervisor({ dataDir: options.dataDir, resourcesDir: options.resourcesDir })
+const supervisor = new Supervisor({
+  projectRoot: options.projectRoot,
+  ...(options.resourcesDir ? { resourcesDir: options.resourcesDir } : {}),
+  ...(options.serverEntry ? { serverEntry: options.serverEntry } : {}),
+  ...(options.localPluginsDir ? { localPluginsDir: options.localPluginsDir } : {}),
+  ...(options.userPluginsDir ? { userPluginsDir: options.userPluginsDir } : {}),
+  ...(options.mode ? { mode: options.mode } : {}),
+  ...(options.dev ? { dev: true } : {}),
+})
 
 const handshake = await supervisor.start()
 // 握手行已经写到 stdout；这里在 stderr 记一条供人阅读的信息。

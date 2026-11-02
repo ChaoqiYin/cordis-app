@@ -19,27 +19,64 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  ENV_DATA,
+  ENV_APP_JSON,
+  ENV_DEV,
+  ENV_LOCAL_PLUGINS,
+  ENV_MODE,
   ENV_PORT,
+  ENV_PROJECT,
   ENV_RESOURCES,
+  ENV_SERVER_ENTRY,
   ENV_TOKEN,
+  ENV_USER_PLUGINS,
+  ENV_VERSION,
   EXIT_PORT_IN_USE,
   EXIT_RESTART,
+  FRAMEWORK_VERSION,
   MAX_PORT_RETRIES,
   encodeHandshake,
   handshakeOf,
-  resolveLayout,
+  resolveProjectLayout,
   type HandshakeLine,
   type PluginFailure,
   type RuntimeFile,
+  type RuntimeMode,
   type WorkerMessage,
 } from '@cordis-app/protocol'
 import { createLoggerFactory } from '@cordis-app/kernel'
 
 export interface SupervisorOptions {
-  dataDir: string
+  /** 项目根。端口、token、运行时文件与 worker 环境都以它为准。 */
+  projectRoot: string
   /** 前端产物目录，交给 worker 的 static 插件分发 */
   resourcesDir?: string
+  /**
+   * 覆盖项目 server 入口。
+   *
+   * `cordis-app start` 用它指向构建产物 `dist/server/index.js`；缺省仍是
+   * 项目源码里的 `server/index.js`（`run` / `dev` 的形态）。
+   */
+  serverEntry?: string
+  /**
+   * 覆盖应用清单路径。
+   *
+   * `cordis-app start` 用它指向构建产物 `dist/app.json`：worker 的启用顺序、
+   * UI 能力与安装期兼容性都必须来自这一份，而不是源码根。
+   */
+  appJson?: string
+  /** 覆盖项目本地插件根；`dev` 指向构建出来的 .cordis/dev/plugins */
+  localPluginsDir?: string
+  /**
+   * 打包形态的可写用户插件根。
+   *
+   * `cordis-app start` 指向项目可写数据目录下的 `plugins/`；worker 据此
+   * 推导用户数据根（`dirname(userPluginsDir)`）并启用签名插件包安装。
+   */
+  userPluginsDir?: string
+  /** 运行形态；缺省 `project`。打包形态只接受签名插件包。 */
+  mode?: RuntimeMode
+  /** 开发模式：插件前端 URL 使用时间戳而不是内容 hash */
+  dev?: boolean
   /** 覆盖 worker 路径，测试时注入 */
   workerPath?: string
   /** 覆盖版本号 */
@@ -106,7 +143,7 @@ export class Supervisor {
       this.port = await findFreePort()
     }
     this.token = generateToken()
-    mkdirSync(this.options.dataDir, { recursive: true })
+    mkdirSync(resolveProjectLayout(this.options.projectRoot).cordisDir, { recursive: true })
     return this.spawn()
   }
 
@@ -119,8 +156,15 @@ export class Supervisor {
         env: buildWorkerEnv({
           port: this.port,
           token: this.token,
-          dataDir: this.options.dataDir,
+          projectRoot: this.options.projectRoot,
           resourcesDir: this.options.resourcesDir,
+          ...(this.options.serverEntry ? { serverEntry: this.options.serverEntry } : {}),
+          ...(this.options.appJson ? { appJson: this.options.appJson } : {}),
+          ...(this.options.localPluginsDir ? { localPluginsDir: this.options.localPluginsDir } : {}),
+          ...(this.options.userPluginsDir ? { userPluginsDir: this.options.userPluginsDir } : {}),
+          ...(this.options.mode ? { mode: this.options.mode } : {}),
+          ...(this.options.dev ? { dev: true } : {}),
+          version: this.version,
         }),
       })
       this.child = child
@@ -262,7 +306,7 @@ export class Supervisor {
       pid: process.pid,
       startedAt: new Date().toISOString(),
     }
-    writeFileSync(resolveLayout(this.options.dataDir).runtimeFile, JSON.stringify(file, null, 2))
+    writeFileSync(resolveProjectLayout(this.options.projectRoot).runtimeFile, JSON.stringify(file, null, 2))
   }
 }
 
@@ -270,22 +314,37 @@ export class Supervisor {
 export function buildWorkerEnv(input: {
   port: number
   token: string
-  dataDir: string
+  projectRoot: string
   resourcesDir?: string
+  serverEntry?: string
+  appJson?: string
+  localPluginsDir?: string
+  userPluginsDir?: string
+  mode?: RuntimeMode
+  dev?: boolean
+  /** 框架版本；由 supervisor 注入，worker 据此生成 manifest 与 peer 校验 */
+  version: string
 }): NodeJS.ProcessEnv {
   const isWindows = process.platform === 'win32'
-  const layout = resolveLayout(input.dataDir)
+  const layout = resolveProjectLayout(input.projectRoot)
   const base: NodeJS.ProcessEnv = isWindows
     ? // Windows 上 PATH 不能只留 bin/：系统 DLL 的查找依赖 System32 等目录。
       { ...process.env }
-    : { PATH: '', HOME: input.dataDir, TMPDIR: layout.tmpDir }
+    : { PATH: '', HOME: input.projectRoot, TMPDIR: layout.tmpDir }
 
   return {
     ...base,
     [ENV_PORT]: String(input.port),
     [ENV_TOKEN]: input.token,
-    [ENV_DATA]: input.dataDir,
+    [ENV_PROJECT]: input.projectRoot,
+    [ENV_VERSION]: input.version,
     ...(input.resourcesDir ? { [ENV_RESOURCES]: input.resourcesDir } : {}),
+    ...(input.serverEntry ? { [ENV_SERVER_ENTRY]: input.serverEntry } : {}),
+    ...(input.appJson ? { [ENV_APP_JSON]: input.appJson } : {}),
+    ...(input.localPluginsDir ? { [ENV_LOCAL_PLUGINS]: input.localPluginsDir } : {}),
+    ...(input.userPluginsDir ? { [ENV_USER_PLUGINS]: input.userPluginsDir } : {}),
+    ...(input.mode ? { [ENV_MODE]: input.mode } : {}),
+    ...(input.dev ? { [ENV_DEV]: '1' } : {}),
     // 用户 shell 里残留的调试或注入配置会污染 worker。
     NODE_OPTIONS: '',
     NODE_PATH: '',
@@ -293,11 +352,8 @@ export function buildWorkerEnv(input: {
 }
 
 function readVersion(): string {
-  try {
-    return (globalThis as any).CORDIS_APP_VERSION ?? '1.0.0'
-  } catch {
-    return '1.0.0'
-  }
+  // 版本只有 FRAMEWORK_VERSION 一个真源；聚合包的 package.json 在构建时生成它。
+  return FRAMEWORK_VERSION
 }
 
 export type { PluginFailure }
