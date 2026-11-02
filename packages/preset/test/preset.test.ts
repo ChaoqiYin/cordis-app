@@ -57,6 +57,15 @@ test('服务端预设提供 CJS 动态 require 与 ws 纯 JS 回退所需的运�
   assert.equal(build.define?.['process.env.WS_NO_UTF_8_VALIDATE'], '"true"')
 })
 
+test('重打包预构建入口时可以关闭 banner，避免重复声明', () => {
+  const build = serverPreset({
+    entry: 'lib/server.js',
+    root: '/tmp/p',
+    injectRuntimeBanner: false,
+  })
+  assert.equal(build.banner, undefined, '入口已含 banner 时不应再注入一份')
+})
+
 test('Node 版本契约：共享常量与服务端预设都以 node24 为构建目标', () => {
   assert.equal(NODE_TARGET, 'node24', '服务端预设与桌面 runtime 必须共用同一个 Node 构建目标')
   const build = serverPreset({ entry: 'src/index.ts', root: '/tmp/p' })

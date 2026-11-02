@@ -21,6 +21,14 @@ export const NODE_TARGET = 'node24'
 const OPTIONAL_NATIVE_MODULE_PATTERN = /^(bufferutil|utf-8-validate)$/
 
 /**
+ * banner 的唯一标识。
+ *
+ * 构建器重新打包已由本预设产出的入口时，靠它判断是否已经注入过 banner；
+ * 再次注入会重复声明这个导入，产物加载时直接抛语法错误。
+ */
+export const RUNTIME_BANNER_MARKER = '__cordisAppCreateRequire'
+
+/**
  * 用 createRequire 补齐 ESM 下的 require。
  *
  * CJS 依赖里的 `require('events')` 之类动态调用会被 esbuild 保留成
@@ -28,8 +36,8 @@ const OPTIONAL_NATIVE_MODULE_PATTERN = /^(bufferutil|utf-8-validate)$/
  * 「Dynamic require of "events" is not supported」。
  */
 export const RUNTIME_BANNER = [
-  "import { createRequire as __cordisAppCreateRequire } from 'node:module';",
-  'const require = __cordisAppCreateRequire(import.meta.url);',
+  `import { createRequire as ${RUNTIME_BANNER_MARKER} } from 'node:module';`,
+  `const require = ${RUNTIME_BANNER_MARKER}(import.meta.url);`,
 ].join('\n')
 
 /**

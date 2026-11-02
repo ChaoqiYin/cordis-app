@@ -27,7 +27,7 @@ import { fileURLToPath } from 'node:url'
 import { build as esbuild, type BuildOptions } from 'esbuild'
 import { build as viteBuild, createServer, type Plugin, type ViteDevServer } from 'vite'
 import react from '@vitejs/plugin-react'
-import { clientPreset, serverPreset } from '@cordis-app/preset'
+import { RUNTIME_BANNER_MARKER, clientPreset, serverPreset } from '@cordis-app/preset'
 import {
   SHARED_MODULE_TABLE,
   SHARED_PREFIX,
@@ -475,6 +475,9 @@ async function buildPluginPackage(
             root: pluginRoot,
             minify: options.minify,
             sourcemap: true,
+            // npm 分发的插件通常带预构建入口；banner 已经在内，再注入一次会
+            // 重复声明 __cordisAppCreateRequire，产物加载即语法错误。
+            ...(hasRuntimeBanner(source) ? { injectRuntimeBanner: false } : {}),
           })
     await esbuild(buildOptions(preset, pluginRoot))
     files.push(relativePath)
@@ -494,6 +497,20 @@ function buildOptions(preset: BuildOptions, root: string): BuildOptions {
     ...preset,
     absWorkingDir: root,
     logLevel: 'silent',
+  }
+}
+
+/**
+ * 入口是否已经由服务端预设构建过。
+ *
+ * 插件作者发布到 npm 的通常是 `lib/server.js` 这类预构建入口；项目构建会把
+ * 它重新打进发布产物。banner 只能保留一份，否则重复声明导入标识符。
+ */
+function hasRuntimeBanner(entry: string): boolean {
+  try {
+    return readFileSync(entry, 'utf8').includes(RUNTIME_BANNER_MARKER)
+  } catch {
+    return false
   }
 }
 
