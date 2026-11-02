@@ -9,6 +9,14 @@
 
 import type { Plugin } from 'esbuild'
 
+/**
+ * 服务端产物的 Node 构建目标。
+ *
+ * 服务端预设与桌面运行时打包器共用这一个值：两边若各写一份，构建目标就会
+ * 再次漂移。运行环境下限由仓库根的 `engines.node` 表达。
+ */
+export const NODE_TARGET = 'node24'
+
 /** 需要解析成内联空模块的可选原生依赖。 */
 const OPTIONAL_NATIVE_MODULE_PATTERN = /^(bufferutil|utf-8-validate)$/
 
