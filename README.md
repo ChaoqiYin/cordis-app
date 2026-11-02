@@ -49,7 +49,7 @@ cordis-app 只支持**项目模式**：应用就是一个普通目录，`package
 
 ## 快速开始
 
-环境要求：Node.js ≥ 22.18、pnpm 10。构建 Go 外壳还需要 Go 1.25。
+环境要求：Node.js ≥ 24、pnpm 10。构建 Go 外壳还需要 Go 1.25。
 
 ```bash
 pnpm install
@@ -102,6 +102,10 @@ node packages/cli/lib/cli.js start --project /tmp/cordis-demo
 worker 装进一个可直接运行的桌面安装目录。前置条件是仓库已执行
 `pnpm install && pnpm build`，且项目已执行 `cordis-app build`。
 
+打包环境必须使用 Node.js ≥ 24；安装包随带打包者当前的 Node 运行时，最终用户
+不需要另外安装 Node。完整的版本一致性规则见
+[ADR 0002](./docs/adr/0002-node-version-contract.md)。
+
 下面的 `cordis-app` 指仓库里的 CLI；没有全局安装时等价地使用
 `node packages/cli/lib/cli.js`。
 
@@ -123,8 +127,8 @@ pnpm package:desktop --project /tmp/cordis-demo --out /tmp/cordis-demo-install
 ```
 
 `package:desktop` 先构建 preset 与 runtime，再把 `dist/` 暂存进外壳、用
-esbuild 打包 supervisor 与 worker、`go build` 外壳，并复制当前平台的 Node 到
-`bin/`。`--out` 目录可以不存在。可选参数
+esbuild 打包 supervisor 与 worker、`go build` 外壳，并复制打包者当前的 Node
+（`process.execPath`）到 `bin/`。`--out` 目录可以不存在。可选参数
 `--bundle-public-key <PEM 文件>` 让签名公钥随包分发。
 
 启动后可以直接照抄下面这段做端到端验收（命令都在仓库根或任意目录执行）。
