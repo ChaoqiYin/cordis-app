@@ -15,6 +15,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/cordis-app/shell/native"
 )
 
 // startupTimeout 是等握手的上限。超过它说明已经卡住，继续等只会让用户
@@ -56,8 +58,29 @@ func main() {
 		}
 	}
 
-	sh, err := startSupervisor(l)
+	// 降级判定只做一次：webViewUnavailable 读的是注册表，没有理由反复查询，
+	// 也避免两次判断结果不一致导致「提示了降级却仍去开窗」。
+	// 它必须早于 native server：hasWindow 是 /info 的字段，worker 启动时就会读。
+	degraded := *urlOnly || webViewUnavailable()
+
+	// 原生服务必须先监听成功再启动 supervisor：worker 一启动就会读取注入的
+	// 端点。本 ticket 只提供传输、鉴权与注册表，具体平台命令由后续实现注册。
+	nativeServer, err := native.Start(native.Config{
+		Registry:  native.NewRegistry(),
+		HasWindow: !degraded,
+	})
 	if err != nil {
+		inst.release()
+		fatal(err)
+	}
+	defer nativeServer.Close()
+
+	sh, err := startSupervisor(l, nativeEndpoint{
+		url:   nativeServer.URL(),
+		token: nativeServer.Token(),
+	})
+	if err != nil {
+		nativeServer.Close()
 		inst.release()
 		fatal(err)
 	}
@@ -71,6 +94,7 @@ func main() {
 	go func() {
 		sig := <-signals
 		sh.stop()
+		nativeServer.Close()
 		inst.release()
 		if sig == syscall.SIGTERM {
 			os.Exit(143)
@@ -83,16 +107,13 @@ func main() {
 
 	addr, err := sh.waitReady(ctx)
 	if err != nil {
-		// 走到这里说明 supervisor 已经起来但没能握手：必须收回进程树再退出，
-		// fatal 的 os.Exit 会跳过 defer。
+		// 走到这里说明 supervisor 已经起来但没能握手：必须收回进程树与原生
+		// 监听再退出，fatal 的 os.Exit 会跳过 defer。
 		sh.stop()
+		nativeServer.Close()
 		inst.release()
 		fatal(fmt.Errorf("等待 supervisor 就绪失败: %w", err))
 	}
-
-	// 降级判定只做一次：webViewUnavailable 读的是注册表，没有理由反复查询，
-	// 也避免两次判断结果不一致导致「提示了降级却仍去开窗」。
-	degraded := *urlOnly || webViewUnavailable()
 
 	// 第二个实例被激活时，把已有界面带到用户眼前。
 	// 窗口模式下由 runWindow 安装的通道处理；浏览器模式下没有窗口可提，
