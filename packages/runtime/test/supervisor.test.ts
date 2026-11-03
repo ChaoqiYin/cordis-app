@@ -19,6 +19,8 @@ import {
   ENV_APP_JSON,
   ENV_BUNDLE_PUBLIC_KEY,
   ENV_MODE,
+  ENV_NATIVE_TOKEN,
+  ENV_NATIVE_URL,
   ENV_USER_PLUGINS,
   FRAMEWORK_VERSION,
 } from '@cordis-app/protocol'
@@ -131,6 +133,50 @@ test('buildWorkerEnv 转发签名公钥，未设置时不产生空值键', () =>
   } finally {
     if (previous === undefined) delete process.env[ENV_BUNDLE_PUBLIC_KEY]
     else process.env[ENV_BUNDLE_PUBLIC_KEY] = previous
+  }
+})
+
+test('buildWorkerEnv 转发原生端点，未注入时不留空键', () => {
+  const previous = {
+    url: process.env[ENV_NATIVE_URL],
+    token: process.env[ENV_NATIVE_TOKEN],
+  }
+  const base = {
+    port: 5140,
+    token: 'token',
+    projectRoot: '/projects/demo',
+    version: '1.0.0',
+  }
+  try {
+    // 外层环境里的值不能顶替显式传入的端点。
+    process.env[ENV_NATIVE_URL] = 'http://127.0.0.1:1/hijacked'
+    process.env[ENV_NATIVE_TOKEN] = 'hijacked-token'
+    const env = buildWorkerEnv({
+      ...base,
+      nativeUrl: 'http://127.0.0.1:4321',
+      nativeToken: 'native-token',
+    })
+    assert.equal(env[ENV_NATIVE_URL], 'http://127.0.0.1:4321')
+    assert.equal(env[ENV_NATIVE_TOKEN], 'native-token')
+
+    // supervisor 从自己的环境读取外壳注入值；未显式传参时也照样转发。
+    const inherited = buildWorkerEnv(base)
+    assert.equal(inherited[ENV_NATIVE_URL], 'http://127.0.0.1:1/hijacked')
+    assert.equal(inherited[ENV_NATIVE_TOKEN], 'hijacked-token')
+
+    delete process.env[ENV_NATIVE_URL]
+    delete process.env[ENV_NATIVE_TOKEN]
+    const without = buildWorkerEnv(base)
+    assert.equal(Object.hasOwn(without, ENV_NATIVE_URL), false, '没有原生端点时不应产生空值键')
+    assert.equal(Object.hasOwn(without, ENV_NATIVE_TOKEN), false)
+  } finally {
+    for (const [key, value] of [
+      [ENV_NATIVE_URL, previous.url],
+      [ENV_NATIVE_TOKEN, previous.token],
+    ] as const) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
   }
 })
 
