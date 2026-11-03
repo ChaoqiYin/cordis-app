@@ -59,7 +59,8 @@ type supervisor struct {
 // supervisorArgs 构造 supervisor 的命令行参数。
 //
 // 项目根一律用 --project（可写数据目录），不再使用含义模糊的 --data。
-// 开发形态只传项目根与资源根；打包形态补上发布契约里的全部字段。
+// 开发形态默认只传项目根与资源根；带 --shell 时 CLI 会补齐固定端口、
+// watcher 产物与开发开关。打包形态补上发布契约里的全部字段。
 func supervisorArgs(l layout) []string {
 	args := []string{
 		l.supervisorJS,
@@ -67,6 +68,18 @@ func supervisorArgs(l layout) []string {
 		"--resources", l.resourcesDir,
 	}
 	if !l.packaged {
+		if l.workerPort > 0 {
+			args = append(args, "--port", strconv.Itoa(l.workerPort))
+		}
+		if l.serverEntry != "" {
+			args = append(args, "--server-entry", l.serverEntry)
+		}
+		if l.localPluginsDir != "" {
+			args = append(args, "--local-plugins", l.localPluginsDir)
+		}
+		if l.dev {
+			args = append(args, "--dev")
+		}
 		return args
 	}
 	return append(args,
@@ -76,6 +89,18 @@ func supervisorArgs(l layout) []string {
 		"--mode", l.mode,
 		"--worker", l.workerJS,
 	)
+}
+
+// windowURL 决定窗口加载的地址。
+//
+// 没有开发 UI 时就是 supervisor 的静态页面；开发 UI 存在时窗口加载 Vite，
+// 握手 token 仍然从 fragment 传进去，代理后面的 worker 用同一套鉴权。
+// 降级路径（系统浏览器）也走这里，两种打开方式拿到的是同一个地址。
+func windowURL(addr address, devUIURL string) string {
+	if devUIURL == "" {
+		return addr.url
+	}
+	return strings.TrimRight(devUIURL, "/") + "/#token=" + url.QueryEscape(addr.token)
 }
 
 // nativeEndpoint 是外壳生成的回环原生服务地址与凭据。

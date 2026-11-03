@@ -369,6 +369,33 @@ func TestSupervisorArgsPackaged(t *testing.T) {
 
 func TestSupervisorArgsDevelopment(t *testing.T) {
 	l := layout{
+		supervisorJS:    "/repo/packages/runtime/lib/supervisor/main.js",
+		projectRoot:     "/project",
+		resourcesDir:    "/repo/packages/ui/dist",
+		mode:            "project",
+		workerPort:      51482,
+		serverEntry:     "/project/.cordis/dev/server/index.js",
+		localPluginsDir: "/project/.cordis/dev/plugins",
+		dev:             true,
+	}
+
+	got := supervisorArgs(l)
+	want := []string{
+		"/repo/packages/runtime/lib/supervisor/main.js",
+		"--project", "/project",
+		"--resources", "/repo/packages/ui/dist",
+		"--port", "51482",
+		"--server-entry", "/project/.cordis/dev/server/index.js",
+		"--local-plugins", "/project/.cordis/dev/plugins",
+		"--dev",
+	}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("supervisorArgs =\n%v\n期望\n%v", got, want)
+	}
+}
+
+func TestSupervisorArgsDevelopmentWithoutDevOptions(t *testing.T) {
+	l := layout{
 		supervisorJS: "/repo/packages/runtime/lib/supervisor/main.js",
 		projectRoot:  "/project",
 		resourcesDir: "/repo/packages/ui/dist",
@@ -383,6 +410,34 @@ func TestSupervisorArgsDevelopment(t *testing.T) {
 	}
 	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("supervisorArgs =\n%v\n期望\n%v", got, want)
+	}
+}
+
+func TestWindowURLUsesHandshakeURLWithoutDevUI(t *testing.T) {
+	addr := address{port: 51482, token: "abc", url: "http://127.0.0.1:51482/#token=abc"}
+
+	if got := windowURL(addr, ""); got != addr.url {
+		t.Fatalf("windowURL = %q，没有开发 UI 时应回退到握手地址 %q", got, addr.url)
+	}
+}
+
+func TestWindowURLTargetsDevUIWithHandshakeToken(t *testing.T) {
+	addr := address{port: 51482, token: "abc", url: "http://127.0.0.1:51482/#token=abc"}
+
+	got := windowURL(addr, "http://127.0.0.1:5173/")
+	want := "http://127.0.0.1:5173/#token=abc"
+	if got != want {
+		t.Fatalf("windowURL = %q，期望 %q", got, want)
+	}
+}
+
+func TestWindowURLEscapesToken(t *testing.T) {
+	addr := address{port: 51482, token: "a+b/c=", url: "unused"}
+
+	got := windowURL(addr, "http://127.0.0.1:5173")
+	want := "http://127.0.0.1:5173/#token=a%2Bb%2Fc%3D"
+	if got != want {
+		t.Fatalf("windowURL = %q，期望 %q", got, want)
 	}
 }
 

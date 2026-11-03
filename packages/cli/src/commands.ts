@@ -20,6 +20,7 @@ import {
   PluginInstaller,
   StartAppError,
   Supervisor,
+  findFreePort as defaultFindFreePort,
   readPluginId,
   startApp as defaultStartApp,
   type AppExitEvent,
@@ -50,6 +51,14 @@ import {
   readRuntimeFile,
   type Workspace,
 } from './workspace.js'
+import {
+  ShellPortUnavailableError,
+  locateShell,
+  startShellDev,
+  type ShellDevBackend,
+  type ShellDevOptions,
+  type ShellLocation,
+} from './shell.js'
 
 /** 脚手架写入的框架依赖；它们不是插件，不参与 list 的插件表格。 */
 const FRAMEWORK_DEPENDENCIES = new Set(['cordis-app', 'react', 'react-dom'])
@@ -74,6 +83,12 @@ export interface CommandIO {
   projectWatcher?(options: ProjectWatcherOptions): Promise<ProjectWatcher>
   /** 开发期 Vite 服务器；测试时替换 */
   devServerStarter?(options: ProjectDevServerOptions): Promise<ProjectDevServer>
+  /** 外壳可执行文件定位；测试时替换 */
+  shellLocator?(): ShellLocation
+  /** 分配空闲端口；测试时替换 */
+  findFreePort?(): Promise<number>
+  /** 启动桌面外壳并等到 worker 就绪；测试时替换 */
+  shellDevStarter?(options: ShellDevOptions): Promise<ShellDevBackend>
 }
 
 export const defaultIO: CommandIO = {
@@ -207,12 +222,12 @@ function startSupervisor(
 /**
  * 开发模式。
  *
- * 顺序：先把项目 server 与本地插件现场构建到 `.cordis/dev`，再用这些产物
- * 启动 worker，最后起 Vite。worker 必须先于 Vite，代理目标才有端口与 token。
+ * 默认是浏览器模式：先把项目 server 与本地插件现场构建到 `.cordis/dev`，
+ * 再用这些产物启动 worker，最后起 Vite。worker 必须先于 Vite，代理目标才有
+ * 端口与 token。
  *
- * 源码变化由 watcher 统一处理：server 变化只重启 worker；插件变化还要让
- * 浏览器整页刷新，因为插件前端入口换了带时间戳的 URL。重启沿用 worker 的
- * exit(75) 语义，页面靠既有 WebSocket 重连后重拉清单。
+ * `--shell` 把同一套链路交给桌面外壳开窗，开发时也能测试原生能力；两种模式
+ * 共用 watcher 与「server 变化重启 worker、插件变化整页刷新」的语义。
  */
 export async function commandDev(args: ParsedArgs, io: CommandIO): Promise<number> {
   const workspace = openWorkspace(args.projectDir)
@@ -221,7 +236,21 @@ export async function commandDev(args: ParsedArgs, io: CommandIO): Promise<numbe
     io.err(`找不到项目 body 入口：${workspace.layout.bodyEntry}`)
     return 1
   }
+  return args.shell ? commandDevShell(workspace, args, io) : commandDevBrowser(workspace, args, io)
+}
 
+/**
+ * 浏览器模式：worker 先起，Vite 用 worker 的端口与 token 做代理。
+ *
+ * 源码变化由 watcher 统一处理：server 变化只重启 worker；插件变化还要让
+ * 浏览器整页刷新，因为插件前端入口换了带时间戳的 URL。重启沿用 worker 的
+ * exit(75) 语义，页面靠既有 WebSocket 重连后重拉清单。
+ */
+async function commandDevBrowser(
+  workspace: Workspace,
+  args: ParsedArgs,
+  io: CommandIO,
+): Promise<number> {
   let app: AppHandle | undefined
   let dev: ProjectDevServer | undefined
   let watcher: ProjectWatcher | undefined
@@ -278,6 +307,153 @@ export async function commandDev(args: ParsedArgs, io: CommandIO): Promise<numbe
   }
 
   return waitForAppExit(app, io, stopAll)
+}
+
+/** 外壳启动遇到端口冲突时的最大尝试次数。 */
+const SHELL_START_ATTEMPTS = 3
+
+/**
+ * 外壳模式：CLI 分配端口 → Vite 代理到该端口 → 外壳用同一端口拉起
+ * supervisor。窗口由外壳打开，入口地址由外壳用握手 token 拼出来，CLI 只
+ * 负责等 worker 健康、在源码变化时触发重启，以及退出时收尾。
+ *
+ * 端口分配与实际监听之间有一个窗口，被抢占时 supervisor 以 76 退出。
+ * 这时 Vite 的代理目标也失效了，所以整轮（Vite + 外壳）一起重来。
+ */
+async function commandDevShell(
+  workspace: Workspace,
+  args: ParsedArgs,
+  io: CommandIO,
+): Promise<number> {
+  const location = (io.shellLocator ?? locateShell)()
+  if ('error' in location) {
+    io.err(location.error)
+    return 1
+  }
+
+  let dev: ProjectDevServer | undefined
+  let backend: ShellDevBackend | undefined
+  let watcher: ProjectWatcher | undefined
+  let stopping = false
+
+  const stopAll = async (): Promise<void> => {
+    if (stopping) return
+    stopping = true
+    await Promise.allSettled([
+      dev?.close() ?? Promise.resolve(),
+      watcher?.close() ?? Promise.resolve(),
+      backend?.stop() ?? Promise.resolve(),
+    ])
+  }
+
+  try {
+    const createWatcher = io.projectWatcher ?? defaultWatcher
+    watcher = await createWatcher({
+      projectRoot: workspace.projectRoot,
+      onChange: async ({ kind }) => {
+        if (!backend) return
+        try {
+          // 端口与 token 由外壳持有，CLI 只能通过 HTTP 触发 worker 重启。
+          await backend.restartWorker()
+          if (kind === 'plugin') dev?.reload()
+        } catch (error) {
+          io.err(`重启 worker 失败：${(error as Error).message}`)
+        }
+      },
+    })
+
+    const startDev = io.devServerStarter ?? defaultDevServer
+    const startShell = io.shellDevStarter ?? startShellDev
+    const freePort = io.findFreePort ?? defaultFindFreePort
+    const resourcesDir = io.resourcesDir ?? findResourcesDir(workspace.projectRoot)
+
+    for (let attempt = 1; backend === undefined; attempt++) {
+      const workerPort = await allocateWorkerPort(freePort, args.port)
+      dev = await startDev({
+        projectRoot: workspace.projectRoot,
+        worker: { port: workerPort },
+        ...(args.port ? { port: args.port, strictPort: true } : {}),
+      })
+
+      try {
+        backend = await startShell({
+          shellPath: location.path,
+          projectRoot: workspace.projectRoot,
+          ...(resourcesDir ? { resourcesDir } : {}),
+          workerPort,
+          devUrl: dev.url,
+          serverEntry: watcher.serverEntry,
+          localPluginsDir: watcher.localPluginsDir,
+          runtimeJsonPath: workspace.runtimeJsonPath,
+        })
+      } catch (error) {
+        await dev.close()
+        dev = undefined
+        if (!(error instanceof ShellPortUnavailableError) || attempt >= SHELL_START_ATTEMPTS) {
+          throw error
+        }
+        io.err(`端口 ${workerPort} 被占用，重新分配后重试（第 ${attempt} 次）`)
+      }
+    }
+
+    // 循环条件保证退出时 backend 已赋值；这里只是让类型收敛。
+    if (!backend) throw new Error('外壳未能启动')
+    io.out('外壳已启动')
+  } catch (error) {
+    await stopAll()
+    io.err(`启动开发服务器失败：${formatError(error)}`)
+    return 1
+  }
+
+  return waitForBackendExit(backend, io, stopAll)
+}
+
+/** 分配 worker 端口，并避开用户显式固定的 Vite 端口。 */
+async function allocateWorkerPort(
+  freePort: () => Promise<number>,
+  vitePort: number | undefined,
+): Promise<number> {
+  for (let i = 0; i < 10; i++) {
+    const port = await freePort()
+    if (port !== vitePort) return port
+  }
+  throw new Error('无法分配到与 Vite 端口不同的 worker 端口')
+}
+
+/** 外壳模式的生命周期：等外壳退出，或把信号转成一次受控停止。 */
+function waitForBackendExit(
+  backend: ShellDevBackend,
+  io: CommandIO,
+  cleanup: () => Promise<void>,
+): Promise<number> {
+  return new Promise<number>((resolve) => {
+    let done = false
+    const finish = (code: number): void => {
+      if (done) return
+      done = true
+      process.off('SIGINT', onSigint)
+      process.off('SIGTERM', onSigterm)
+      void cleanup().finally(() => resolve(code))
+    }
+
+    const offExit = backend.onExit((code) => {
+      if (code !== 0) {
+        io.err(`外壳已退出（${code === null ? '异常终止' : `exit ${code}`}）`)
+      }
+      finish(code ?? 1)
+    })
+
+    const onSigint = (): void => {
+      offExit()
+      finish(130)
+    }
+    const onSigterm = (): void => {
+      offExit()
+      finish(143)
+    }
+    process.once('SIGINT', onSigint)
+    process.once('SIGTERM', onSigterm)
+  })
 }
 
 // ---------------------------------------------------------------- build

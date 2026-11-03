@@ -480,14 +480,20 @@ hash、Ed25519 签名与 peer 范围；安装时先比 hash、再验签名，任
 | `remove <包名>` | 卸载插件 |
 | `list [--json]` | 列出项目依赖中的插件与启用状态 |
 | `run` | 以源码形态启动项目（前台） |
-| `dev` | 开发模式：Vite HMR、项目 server 与插件变化重启 worker |
+| `dev [--shell]` | 开发模式：Vite HMR、项目 server 与插件变化重启 worker；`--shell` 用桌面外壳开窗，开发时也能使用原生能力 |
 | `build` | 构建 `dist/` 可发布布局 |
 | `start` | 运行 `dist/` 构建产物 |
 | `restart` | 通过 `.cordis/runtime.json` 重启运行中的项目 |
 
 通用选项：`--project <目录>`（`--data` 是兼容别名；默认当前目录，可用
 `CORDIS_APP_PROJECT` 覆盖）、`--resources <目录>`、`--port <端口>`、`--no-open`
-（`run`/`dev`/`start` 默认尝试打开浏览器）、`--json`、`-h`、`-v`。
+（`run`/`dev`/`start` 默认尝试打开浏览器）、`--shell`（仅 `dev`）、`--json`、
+`-h`、`-v`。
+
+`dev --shell` 需要先执行 `pnpm build:shell` 生成 `dist/cordis-app`，也可以用
+`CORDIS_APP_SHELL` 指向已有的外壳可执行文件。窗口加载 Vite 页面，因此 HMR
+照常工作；页面与 worker 的鉴权仍走 supervisor 生成的会话 token，外壳从握手行
+取到后拼进入口地址，用户不需要手动输入 URL。不传 `--shell` 时行为不变。
 
 ## 架构
 

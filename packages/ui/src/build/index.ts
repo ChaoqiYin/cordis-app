@@ -774,7 +774,7 @@ export interface ProjectDevServerOptions {
   /** Vite 端口；缺省 5173，占用时自动换一个 */
   port?: number
   /** worker 的监听地址，代理目标 */
-  worker: { port: number; token: string }
+  worker: { port: number; token?: string }
   /** 固定端口（用户显式 --port 时） */
   strictPort?: boolean
 }
@@ -830,7 +830,10 @@ export async function createProjectDevServer(
   const port = typeof address === 'object' && address ? address.port : (options.port ?? 5173)
 
   return {
-    url: `http://127.0.0.1:${port}/#token=${encodeURIComponent(options.worker.token)}`,
+    // 外壳模式由外壳用握手 token 拼入口地址，这里不需要 token fragment。
+    url: options.worker.token
+      ? `http://127.0.0.1:${port}/#token=${encodeURIComponent(options.worker.token)}`
+      : `http://127.0.0.1:${port}/`,
     port,
     server,
     reload() {
