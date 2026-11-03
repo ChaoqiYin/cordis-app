@@ -32,6 +32,8 @@ export interface ParsedArgs {
   open: boolean
   /** `--json`：list 输出机器可读格式 */
   json: boolean
+  /** `--shell`：dev 用桌面外壳启动，开发时也能使用原生能力 */
+  shell: boolean
   /** `--version` / `-v` */
   showVersion: boolean
 }
@@ -63,6 +65,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     positionals: [],
     open: true,
     json: false,
+    shell: false,
     showVersion: false,
   }
 
@@ -104,6 +107,9 @@ export function parseArgs(argv: string[]): ParsedArgs {
         case '--json':
           parsed.json = true
           break
+        case '--shell':
+          parsed.shell = true
+          break
         default:
           throw new UsageError(`未知选项 ${flag}`)
       }
@@ -118,6 +124,12 @@ export function parseArgs(argv: string[]): ParsedArgs {
     }
 
     parsed.positionals.push(arg)
+  }
+
+  // 外壳是 dev 的启动形态，不是一个独立能力：其它命令没有可接管的窗口，
+  // 静默忽略会让人以为原生能力已经生效。
+  if (parsed.shell && parsed.command !== 'dev') {
+    throw new UsageError('--shell 只能用于 dev')
   }
 
   return parsed
@@ -135,7 +147,7 @@ export const HELP_TEXT = `cordis-app —— 应用与插件的命令行
   cordis-app add <包名[@版本]>              安装插件
   cordis-app remove <包名>                  卸载插件
   cordis-app run                            以源码形态启动项目并打印访问地址
-  cordis-app dev                            开发模式：Vite HMR + worker 自动重启
+  cordis-app dev [--shell]                  开发模式：Vite HMR + worker 自动重启
   cordis-app build                          构建可发布的 dist/ 布局
   cordis-app start                          运行 dist/ 构建产物
   cordis-app restart                        重启正在运行的项目
@@ -147,6 +159,7 @@ export const HELP_TEXT = `cordis-app —— 应用与插件的命令行
   --resources <目录>   UI 产物目录（默认自动探测）
   --port <端口>        run/start：worker 端口；dev：Vite 端口
   --no-open            run/dev/start：不尝试打开浏览器
+  --shell              仅 dev：用桌面外壳打开，开发时也能使用原生能力
   --json               仅 list：输出 JSON
   -v, --version        显示版本
   -h, --help           显示这段帮助

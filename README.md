@@ -480,14 +480,21 @@ hash、Ed25519 签名与 peer 范围；安装时先比 hash、再验签名，任
 | `remove <包名>` | 卸载插件 |
 | `list [--json]` | 列出项目依赖中的插件与启用状态 |
 | `run` | 以源码形态启动项目（前台） |
-| `dev` | 开发模式：Vite HMR、项目 server 与插件变化重启 worker |
+| `dev [--shell]` | 开发模式：Vite HMR、项目 server 与插件变化重启 worker；`--shell` 用桌面外壳开窗，开发时也能使用原生能力 |
 | `build` | 构建 `dist/` 可发布布局 |
 | `start` | 运行 `dist/` 构建产物 |
 | `restart` | 通过 `.cordis/runtime.json` 重启运行中的项目 |
 
 通用选项：`--project <目录>`（`--data` 是兼容别名；默认当前目录，可用
 `CORDIS_APP_PROJECT` 覆盖）、`--resources <目录>`、`--port <端口>`、`--no-open`
-（`run`/`dev`/`start` 默认尝试打开浏览器）、`--json`、`-h`、`-v`。
+（`run`/`dev`/`start` 默认尝试打开浏览器）、`--shell`（仅 `dev`）、`--json`、
+`-h`、`-v`。
+
+`dev --shell` 在找不到 `dist/cordis-app` 时会自动编译外壳，等价于
+`pnpm build:shell`（只编译 Go，不构建前端）；也可以用 `CORDIS_APP_SHELL`
+指向已有的外壳可执行文件。窗口加载 Vite 页面，因此 HMR 照常工作；页面与
+worker 的鉴权仍走 supervisor 生成的会话 token，外壳从握手行取到后拼进入口
+地址，用户不需要手动输入 URL。不传 `--shell` 时行为不变。
 
 ## 架构
 
@@ -552,7 +559,14 @@ examples/
 | `pnpm test:consumer` | 真实消费方冒烟：npm `file:` 接入 → `add` → `build` → 删除 `node_modules` → `start` |
 | `pnpm test:desktop` | 桌面形态冒烟：`build` → `package-desktop` → 启动安装目录并加载插件 |
 | `pnpm test:shell` | Go 外壳测试 |
-| `pnpm build:shell` | 构建外壳二进制 |
+| `pnpm build:shell` | 只编译 Go 外壳二进制 |
+| `pnpm build:shell:assets` | 构建前端资源与 Go 外壳（直接运行外壳时用） |
+| `pnpm dev:ui` | 启动 UI 包的 Vite 开发服务器 |
+
+脚本命名遵循 `<动作>:<目标>[:<变体>]`：根脚本是用户入口，单目标脚本只构建
+该目标；需要更多产物时用显式变体（如 `build:shell:assets`）。包内脚本与根
+脚本撞名时，包内让路——UI 包的 `build:web-shell` 指前端壳资源暂存，与 Go
+桌面外壳无关。
 
 ## 不在范围内
 

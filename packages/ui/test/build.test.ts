@@ -584,6 +584,24 @@ test('dev 代理的 WebSocket 路径与前端连接路径一致', async () => {
   }
 })
 
+test('dev server 没有 worker token 时地址不带 token fragment', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'cordis-dev-no-token-'))
+  mkdirSync(join(root, 'src'), { recursive: true })
+  writeFileSync(join(root, 'src', 'body.tsx'), 'export default function Body() { return null }\n')
+
+  const dev = await createProjectDevServer({
+    projectRoot: root,
+    port: await freePort(),
+    strictPort: true,
+    worker: { port: 9000 },
+  })
+  try {
+    assert.equal(dev.url, `http://127.0.0.1:${dev.port}/`)
+  } finally {
+    await dev.close()
+  }
+})
+
 test('产物切换失败时把旧目录移回原位，而不是丢掉新旧两份', () => {
   const calls: Array<[string, string]> = []
   let renames = 0

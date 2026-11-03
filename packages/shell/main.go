@@ -28,11 +28,27 @@ func main() {
 	resourcesFlag := flag.String("resources", "", "UI 产物目录")
 	urlOnly := flag.Bool("url", false, "只启动并打印访问地址，不开窗（等同浏览器模式）")
 	debug := flag.Bool("debug", false, "打开 WebView 开发者工具")
+
+	// 以下参数只由 `cordis-app dev --shell` 传入。外壳仍然不解析配置：
+	// 它只接收 CLI 已经算好的端口与路径，原样转交 supervisor。
+	workerPort := flag.Int("worker-port", 0, "固定 worker 端口（开发模式）")
+	devUI := flag.String("dev-ui", "", "开发 UI 地址（Vite），窗口加载它")
+	serverEntry := flag.String("server-entry", "", "项目服务端入口（开发模式）")
+	localPlugins := flag.String("local-plugins", "", "本地插件根（开发模式）")
+	devMode := flag.Bool("dev", false, "以开发模式启动 supervisor")
 	flag.Parse()
 
 	l, err := discoverLayout(*dataFlag, *resourcesFlag)
 	if err != nil {
 		fatal(err)
+	}
+
+	if !l.packaged {
+		l.workerPort = *workerPort
+		l.devUIURL = *devUI
+		l.serverEntry = *serverEntry
+		l.localPluginsDir = *localPlugins
+		l.dev = *devMode
 	}
 
 	// 单实例锁必须最先拿：第二个实例的正确行为是「把已有窗口提到前台」，
@@ -119,12 +135,16 @@ func main() {
 		fatal(fmt.Errorf("等待 supervisor 就绪失败: %w", err))
 	}
 
+	// 窗口地址只在这里决定一次：开发形态指向 Vite，其余指向 supervisor 的
+	// 静态页面。降级路径与窗口路径共用它，避免两者出现行为分叉。
+	target := windowURL(addr, l.devUIURL)
+
 	// 第二个实例被激活时，把已有界面带到用户眼前。
 	// 窗口模式下由 runWindow 安装的通道处理；浏览器模式下没有窗口可提，
 	// 重新打开一次同一个 URL 就是最接近的语义。
 	inst.serve(func() {
 		if degraded {
-			_ = openExternal(addr.url)
+			_ = openExternal(target)
 			return
 		}
 		activateWindow()
@@ -135,8 +155,8 @@ func main() {
 		if !*urlOnly {
 			fmt.Fprintln(os.Stderr, "未找到可用的 WebView 运行时，改用系统浏览器打开")
 		}
-		fmt.Println(addr.url)
-		if err := openExternal(addr.url); err != nil {
+		fmt.Println(target)
+		if err := openExternal(target); err != nil {
 			fmt.Fprintf(os.Stderr, "无法自动打开浏览器: %v\n", err)
 			fmt.Fprintln(os.Stderr, "请手动访问上面的地址")
 		}
@@ -145,7 +165,7 @@ func main() {
 	}
 
 	// 打包形态的 app.json 路径要等 prepareApp 释放完才确定，读标题放在这里。
-	runWindow(addr.url, sh, *debug, appWindowTitle(l.appJson), window)
+	runWindow(target, sh, *debug, appWindowTitle(l.appJson), window)
 }
 
 // appWindowTitle 读 app.json 的 name 作为窗口标题。

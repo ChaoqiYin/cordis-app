@@ -16,15 +16,16 @@
     "build:runtime": "pnpm --filter @cordis-app/runtime run build",
     "build:preset": "pnpm --filter @cordis-app/preset... build",
     "build:cli": "pnpm --filter @cordis-app/cli run build",
-    "build:shell": "pnpm build:ui && mkdir -p dist && cd packages/shell && go build -o ../../dist/cordis-app .",
+    "build:shell": "mkdir -p dist && cd packages/shell && go build -o ../../dist/cordis-app .",
+    "build:shell:assets": "pnpm build:ui && pnpm build:shell",
     "package:desktop": "pnpm build:preset && pnpm build:runtime && node packages/shell/scripts/package-desktop.mjs",
     "test:shell": "pnpm --filter @cordis-app/preset... build && cd packages/shell && go test ./... && node --test scripts/*.test.mjs",
     "typecheck": "pnpm -r --filter \"./packages/**\" --filter \"./examples/**\" run typecheck",
     "test": "pnpm -r --filter \"./packages/**\" --filter \"./examples/**\" run test",
     "test:consumer": "node scripts/consumer-smoke.mjs",
     "test:desktop": "node scripts/desktop-smoke.mjs",
-    "dev": "pnpm --filter @cordis-app/ui run dev",
-    "clean": "rm -rf packages/*/dist packages/*/lib packages/*/node_modules"
+    "dev:ui": "pnpm --filter @cordis-app/ui run dev",
+    "clean": "rm -rf packages/*/dist packages/*/lib packages/*/node_modules dist"
   },
   "devDependencies": {
     "@types/node": "^24.19.2",

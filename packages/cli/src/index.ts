@@ -32,3 +32,14 @@ export {
   type CreateProjectOptions,
 } from './workspace.js'
 export { main } from './cli.js'
+export {
+  ShellPortUnavailableError,
+  buildShell,
+  locateShell,
+  shellArguments,
+  startShellDev,
+  type ShellBuildResult,
+  type ShellDevBackend,
+  type ShellDevOptions,
+  type ShellLocation,
+} from './shell.js'

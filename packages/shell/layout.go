@@ -34,6 +34,15 @@ type layout struct {
 	mode                string
 	releaseDir          string
 	packaged            bool
+
+	// 以下字段只由 CLI 在开发形态（--shell）下设置，打包形态一律为空。
+	// workerPort 是 CLI 预先分配并留给 Vite 代理的固定端口；
+	// devUIURL 是 Vite 的地址，窗口加载它而不是 supervisor 的静态页面；
+	// localPluginsDir 是 watcher 生成的本地插件根。
+	workerPort      int
+	devUIURL        string
+	localPluginsDir string
+	dev             bool
 }
 
 // discoverLayout 解析安装目录布局：

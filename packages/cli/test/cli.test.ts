@@ -91,6 +91,12 @@ test('--port 必须是合法端口号', () => {
   assert.throws(() => parseArgs(['run', '--port', 'abc']), UsageError)
 })
 
+test('--shell 只对 dev 有效', () => {
+  assert.equal(parseArgs(['dev', '--shell']).shell, true)
+  assert.equal(parseArgs(['dev']).shell, false)
+  assert.throws(() => parseArgs(['run', '--shell']), UsageError)
+})
+
 test('--help 压过任何子命令', () => {
   assert.equal(parseArgs(['add', 'foo', '--help']).command, 'help')
 })
@@ -330,6 +336,8 @@ import type {
 } from '@cordis-app/ui/build'
 import type { AppExitEvent, AppHandle, StartAppOptions } from '@cordis-app/runtime'
 import { commandBuild, commandDev, commandStart } from '../lib/index.js'
+import { ShellPortUnavailableError, shellArguments } from '../lib/index.js'
+import type { ShellDevBackend, ShellDevOptions } from '../lib/index.js'
 
 /** 一个可观察的假 AppHandle：只实现命令真正会用的成员。 */
 class FakeApp implements AppHandle {
@@ -579,4 +587,344 @@ test('dev 的插件前端变化在重启后触发整页刷新', async () => {
   assert.equal(code, 0)
   assert.equal(app.restarted, 1)
   assert.equal(reloads, 1)
+})
+
+test('dev --shell 用固定端口起 Vite，并把开发 UI 与 watcher 产物交给外壳', async () => {
+  const root = join(tempDir(), 'demo')
+  await commandNew(parseArgs(['new', 'demo', '--project', root]), fakeIO().io)
+
+  let devOptions: ProjectDevServerOptions | undefined
+  let shellOptions: ShellDevOptions | undefined
+  let watcherOptions: ProjectWatcherOptions | undefined
+  let exitListener: ((code: number | null) => void) | undefined
+  let devClosed = 0
+  let watcherClosed = 0
+  let shellStopped = 0
+  let restarts = 0
+  let reloads = 0
+  let browserOpened = 0
+
+  const watcher: ProjectWatcher = {
+    devRoot: join(root, '.cordis', 'dev'),
+    serverEntry: join(root, '.cordis', 'dev', 'server', 'index.js'),
+    localPluginsDir: join(root, '.cordis', 'dev', 'plugins'),
+    async close() {
+      watcherClosed++
+    },
+  }
+  const dev: ProjectDevServer = {
+    url: 'http://127.0.0.1:5173/',
+    port: 5173,
+    server: {} as ProjectDevServer['server'],
+    reload() {
+      reloads++
+    },
+    async close() {
+      devClosed++
+    },
+  }
+  const backend: ShellDevBackend = {
+    async restartWorker() {
+      restarts++
+    },
+    onExit(listener) {
+      exitListener = listener
+      return () => {}
+    },
+    async stop() {
+      shellStopped++
+    },
+  }
+
+  const fake = fakeIO({
+    shellLocator: () => ({ path: '/opt/cordis-app' }),
+    findFreePort: async () => 51234,
+    projectWatcher: async (options) => {
+      watcherOptions = options
+      return watcher
+    },
+    devServerStarter: async (options) => {
+      devOptions = options
+      return dev
+    },
+    shellDevStarter: async (options) => {
+      shellOptions = options
+      setTimeout(() => {
+        void (async () => {
+          await watcherOptions?.onChange?.({ kind: 'server' })
+          exitListener?.(0)
+        })()
+      }, 0)
+      return backend
+    },
+    openBrowser: () => {
+      browserOpened++
+    },
+  })
+
+  const code = await commandDev(parseArgs(['dev', '--shell', '--project', root]), fake.io)
+
+  assert.equal(code, 0)
+  assert.equal(devOptions?.worker.port, 51234)
+  assert.equal(
+    (devOptions?.worker as { token?: string }).token,
+    undefined,
+    '外壳模式不需要 Vite 知道 token：入口地址由外壳用握手 token 拼出来',
+  )
+  assert.equal(shellOptions?.shellPath, '/opt/cordis-app')
+  assert.equal(shellOptions?.projectRoot, root)
+  assert.equal(shellOptions?.workerPort, 51234)
+  assert.equal(shellOptions?.devUrl, dev.url)
+  assert.equal(shellOptions?.serverEntry, watcher.serverEntry)
+  assert.equal(shellOptions?.localPluginsDir, watcher.localPluginsDir)
+  assert.equal(restarts, 1, 'server 变化应重启 worker')
+  assert.equal(reloads, 0, 'server 变化不需要刷新页面')
+  assert.equal(browserOpened, 0, '外壳模式不打开浏览器')
+  assert.ok(fake.out.includes('外壳已启动'))
+  assert.ok(
+    !fake.out.some((line) => line.includes('127.0.0.1:5173')),
+    '外壳模式不打印开发地址',
+  )
+  assert.equal(devClosed, 1)
+  assert.equal(watcherClosed, 1)
+  assert.equal(shellStopped, 1)
+})
+
+test('dev --shell 的插件变化在重启后触发整页刷新', async () => {
+  const root = join(tempDir(), 'demo')
+  await commandNew(parseArgs(['new', 'demo', '--project', root]), fakeIO().io)
+
+  let devOptions: ProjectDevServerOptions | undefined
+  let watcherOptions: ProjectWatcherOptions | undefined
+  let exitListener: ((code: number | null) => void) | undefined
+  let reloads = 0
+  let restarts = 0
+
+  const dev: ProjectDevServer = {
+    url: 'http://127.0.0.1:5173/',
+    port: 5173,
+    server: {} as ProjectDevServer['server'],
+    reload() {
+      reloads++
+    },
+    async close() {},
+  }
+  const backend: ShellDevBackend = {
+    async restartWorker() {
+      restarts++
+    },
+    onExit(listener) {
+      exitListener = listener
+      return () => {}
+    },
+    async stop() {},
+  }
+  const fake = fakeIO({
+    shellLocator: () => ({ path: '/opt/cordis-app' }),
+    findFreePort: async () => 51234,
+    projectWatcher: async (options) => {
+      watcherOptions = options
+      return {
+        devRoot: join(root, '.cordis', 'dev'),
+        serverEntry: join(root, '.cordis', 'dev', 'server', 'index.js'),
+        localPluginsDir: join(root, '.cordis', 'dev', 'plugins'),
+        async close() {},
+      }
+    },
+    devServerStarter: async (options) => {
+      devOptions = options
+      return dev
+    },
+    shellDevStarter: async () => {
+      setTimeout(() => {
+        void (async () => {
+          await watcherOptions?.onChange?.({ kind: 'plugin' })
+          exitListener?.(0)
+        })()
+      }, 0)
+      return backend
+    },
+  })
+
+  const code = await commandDev(parseArgs(['dev', '--shell', '--project', root]), fake.io)
+
+  assert.equal(code, 0)
+  assert.equal(devOptions?.worker.port, 51234)
+  assert.equal(restarts, 1, '插件变化也要重启 worker')
+  assert.equal(reloads, 1, '插件前端入口换了 URL，需要整页刷新')
+})
+
+test('dev --shell 在端口被抢占时换端口重启 Vite 与外壳', async () => {
+  const root = join(tempDir(), 'demo')
+  await commandNew(parseArgs(['new', 'demo', '--project', root]), fakeIO().io)
+
+  const ports = [51234, 51235]
+  const shellPorts: number[] = []
+  let devStarts = 0
+  let devClosed = 0
+  let attempts = 0
+  let closedBeforeRetry: number | undefined
+  let exitListener: ((code: number | null) => void) | undefined
+
+  const backend: ShellDevBackend = {
+    async restartWorker() {},
+    onExit(listener) {
+      exitListener = listener
+      return () => {}
+    },
+    async stop() {},
+  }
+  const fake = fakeIO({
+    shellLocator: () => ({ path: '/opt/cordis-app' }),
+    findFreePort: async () => ports.shift()!,
+    projectWatcher: async () => ({
+      devRoot: join(root, '.cordis', 'dev'),
+      serverEntry: join(root, '.cordis', 'dev', 'server', 'index.js'),
+      localPluginsDir: join(root, '.cordis', 'dev', 'plugins'),
+      async close() {},
+    }),
+    devServerStarter: async () => {
+      devStarts++
+      return {
+        url: 'http://127.0.0.1:5173/',
+        port: 5173,
+        server: {} as ProjectDevServer['server'],
+        reload() {},
+        async close() {
+          devClosed++
+        },
+      }
+    },
+    shellDevStarter: async (options) => {
+      attempts++
+      if (attempts === 2) closedBeforeRetry = devClosed
+      shellPorts.push(options.workerPort)
+      if (attempts === 1) throw new ShellPortUnavailableError('端口被占用')
+      setTimeout(() => exitListener?.(0), 0)
+      return backend
+    },
+  })
+
+  const code = await commandDev(parseArgs(['dev', '--shell', '--project', root]), fake.io)
+
+  assert.equal(code, 0)
+  assert.equal(attempts, 2, '端口冲突后应再试一次')
+  assert.deepEqual(shellPorts, [51234, 51235])
+  assert.equal(devStarts, 2, 'Vite 的代理目标换端口，必须跟着重启')
+  assert.equal(closedBeforeRetry, 1, '第一轮 Vite 在重试前应关闭')
+  assert.ok(fake.err.some((line) => line.includes('被占用')))
+})
+
+test('dev --shell 找不到外壳且不能自动编译时直接失败', async () => {
+  const root = join(tempDir(), 'demo')
+  await commandNew(parseArgs(['new', 'demo', '--project', root]), fakeIO().io)
+
+  let watcherStarted = false
+  let built = 0
+  const fake = fakeIO({
+    shellLocator: () => ({
+      error: 'CORDIS_APP_SHELL 指向的文件不存在：/opt/missing',
+      canBuild: false,
+    }),
+    shellBuilder: async () => {
+      built++
+      return { ok: true }
+    },
+    projectWatcher: async () => {
+      watcherStarted = true
+      throw new Error('找不到外壳时不该启动 watcher')
+    },
+  })
+
+  const code = await commandDev(parseArgs(['dev', '--shell', '--project', root]), fake.io)
+
+  assert.equal(code, 1)
+  assert.equal(built, 0, '显式覆盖错误时不该尝试自动编译')
+  assert.equal(watcherStarted, false, '缺外壳时应在启动任何进程之前失败')
+  assert.ok(fake.err.some((line) => line.includes('CORDIS_APP_SHELL')))
+})
+
+test('dev --shell 缺外壳时先编译一次再继续启动', async () => {
+  const root = join(tempDir(), 'demo')
+  await commandNew(parseArgs(['new', 'demo', '--project', root]), fakeIO().io)
+
+  let locateCalls = 0
+  let built = 0
+  let watcherStarted = false
+  const fake = fakeIO({
+    shellLocator: () => {
+      locateCalls++
+      return locateCalls === 1
+        ? { error: '找不到桌面外壳：/repo/dist/cordis-app', canBuild: true }
+        : { path: '/opt/cordis-app' }
+    },
+    shellBuilder: async () => {
+      built++
+      return { ok: true }
+    },
+    projectWatcher: async () => {
+      watcherStarted = true
+      // 断言到「编译后继续启动」即可，不需要真的起 Vite 与外壳
+      throw new Error('stop after watcher')
+    },
+  })
+
+  const code = await commandDev(parseArgs(['dev', '--shell', '--project', root]), fake.io)
+
+  assert.equal(code, 1)
+  assert.equal(built, 1)
+  assert.equal(locateCalls, 2, '编译后应重新定位外壳')
+  assert.equal(watcherStarted, true)
+  assert.ok(fake.out.some((line) => line.includes('正在编译')))
+})
+
+test('dev --shell 自动编译失败时提示手动构建', async () => {
+  const root = join(tempDir(), 'demo')
+  await commandNew(parseArgs(['new', 'demo', '--project', root]), fakeIO().io)
+
+  let watcherStarted = false
+  const fake = fakeIO({
+    shellLocator: () => ({ error: '找不到桌面外壳', canBuild: true }),
+    shellBuilder: async () => ({ ok: false, error: 'go build 失败（exit 1）' }),
+    projectWatcher: async () => {
+      watcherStarted = true
+      throw new Error('编译失败时不该启动 watcher')
+    },
+  })
+
+  const code = await commandDev(parseArgs(['dev', '--shell', '--project', root]), fake.io)
+
+  assert.equal(code, 1)
+  assert.equal(watcherStarted, false)
+  assert.ok(fake.err.some((line) => line.includes('go build 失败')))
+  assert.ok(fake.err.some((line) => line.includes('pnpm build:shell')))
+})
+
+test('外壳参数把端口、开发 UI 与 watcher 产物原样传给外壳', () => {
+  const args = shellArguments({
+    shellPath: '/opt/cordis-app',
+    projectRoot: '/project',
+    resourcesDir: '/repo/packages/ui/dist',
+    workerPort: 51234,
+    devUrl: 'http://127.0.0.1:5173/',
+    serverEntry: '/project/.cordis/dev/server/index.js',
+    localPluginsDir: '/project/.cordis/dev/plugins',
+    runtimeJsonPath: '/project/.cordis/runtime.json',
+  })
+
+  assert.deepEqual(args, [
+    '--data',
+    '/project',
+    '--resources',
+    '/repo/packages/ui/dist',
+    '--worker-port',
+    '51234',
+    '--dev-ui',
+    'http://127.0.0.1:5173/',
+    '--server-entry',
+    '/project/.cordis/dev/server/index.js',
+    '--local-plugins',
+    '/project/.cordis/dev/plugins',
+    '--dev',
+  ])
 })
