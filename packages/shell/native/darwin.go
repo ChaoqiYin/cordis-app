@@ -29,6 +29,12 @@ func registerDarwin(reg *Registry, opts Options) {
 		reg.Register(CommandPathChooseSave, func(ctx context.Context, input json.RawMessage) (any, error) {
 			return darwinChooseSave(ctx, opts, osascript, input)
 		})
+	}
+
+	// 窗口命令排在路径选择之后、通知之前，与协议命令表的顺序一致。
+	registerWindow(reg, opts)
+
+	if osascript != "" {
 		reg.Register(CommandNotificationShow, func(ctx context.Context, input json.RawMessage) (any, error) {
 			return darwinNotification(ctx, opts, osascript, input)
 		})
