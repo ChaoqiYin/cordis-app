@@ -124,6 +124,15 @@ func firstExisting(opts Options, candidates ...string) string {
 	return ""
 }
 
+// globPatterns 把扩展名列表转成对话框工具需要的 `*.ext` 形式。
+func globPatterns(extensions []string) []string {
+	patterns := make([]string, 0, len(extensions))
+	for _, extension := range extensions {
+		patterns = append(patterns, "*."+extension)
+	}
+	return patterns
+}
+
 // registerSystemInfo 在所有平台注册系统信息命令。
 func registerSystemInfo(reg *Registry, opts Options) {
 	reg.Register(CommandSystemInfo, func(ctx context.Context, _ json.RawMessage) (any, error) {

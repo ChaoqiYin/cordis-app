@@ -17,4 +17,21 @@
  */
 
 export type * from '@cordis-app/kernel'
-export type * from '@cordis-app/protocol'
+export type {
+  NativeCommand,
+  NativeEmptyInput,
+  NativeEmptyResult,
+  NativeErrorCode,
+  NativeFailure,
+  NativeInfo,
+  NativeInput,
+  NativeInvokeRequest,
+  NativeInvokeResponse,
+  NativeOutput,
+  NativePathFilter,
+  NativeResult,
+  NativeSystemInfo,
+  NativeTheme,
+  NativeWindowSize,
+  NativeWindowState,
+} from '@cordis-app/protocol'

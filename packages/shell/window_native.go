@@ -4,7 +4,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"unsafe"
 
@@ -14,8 +13,11 @@ import (
 )
 
 // errWindowUnavailable 表示窗口还没创建或已经销毁。它只会在启动与退出
-// 的短暂窗口内出现，映射到 internal，而不是假装能力缺失。
-var errWindowUnavailable = errors.New("窗口尚未创建")
+// 的短暂窗口内出现，映射到 busy（可重试），而不是假装能力缺失或归为 internal。
+var errWindowUnavailable = &native.Error{
+	Code:    native.CodeBusy,
+	Message: "窗口尚未创建或已销毁，请稍后重试",
+}
 
 // windowBackend 是窗口控制器依赖的 webview 子集。抽出接口是为了让 Dispatch
 // 的投递与等待语义可以在测试里观察，不需要真的开一个窗口。

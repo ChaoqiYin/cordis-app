@@ -272,6 +272,18 @@ func TestWindowErrorsMapToBusinessCodes(t *testing.T) {
 		}
 	})
 
+	t.Run("窗口未就绪", func(t *testing.T) {
+		// 控制器在窗口尚未 attach 的时间窗内返回 busy；windowError 必须原样透传，
+		// 不能把它降级成 internal。
+		srv, _ := windowServer(t, true, &fakeWindow{
+			err: &native.Error{Code: native.CodeBusy, Message: "等待窗口 attach"},
+		})
+		result := invoke(t, srv, native.CommandWindowMinimize, map[string]any{})
+		if result.OK || result.Code != native.CodeBusy {
+			t.Fatalf("结果 = %+v，期望 busy", result)
+		}
+	})
+
 	t.Run("内部错误", func(t *testing.T) {
 		srv, _ := windowServer(t, true, &fakeWindow{err: errors.New("UI 线程不可用")})
 		result := invoke(t, srv, native.CommandWindowMinimize, map[string]any{})

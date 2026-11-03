@@ -20,25 +20,12 @@ import type {
 import { connectNativeClient, type NativeClient, type NativeClientOptions } from './client.js'
 import { nativeCapabilityCommands } from './permissions.js'
 
-export interface NativeServiceOptions {
-  /** 外壳端点；缺省表示没有外壳（浏览器模式、`cordis-app run`）。 */
-  client?: NativeClientOptions
-  logger: Logger
-  /** 审计日志里的调用方；项目 server 记为 `project`。 */
-  caller: string
-}
-
 /** 一个 worker 内共享同一 client 的服务集合。 */
 export interface NativeServices {
   /** 项目 server 与根 ctx 使用的全量服务。 */
   project: NativeService
   /** 某个插件的受限视图；权限来自它自己的 `plugin.json.capabilities`。 */
   forPlugin(pluginId: string, capabilities: readonly PluginCapability[] | undefined): NativeService
-}
-
-export async function createNativeService(options: NativeServiceOptions): Promise<NativeService> {
-  const client = await connect(options)
-  return buildNativeService(options.logger, options.caller, client)
 }
 
 /**
@@ -110,9 +97,11 @@ function buildNativeService(
           : { ok: false, code: 'unsupported', message: '当前没有可用的原生外壳' }
       }
       const code = result.ok ? 'ok' : result.code
-      logger.info(
-        `native caller=${caller} command=${command} code=${code} durationMs=${Math.round(performance.now() - startedAt)}`,
-      )
+      const line = `native caller=${caller} command=${command} code=${code} durationMs=${Math.round(performance.now() - startedAt)}`
+      // 成功是常规事件；denied / unsupported 与其它失败码需要进入 warn，
+      // 才能在不提高全局日志级别的情况下看到权限拒绝与降级。
+      if (result.ok) logger.info(line)
+      else logger.warn(line)
       return result
     },
   }

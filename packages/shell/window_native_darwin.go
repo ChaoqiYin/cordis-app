@@ -31,6 +31,20 @@ static void cordisCancelPendingZoom(id window) {
 		window, sel_registerName("zoom:"), nil);
 }
 
+// cordisWindowDeminiaturize 只在窗口最小化时还原。
+//
+// focus 与 windows/linux 对齐：最小化窗口先还原再前台化，否则 makeKeyAndOrderFront:
+// 无法把仍在 Dock 里的窗口带出来。这里只做 deminiaturize:，不碰 maximize 排队的
+// zoom:，也不重新排队——已被 cancelPendingZoom 取消的动作不能被 focus 复活。
+static void cordisWindowDeminiaturize(void *handle) {
+	if (handle == NULL) return;
+	id window = (id)handle;
+	if (cordisIsMiniaturized(window)) {
+		((void (*)(id, SEL, id))objc_msgSend)(
+			window, sel_registerName("deminiaturize:"), nil);
+	}
+}
+
 static void cordisWindowMinimize(void *handle) {
 	if (handle == NULL) return;
 	cordisCancelPendingZoom((id)handle);
@@ -132,9 +146,10 @@ func platformWindowRestore(handle unsafe.Pointer) {
 	C.cordisWindowRestore(handle)
 }
 
-// platformWindowFocus 复用现有的前台化实现：makeKeyAndOrderFront + 激活应用。
-// 它不会改变最大化状态。
+// platformWindowFocus 最小化时先 deminiaturize:，再复用现有的前台化实现：
+// makeKeyAndOrderFront + 激活应用。它不会改变最大化状态。
 func platformWindowFocus(handle unsafe.Pointer) {
+	C.cordisWindowDeminiaturize(handle)
 	focusWindow(handle)
 }
 

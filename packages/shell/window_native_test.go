@@ -141,16 +141,27 @@ func TestWindowControllerDispatchRespectsContextDeadline(t *testing.T) {
 
 func TestWindowControllerWithoutAttachedWindow(t *testing.T) {
 	controller := newWindowController()
-	if err := controller.Minimize(context.Background()); !errors.Is(err, errWindowUnavailable) {
-		t.Fatalf("错误 = %v，期望 errWindowUnavailable", err)
-	}
-	if _, err := controller.State(context.Background()); !errors.Is(err, errWindowUnavailable) {
-		t.Fatalf("State 错误 = %v，期望 errWindowUnavailable", err)
-	}
+	assertWindowUnavailableBusy(t, controller.Minimize(context.Background()))
+	_, stateErr := controller.State(context.Background())
+	assertWindowUnavailableBusy(t, stateErr)
 
 	controller.attach(newFakeWindowBackend())
 	controller.detach()
-	if err := controller.Minimize(context.Background()); !errors.Is(err, errWindowUnavailable) {
-		t.Fatalf("detach 后错误 = %v，期望 errWindowUnavailable", err)
+	assertWindowUnavailableBusy(t, controller.Minimize(context.Background()))
+}
+
+// assertWindowUnavailableBusy 确认「窗口尚未 attach」映射到 busy：它是可重试的
+// 时间窗，不是能力缺失（unsupported），也不应笼统归为 internal。
+func assertWindowUnavailableBusy(t *testing.T, err error) {
+	t.Helper()
+	if !errors.Is(err, errWindowUnavailable) {
+		t.Fatalf("错误 = %v，期望 errWindowUnavailable", err)
+	}
+	var nativeErr *native.Error
+	if !errors.As(err, &nativeErr) || nativeErr.Code != native.CodeBusy {
+		t.Fatalf("错误 = %v，期望业务码 busy", err)
+	}
+	if nativeErr.Message == "" {
+		t.Fatal("busy 错误必须带有可读的重试提示")
 	}
 }

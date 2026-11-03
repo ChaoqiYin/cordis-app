@@ -241,11 +241,7 @@ func zenityFilters(filters []nativePathFilter) []string {
 	}
 	args := make([]string, 0, len(filters)*2)
 	for _, filter := range filters {
-		patterns := make([]string, 0, len(filter.Extensions))
-		for _, extension := range filter.Extensions {
-			patterns = append(patterns, "*."+extension)
-		}
-		args = append(args, "--file-filter", filter.Name+" | "+strings.Join(patterns, " "))
+		args = append(args, "--file-filter", filter.Name+" | "+strings.Join(globPatterns(filter.Extensions), " "))
 	}
 	return args
 }
@@ -256,11 +252,7 @@ func kdialogFilter(filters []nativePathFilter) string {
 	}
 	parts := make([]string, 0, len(filters))
 	for _, filter := range filters {
-		patterns := make([]string, 0, len(filter.Extensions))
-		for _, extension := range filter.Extensions {
-			patterns = append(patterns, "*."+extension)
-		}
-		parts = append(parts, filter.Name+" ("+strings.Join(patterns, " ")+")")
+		parts = append(parts, filter.Name+" ("+strings.Join(globPatterns(filter.Extensions), " ")+")")
 	}
 	return strings.Join(parts, "|")
 }

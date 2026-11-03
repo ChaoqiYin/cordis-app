@@ -75,14 +75,7 @@ func darwinChooseOpen(ctx context.Context, opts Options, osascript string, input
 		command += " with multiple selections allowed"
 	}
 
-	output := "\treturn POSIX path of chosenItem"
-	if in.Multiple {
-		output = "\tset outputText to \"\"\n" +
-			"\trepeat with pathItem in chosenItem\n" +
-			"\t\tset outputText to outputText & (POSIX path of pathItem) & linefeed\n" +
-			"\tend repeat\n" +
-			"\treturn outputText"
-	}
+	output := darwinPathOutput(in.Multiple)
 
 	script := darwinChooseScriptHeader(command, output)
 	result := opts.Runner.Run(ctx, osascript, "-e", script, "--", boolArg(in.Multiple), title, defaultDir, filterText)
@@ -110,6 +103,19 @@ func darwinChooseScriptHeader(command, output string) string {
 	` + command + `
 ` + output + `
 end run`
+}
+
+// darwinPathOutput 生成把选择结果转成换行分隔路径的 AppleScript 结尾；单选与
+// 多选共用同一份脚本骨架。
+func darwinPathOutput(multiple bool) string {
+	if !multiple {
+		return "\treturn POSIX path of chosenItem"
+	}
+	return "\tset outputText to \"\"\n" +
+		"\trepeat with pathItem in chosenItem\n" +
+		"\t\tset outputText to outputText & (POSIX path of pathItem) & linefeed\n" +
+		"\tend repeat\n" +
+		"\treturn outputText"
 }
 
 // darwinFilterText 把过滤项压成逗号分隔的扩展名，交给脚本拆成 AppleScript 列表。
@@ -150,14 +156,7 @@ func darwinChooseDirectory(ctx context.Context, opts Options, osascript string, 
 		command += " with multiple selections allowed"
 	}
 
-	output := "\treturn POSIX path of chosenItem"
-	if in.Multiple {
-		output = "\tset outputText to \"\"\n" +
-			"\trepeat with pathItem in chosenItem\n" +
-			"\t\tset outputText to outputText & (POSIX path of pathItem) & linefeed\n" +
-			"\tend repeat\n" +
-			"\treturn outputText"
-	}
+	output := darwinPathOutput(in.Multiple)
 
 	script := darwinDirectoryScript(command, output)
 	result := opts.Runner.Run(ctx, osascript, "-e", script, "--", boolArg(in.Multiple), title, defaultDir)

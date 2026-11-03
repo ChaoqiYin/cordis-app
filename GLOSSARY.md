@@ -202,9 +202,9 @@ worker 侧原生能力的唯一入口。浏览器模式或没有外壳时 `avail
 `CORDIS_APP_NATIVE_TOKEN` 传给 worker，worker 启动后从 `process.env` 删除。它与
 页面使用的 auth token 分离，页面永远拿不到。
 
-**原生能力契约版本（`nativeContractVersion`）**
-worker 与外壳之间的原生命令契约版本，当前为 `1`。不匹配时 worker 关闭原生能力并
-告警，不阻止应用启动。
+**原生能力契约版本（`NATIVE_CONTRACT_VERSION`）**
+worker 与外壳之间的原生命令契约版本，当前为 `1`。外壳通过 `/info` 的
+`contractVersion` 字段报告；不匹配时 worker 关闭原生能力并告警，不阻止应用启动。
 
 ## Node 版本契约
 

@@ -321,12 +321,8 @@ func setDialogFilters(dialog unsafe.Pointer, filters []nativePathFilter) {
 	}
 	specs := make([]comdlgFilterSpec, 0, len(filters))
 	for _, filter := range filters {
-		patterns := make([]string, 0, len(filter.Extensions))
-		for _, extension := range filter.Extensions {
-			patterns = append(patterns, "*."+extension)
-		}
 		name, _ := syscall.UTF16PtrFromString(filter.Name)
-		spec, _ := syscall.UTF16PtrFromString(strings.Join(patterns, ";"))
+		spec, _ := syscall.UTF16PtrFromString(strings.Join(globPatterns(filter.Extensions), ";"))
 		specs = append(specs, comdlgFilterSpec{Name: name, Spec: spec})
 	}
 	comCall(dialog, vtblSetFileTypes, uintptr(unsafe.Pointer(&specs[0])), uintptr(len(specs)))
