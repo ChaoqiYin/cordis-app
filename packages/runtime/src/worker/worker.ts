@@ -24,6 +24,8 @@ import {
   ENV_DEV,
   ENV_LOCAL_PLUGINS,
   ENV_MODE,
+  ENV_NATIVE_TOKEN,
+  ENV_NATIVE_URL,
   ENV_PORT,
   ENV_PROJECT,
   ENV_RESOURCES,
@@ -55,6 +57,8 @@ import { checkProjectFrameworkFile } from '../plugin/doctor.js'
 import { sendJson } from '../builtin/http-utils.js'
 import { installRoutes } from './api.js'
 import { readOptionalObjectJson } from '../json.js'
+import { createNativeServices } from '../native/service.js'
+import type { NativeClientOptions } from '../native/client.js'
 
 /** 打包形态的 bundle 安装配置；只由进程配置注入，不接受 HTTP 请求覆盖。 */
 export interface WorkerBundleOptions {
@@ -63,6 +67,14 @@ export interface WorkerBundleOptions {
   /** 读取插件包归档；缺省只接受本地文件路径 */
   readArchive?: (spec: string) => Promise<Uint8Array>
 }
+
+/**
+ * 原生能力的传输端点。
+ *
+ * 正常路径由 supervisor 通过环境变量注入；测试与嵌入方可以直接传入。
+ * 缺省表示没有外壳（浏览器模式、`cordis-app run`），`ctx.native` 降级为不可用。
+ */
+export type WorkerNativeOptions = NativeClientOptions
 
 export interface WorkerOptions {
   port: number
@@ -95,6 +107,11 @@ export interface WorkerOptions {
   /** bundle 安装配置 */
   bundle?: WorkerBundleOptions
   /**
+   * 原生传输端点。supervisor 从环境变量读取后注入；直接调用 `startWorker`
+   * 时可由测试或嵌入方提供。缺省时 `ctx.native.available` 为 false。
+   */
+  native?: WorkerNativeOptions
+  /**
    * 框架版本。supervisor 通过环境注入；直接调用 startWorker 时缺省取
    * `FRAMEWORK_VERSION`（同样来自聚合包 package.json 的构建期生成）。
    */
@@ -124,10 +141,17 @@ export function readWorkerOptions(env: NodeJS.ProcessEnv = process.env): WorkerO
   }
   const rawMode = env[ENV_MODE]
   const mode = parseRuntimeMode(rawMode)
+  // 原生 token 只属于 worker：读进 options 后立刻从环境删除，插件无法再抢读。
+  // 缺失任一项都视为没有外壳，交给 ctx.native 统一降级。
+  const nativeUrl = env[ENV_NATIVE_URL]
+  const nativeToken = env[ENV_NATIVE_TOKEN]
+  delete env[ENV_NATIVE_URL]
+  delete env[ENV_NATIVE_TOKEN]
   return {
     port,
     token,
     projectRoot,
+    ...(nativeUrl && nativeToken ? { native: { url: nativeUrl, token: nativeToken } } : {}),
     resourcesDir: env[ENV_RESOURCES],
     ...(env[ENV_SERVER_ENTRY] ? { serverEntry: env[ENV_SERVER_ENTRY] } : {}),
     ...(env[ENV_APP_JSON] ? { appJson: env[ENV_APP_JSON] } : {}),
@@ -268,6 +292,15 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
   ctx.set('logger', logger)
   ctx.set('config', config)
 
+  // 原生服务必须在项目入口之前挂到根 ctx：项目 server 的 apply(ctx) 一执行
+  // 就能用。`/info` 不可达或契约不匹配只让服务降级，不阻止 worker 启动。
+  // 同一个 client 同时服务项目（全量）与插件（按 plugin.json 受限的视图）。
+  const native = await createNativeServices({
+    ...(options.native ? { client: options.native } : {}),
+    logger: logger('native'),
+  })
+  kernel.service('native', () => native.project)
+
   const failures: PluginFailure[] = []
   let manifest: ClientManifest = {
     version: frameworkVersion,
@@ -314,6 +347,7 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
     ...(options.dev ? { dev: true } : {}),
     ...(app?.ui ? { ui: app.ui } : {}),
     ...(enabledOrder ? { order: enabledOrder } : {}),
+    nativeForPlugin: (id, capabilities) => native.forPlugin(id, capabilities),
     configFor: (id) => config.get(id) ?? {},
   })
   failures.push(...loaded.failures)

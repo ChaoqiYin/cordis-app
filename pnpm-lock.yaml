@@ -109,6 +109,9 @@ importers:
 
   packages/kernel:
     dependencies:
+      '@cordis-app/protocol':
+        specifier: workspace:*
+        version: link:../protocol
       '@cordisjs/core':
         specifier: 3.18.1
         version: 3.18.1

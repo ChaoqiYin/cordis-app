@@ -1,6 +1,11 @@
 /** 内置插件在插件作者侧可见的服务类型。 */
 
 import type { IncomingMessage, ServerResponse, Server } from 'node:http'
+import type {
+  NativeCommand,
+  NativeInput,
+  NativeResult,
+} from '@cordis-app/protocol'
 import type { LoggerFactory } from './logger.js'
 import type { ConfigStore } from './config.js'
 
@@ -84,6 +89,32 @@ export interface StorageService {
   list(pluginId: string): Promise<string[]>
 }
 
+/** 单次原生调用的选项。 */
+export interface NativeInvokeOptions {
+  /**
+   * 覆盖本次调用的 RPC 超时（毫秒）。`path.choose*` 缺省不设超时；
+   * 其余命令缺省 5 秒。显式传入时对所有命令生效。
+   */
+  timeoutMs?: number
+}
+
+/**
+ * 原生能力服务：项目 server 与插件服务端调用外壳系统原语的唯一入口。
+ *
+ * 没有外壳时 `available` 为 false，`commands()` 返回空数组，所有 `invoke`
+ * 返回 `unsupported`，调用方不需要写两套代码。
+ */
+export interface NativeService {
+  readonly available: boolean
+  /** 当前平台真正可用的命令；没有外壳时为空。 */
+  commands(): NativeCommand[]
+  invoke<C extends NativeCommand>(
+    command: C,
+    input: NativeInput<C>,
+    options?: NativeInvokeOptions,
+  ): Promise<NativeResult<C>>
+}
+
 /** 框架暴露给插件的最小面：日志、配置、生命周期、事件。 */
 export interface CoreServices {
   logger: LoggerFactory
@@ -98,6 +129,7 @@ declare module './kernel.js' {
     ws: WebSocketService
     auth: AuthService
     storage: StorageService
+    native: NativeService
     logger: LoggerFactory
     config: ConfigStore
     effect<T>(callback: (ctx: this) => T | (() => void)): T

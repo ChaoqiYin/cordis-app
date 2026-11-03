@@ -56,8 +56,18 @@ export interface MountedPlugin {
 }
 
 export interface Kernel {
-  /** 挂载一个插件，返回可撤销句柄。 */
-  plugin(definition: PluginDefinition, config?: unknown): MountedPlugin
+  /**
+   * 挂载一个插件，返回可撤销句柄。
+   *
+   * `services` 在插件自己的 fork 作用域上以隔离视图挂载，用于给单个插件
+   * 覆盖同名服务（例如受限的 `native`），不影响根 ctx 与其他插件。覆盖值
+   * 随插件 dispose 一起释放。
+   */
+  plugin(
+    definition: PluginDefinition,
+    config?: unknown,
+    services?: Readonly<Record<string, unknown>>,
+  ): MountedPlugin
   /** 注册服务，返回可撤销句柄。 */
   service<T>(name: string, factory: (ctx: KernelContext) => T): Disposable
   /** 取一个以名字隔离的作用域。同名多次调用返回同一个 Kernel。 */
@@ -125,9 +135,28 @@ export function createKernel(options: KernelOptions = {}): Kernel {
     return {
       context: scope,
 
-      plugin(definition, config) {
+      plugin(definition, config, services) {
         const name = pluginName(definition)
-        const fork = scope.plugin(definition as any, config as any)
+        // 需要覆盖同名服务的插件挂在自己的隔离作用域上：cordis 的服务表
+        // 以根为界共享，直接 set 既会与继承值冲突，也会波及其他插件。
+        let parent = scope
+        for (const serviceName of Object.keys(services ?? {})) {
+          parent = parent.isolate(serviceName)
+        }
+        const fork = parent.plugin(definition as any, config as any)
+        // 必须赶在插件 apply 之前；cordis 把 apply 排进微任务，这里同步挂载。
+        // reusable 插件的 fork 在 restart 时会 dispose 这些 effect，所以更新后
+        // 再挂一次；普通插件此时是幂等 no-op。
+        const mountServices = () => {
+          try {
+            for (const [serviceName, value] of Object.entries(services ?? {})) {
+              fork.ctx.set(serviceName, value)
+            }
+          } catch {
+            // 插件配置非法时 cordis 已取消 fork；服务随下一次成功 restart 再挂。
+          }
+        }
+        mountServices()
         let currentConfig = config
 
         const handle: MountedPlugin = {
@@ -140,6 +169,7 @@ export function createKernel(options: KernelOptions = {}): Kernel {
             // 语义等同「插件级 restart」，代价远小于重启 worker。
             if (next !== undefined) currentConfig = next
             fork.runtime.update(currentConfig, true)
+            mountServices()
           },
           dispose() {
             fork.dispose()
