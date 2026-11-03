@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "composite": false,
+    "incremental": false,
+    "noEmit": true,
+    "rootDir": "."
+  },
+  "include": [
+    "src",
+    "test/native-types.test.ts"
+  ],
+  "references": []
+}
