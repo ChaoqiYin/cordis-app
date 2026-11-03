@@ -309,19 +309,85 @@ function importMapPlugin(): Plugin {
  *
  * `server/index.ts` 与 `server/index.js` 都接受；都没有时产出一个空 apply，
  * 让「只有前端」的项目也能得到完整布局。
+ *
+ * `server/` 顶层除 index 外的脚本入口各自作为独立入口打包到输出目录下的
+ * `<name>.js`，供 `worker_threads` 等场景按路径加载。子目录不参与：
+ * 入口集合必须能从一次目录读取完整得出，否则产物名会与相对路径纠缠。
  */
 async function buildProjectServer(
   projectRoot: string,
   outfile: string,
   options: { minify: boolean },
 ): Promise<string> {
-  const source = findProjectServer(projectRoot)
-  if (!source) {
-    mkdirSync(dirname(outfile), { recursive: true })
+  const entries = projectServerEntries(projectRoot)
+  const main = entries.find((entry) => entry.name === 'index')
+  mkdirSync(dirname(outfile), { recursive: true })
+
+  if (!main) {
     writeFileSync(outfile, 'export default function apply() {}\n')
-    return outfile
+  } else {
+    await buildServerEntry(projectRoot, main.source, outfile, options)
   }
 
+  const outDir = dirname(outfile)
+  for (const entry of entries) {
+    if (entry.name === 'index') continue
+    await buildServerEntry(projectRoot, entry.source, join(outDir, `${entry.name}.js`), options)
+  }
+
+  return main ? main.source : outfile
+}
+
+/** 项目 server 入口的扩展名；顺序也是同名入口的优先级。 */
+const SERVER_ENTRY_EXTENSIONS = ['.ts', '.mts', '.js', '.mjs'] as const
+
+interface ProjectServerEntry {
+  /** 去扩展名后的产物名。 */
+  name: string
+  source: string
+  /** 扩展名优先级，数字越小越优先。 */
+  priority: number
+}
+
+/**
+ * 列出 `server/` 顶层的脚本入口。
+ *
+ * 文件名（去扩展名）就是产物名；子目录与 `.d.ts` 声明文件不参与。同名入口
+ * 按扩展名优先级只取一个，避免两份源码争抢同一个产物。
+ */
+function projectServerEntries(projectRoot: string): ProjectServerEntry[] {
+  const dir = join(projectRoot, 'server')
+  const found = new Map<string, ProjectServerEntry>()
+
+  for (const entry of readdirSafe(dir)) {
+    if (!entry.isFile()) continue
+    if (entry.name.endsWith('.d.ts') || entry.name.endsWith('.d.mts')) continue
+
+    const extension = SERVER_ENTRY_EXTENSIONS.find((candidate) => entry.name.endsWith(candidate))
+    if (!extension) continue
+
+    const name = entry.name.slice(0, -extension.length)
+    if (name === '') continue
+
+    const candidate: ProjectServerEntry = {
+      name,
+      source: join(dir, entry.name),
+      priority: SERVER_ENTRY_EXTENSIONS.indexOf(extension),
+    }
+    const existing = found.get(name)
+    if (!existing || candidate.priority < existing.priority) found.set(name, candidate)
+  }
+
+  return [...found.values()]
+}
+
+/** 用同一个服务端预设构建单个入口，保持 external、banner 与 sourcemap 一致。 */
+async function buildServerEntry(
+  projectRoot: string,
+  source: string,
+  outfile: string,
+  options: { minify: boolean },
+): Promise<void> {
   await esbuild(
     buildOptions(
       serverPreset({
@@ -334,15 +400,6 @@ async function buildProjectServer(
       projectRoot,
     ),
   )
-  return source
-}
-
-function findProjectServer(projectRoot: string): string | undefined {
-  for (const name of ['index.ts', 'index.mts', 'index.js', 'index.mjs']) {
-    const candidate = join(projectRoot, 'server', name)
-    if (existsSync(candidate)) return candidate
-  }
-  return undefined
 }
 
 /**

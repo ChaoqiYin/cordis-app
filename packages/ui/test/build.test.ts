@@ -227,6 +227,68 @@ test('build 产出发布布局，body 与 server 都来自项目源码', async (
   assert.doesNotMatch(server, /interface|: number/, 'TypeScript 类型应被剥离')
 })
 
+test('server 目录的多入口各自产出到 dist/server/<name>.js', async () => {
+  const root = createProject()
+  writeFileSync(
+    join(root, 'server', 'scan-worker.ts'),
+    "export default function scan() { return 'SCAN_WORKER' }\n",
+  )
+  // 识别规则：只认脚本扩展名，不递归子目录，忽略 .d.ts。
+  mkdirSync(join(root, 'server', 'nested'), { recursive: true })
+  writeFileSync(join(root, 'server', 'nested', 'deep.ts'), 'export default 1\n')
+  writeFileSync(join(root, 'server', 'scan-worker.d.ts'), 'export declare const x: number\n')
+  writeFileSync(join(root, 'server', 'notes.txt'), 'not an entry\n')
+
+  const result = await buildProject({ projectRoot: root })
+  const workerEntry = join(result.outDir, 'server', 'scan-worker.js')
+
+  assert.ok(existsSync(result.serverEntry), '主入口仍是 dist/server/index.js')
+  assert.ok(existsSync(workerEntry), '第二个入口应产出 dist/server/scan-worker.js')
+  assert.equal(existsSync(join(result.outDir, 'server', 'deep.js')), false, '不递归子目录')
+  assert.equal(
+    existsSync(join(result.outDir, 'server', 'scan-worker.d.js')),
+    false,
+    '.d.ts 不是入口',
+  )
+  assert.equal(existsSync(join(result.outDir, 'server', 'notes.js')), false, '只认脚本扩展名')
+
+  const worker = await import(pathToFileURL(workerEntry).href)
+  assert.equal(worker.default(), 'SCAN_WORKER', '第二个入口应作为独立模块可加载')
+})
+
+test('单入口项目的 server 产物保持不变', async () => {
+  const root = createProject()
+  const result = await buildProject({ projectRoot: root })
+
+  assert.deepEqual(
+    readdirSync(join(result.outDir, 'server')).sort(),
+    ['index.js', 'index.js.map'],
+    '只有 index 时不额外产出其他入口',
+  )
+  const server = await import(pathToFileURL(result.serverEntry).href)
+  assert.equal(server.default(), 42, '主入口的原有行为不变')
+})
+
+test('dev watcher 把 server 多入口产出到开发目录，路径与 build 一致', async () => {
+  const root = createProject()
+  writeFileSync(
+    join(root, 'server', 'scan-worker.ts'),
+    "export default function scan() { return 'DEV_SCAN' }\n",
+  )
+
+  const watcher = await createProjectWatcher({ projectRoot: root })
+  try {
+    const workerEntry = join(watcher.devRoot, 'server', 'scan-worker.js')
+    assert.ok(existsSync(watcher.serverEntry), '主入口仍产出 server/index.js')
+    assert.ok(existsSync(workerEntry), '开发目录应产出 server/scan-worker.js')
+
+    const worker = await import(pathToFileURL(workerEntry).href)
+    assert.equal(worker.default(), 'DEV_SCAN')
+  } finally {
+    await watcher.close()
+  }
+})
+
 test('构建把项目 server 与本地插件的第三方依赖打进产物，dist 不含 node_modules', async () => {
   const root = createProject()
   writeDependency(root, 'fake-dep', {
