@@ -64,9 +64,12 @@ func main() {
 	degraded := *urlOnly || webViewUnavailable()
 
 	// 原生服务必须先监听成功再启动 supervisor：worker 一启动就会读取注入的
-	// 端点。本 ticket 只提供传输、鉴权与注册表，具体平台命令由后续实现注册。
+	// 端点。平台命令在注册表里按当前环境的真实能力填充，缺失的外部工具不会
+	// 出现在 /info.commands。
+	registry := native.NewRegistry()
+	native.RegisterAll(registry, native.Options{HasWindow: !degraded})
 	nativeServer, err := native.Start(native.Config{
-		Registry:  native.NewRegistry(),
+		Registry:  registry,
 		HasWindow: !degraded,
 	})
 	if err != nil {
