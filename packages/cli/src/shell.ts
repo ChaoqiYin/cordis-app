@@ -11,7 +11,7 @@
  */
 
 import { spawn } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { waitForReady } from '@cordis-app/protocol'
@@ -39,7 +39,16 @@ export interface ShellDevBackend {
 }
 
 /** 外壳定位结果。错误用返回值而不是抛异常，方便命令直接打印并返回退出码。 */
-export type ShellLocation = { path: string } | { error: string }
+export type ShellLocation =
+  | { path: string }
+  | {
+      error: string
+      /** 默认产物路径缺失时为 true：CLI 可以尝试编译一次。 */
+      canBuild: boolean
+    }
+
+/** 外壳编译结果。失败信息直接展示给用户，不再包一层异常。 */
+export type ShellBuildResult = { ok: true } | { ok: false; error: string }
 
 /**
  * 外壳在就绪前以 76 退出：它拿到了 worker 端口但监听失败。
@@ -53,19 +62,23 @@ const PORT_UNAVAILABLE_EXIT_CODE = 76
 const STARTUP_TIMEOUT_MS = 60_000
 const TOKEN_TIMEOUT_MS = 3_000
 const STOP_GRACE_MS = 5_000
+/** 首次编译可能要下载 Go 依赖，给足时间，但避免无提示地永久挂起。 */
+const SHELL_BUILD_TIMEOUT_MS = 300_000
 
 /**
  * 找外壳可执行文件。
  *
  * 优先用 CORDIS_APP_SHELL；否则从 CLI 产物位置推仓库根，取 `dist` 下的
  * 构建产物。不猜当前工作目录：用户在哪个目录敲命令与外壳在哪无关。
+ * 显式覆盖指向不存在的文件时不让 CLI 自动编译，避免把用户的配置错误
+ * 静默改成「用别处的产物」。
  */
 export function locateShell(): ShellLocation {
   const override = process.env.CORDIS_APP_SHELL
   if (override) {
     return existsSync(override)
       ? { path: override }
-      : { error: `CORDIS_APP_SHELL 指向的文件不存在：${override}` }
+      : { error: `CORDIS_APP_SHELL 指向的文件不存在：${override}`, canBuild: false }
   }
 
   const here = dirname(fileURLToPath(import.meta.url))
@@ -76,9 +89,63 @@ export function locateShell(): ShellLocation {
   return existsSync(candidate)
     ? { path: candidate }
     : {
-        error:
-          '找不到桌面外壳。先执行 pnpm build:shell，或用 CORDIS_APP_SHELL 指向外壳可执行文件。',
+        error: `找不到桌面外壳：${candidate}`,
+        canBuild: true,
       }
+}
+
+/**
+ * 编译外壳二进制，等价于根目录的 `pnpm build:shell`。
+ *
+ * 只编译 Go，不构建前端资源：开发形态的前端由 Vite 提供。Go 工具链或
+ * 源码不可用时返回可展示的错误，由命令决定是提示手动构建还是直接退出。
+ */
+export async function buildShell(): Promise<ShellBuildResult> {
+  const here = dirname(fileURLToPath(import.meta.url))
+  const repoRoot = join(here, '..', '..', '..')
+  const shellDir = join(repoRoot, 'packages', 'shell')
+  if (!existsSync(join(shellDir, 'go.mod'))) {
+    return { ok: false, error: `找不到外壳源码目录：${shellDir}` }
+  }
+
+  const exe = process.platform === 'win32' ? 'cordis-app.exe' : 'cordis-app'
+  const output = join(repoRoot, 'dist', exe)
+  mkdirSync(dirname(output), { recursive: true })
+
+  return new Promise<ShellBuildResult>((resolve) => {
+    const child = spawn('go', ['build', '-o', output, '.'], {
+      cwd: shellDir,
+      stdio: 'inherit',
+    })
+    let settled = false
+    let timer: NodeJS.Timeout | undefined
+    const finish = (result: ShellBuildResult): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(result)
+    }
+    timer = setTimeout(() => {
+      child.kill()
+      finish({ ok: false, error: `编译外壳超时（${SHELL_BUILD_TIMEOUT_MS / 1000} 秒）` })
+    }, SHELL_BUILD_TIMEOUT_MS)
+    child.once('error', (error: NodeJS.ErrnoException) => {
+      finish({
+        ok: false,
+        error:
+          error.code === 'ENOENT'
+            ? '找不到 go 命令。安装 Go 1.25 后重试，或直接执行 pnpm build:shell。'
+            : `无法启动 go build：${error.message}`,
+      })
+    })
+    child.once('exit', (code) => {
+      finish(
+        code === 0
+          ? { ok: true }
+          : { ok: false, error: `go build 失败（exit ${code ?? 'null'}）` },
+      )
+    })
+  })
 }
 
 /** 默认的外壳启动实现：spawn、等 worker 健康、读 runtime token。 */

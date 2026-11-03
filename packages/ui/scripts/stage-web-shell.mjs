@@ -1,8 +1,9 @@
 /**
- * 把框架壳随包发布到 `dist/shell/`。
+ * 把前端壳（web shell）随包发布到 `dist/shell/`。
  *
+ * 「前端壳」指页面入口 index.html、main.tsx 与样式，与 Go 桌面外壳无关。
  * 项目构建与开发都需要同一份壳入口：只发布 dist 时源码目录不在包里，
- * 因此这里把 index.html、入口与样式复制过去，并把入口脚本改成相对路径。
+ * 因此这里把它们复制过去，并把入口脚本改成相对路径。
  * 壳本身引用 `cordis-app/ui` 与 `virtual:cordis-app/body`，由构建器注入。
  */
 

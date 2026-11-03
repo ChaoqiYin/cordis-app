@@ -53,8 +53,10 @@ import {
 } from './workspace.js'
 import {
   ShellPortUnavailableError,
+  buildShell,
   locateShell,
   startShellDev,
+  type ShellBuildResult,
   type ShellDevBackend,
   type ShellDevOptions,
   type ShellLocation,
@@ -85,6 +87,8 @@ export interface CommandIO {
   devServerStarter?(options: ProjectDevServerOptions): Promise<ProjectDevServer>
   /** 外壳可执行文件定位；测试时替换 */
   shellLocator?(): ShellLocation
+  /** 编译外壳二进制；测试时替换，避免真的调用 go */
+  shellBuilder?(): Promise<ShellBuildResult>
   /** 分配空闲端口；测试时替换 */
   findFreePort?(): Promise<number>
   /** 启动桌面外壳并等到 worker 就绪；测试时替换 */
@@ -313,6 +317,27 @@ async function commandDevBrowser(
 const SHELL_START_ATTEMPTS = 3
 
 /**
+ * 拿到外壳路径。默认产物缺失时尝试编译一次；CORDIS_APP_SHELL 指向错误
+ * 位置时不自动编译，避免把用户的显式配置静默改成「用别处的产物」。
+ */
+async function ensureShell(io: CommandIO): Promise<ShellLocation> {
+  const locate = io.shellLocator ?? locateShell
+  const location = locate()
+  if ('path' in location) return location
+  if (!location.canBuild) return location
+
+  io.out('未找到桌面外壳，正在编译…')
+  const built = await (io.shellBuilder ?? buildShell)()
+  if (!built.ok) {
+    return {
+      error: `${built.error}\n也可以手动执行 pnpm build:shell，或用 CORDIS_APP_SHELL 指向外壳可执行文件。`,
+      canBuild: false,
+    }
+  }
+  return locate()
+}
+
+/**
  * 外壳模式：CLI 分配端口 → Vite 代理到该端口 → 外壳用同一端口拉起
  * supervisor。窗口由外壳打开，入口地址由外壳用握手 token 拼出来，CLI 只
  * 负责等 worker 健康、在源码变化时触发重启，以及退出时收尾。
@@ -325,7 +350,7 @@ async function commandDevShell(
   args: ParsedArgs,
   io: CommandIO,
 ): Promise<number> {
-  const location = (io.shellLocator ?? locateShell)()
+  const location = await ensureShell(io)
   if ('error' in location) {
     io.err(location.error)
     return 1

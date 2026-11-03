@@ -815,15 +815,21 @@ test('dev --shell 在端口被抢占时换端口重启 Vite 与外壳', async ()
   assert.ok(fake.err.some((line) => line.includes('被占用')))
 })
 
-test('dev --shell 找不到外壳时直接失败并提示构建', async () => {
+test('dev --shell 找不到外壳且不能自动编译时直接失败', async () => {
   const root = join(tempDir(), 'demo')
   await commandNew(parseArgs(['new', 'demo', '--project', root]), fakeIO().io)
 
   let watcherStarted = false
+  let built = 0
   const fake = fakeIO({
     shellLocator: () => ({
-      error: '找不到桌面外壳。先执行 pnpm build:shell，或用 CORDIS_APP_SHELL 指向外壳可执行文件。',
+      error: 'CORDIS_APP_SHELL 指向的文件不存在：/opt/missing',
+      canBuild: false,
     }),
+    shellBuilder: async () => {
+      built++
+      return { ok: true }
+    },
     projectWatcher: async () => {
       watcherStarted = true
       throw new Error('找不到外壳时不该启动 watcher')
@@ -833,7 +839,64 @@ test('dev --shell 找不到外壳时直接失败并提示构建', async () => {
   const code = await commandDev(parseArgs(['dev', '--shell', '--project', root]), fake.io)
 
   assert.equal(code, 1)
+  assert.equal(built, 0, '显式覆盖错误时不该尝试自动编译')
   assert.equal(watcherStarted, false, '缺外壳时应在启动任何进程之前失败')
+  assert.ok(fake.err.some((line) => line.includes('CORDIS_APP_SHELL')))
+})
+
+test('dev --shell 缺外壳时先编译一次再继续启动', async () => {
+  const root = join(tempDir(), 'demo')
+  await commandNew(parseArgs(['new', 'demo', '--project', root]), fakeIO().io)
+
+  let locateCalls = 0
+  let built = 0
+  let watcherStarted = false
+  const fake = fakeIO({
+    shellLocator: () => {
+      locateCalls++
+      return locateCalls === 1
+        ? { error: '找不到桌面外壳：/repo/dist/cordis-app', canBuild: true }
+        : { path: '/opt/cordis-app' }
+    },
+    shellBuilder: async () => {
+      built++
+      return { ok: true }
+    },
+    projectWatcher: async () => {
+      watcherStarted = true
+      // 断言到「编译后继续启动」即可，不需要真的起 Vite 与外壳
+      throw new Error('stop after watcher')
+    },
+  })
+
+  const code = await commandDev(parseArgs(['dev', '--shell', '--project', root]), fake.io)
+
+  assert.equal(code, 1)
+  assert.equal(built, 1)
+  assert.equal(locateCalls, 2, '编译后应重新定位外壳')
+  assert.equal(watcherStarted, true)
+  assert.ok(fake.out.some((line) => line.includes('正在编译')))
+})
+
+test('dev --shell 自动编译失败时提示手动构建', async () => {
+  const root = join(tempDir(), 'demo')
+  await commandNew(parseArgs(['new', 'demo', '--project', root]), fakeIO().io)
+
+  let watcherStarted = false
+  const fake = fakeIO({
+    shellLocator: () => ({ error: '找不到桌面外壳', canBuild: true }),
+    shellBuilder: async () => ({ ok: false, error: 'go build 失败（exit 1）' }),
+    projectWatcher: async () => {
+      watcherStarted = true
+      throw new Error('编译失败时不该启动 watcher')
+    },
+  })
+
+  const code = await commandDev(parseArgs(['dev', '--shell', '--project', root]), fake.io)
+
+  assert.equal(code, 1)
+  assert.equal(watcherStarted, false)
+  assert.ok(fake.err.some((line) => line.includes('go build 失败')))
   assert.ok(fake.err.some((line) => line.includes('pnpm build:shell')))
 })
 
