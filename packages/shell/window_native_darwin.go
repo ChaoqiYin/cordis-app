@@ -19,8 +19,21 @@ static BOOL cordisIsZoomed(id window) {
 	return ((BOOL (*)(id, SEL))objc_msgSend)(window, sel_registerName("isZoomed"));
 }
 
+// cancelPendingZoom 取消 maximize 在恢复动画后排队执行的 zoom:。
+//
+// 窗口在 deminiaturize: 的动画中直接 zoom: 会被 AppKit 丢弃，因此 maximize
+// 把 zoom: 排到下一轮 run loop。期间用户又调用 minimize/restore/close 时，
+// 必须撤销排队动作，否则窗口状态会在命令返回后自行改变。
+static void cordisCancelPendingZoom(id window) {
+	((void (*)(id, SEL, id, SEL, id))objc_msgSend)(
+		(id)objc_getClass("NSObject"),
+		sel_registerName("cancelPreviousPerformRequestsWithTarget:selector:object:"),
+		window, sel_registerName("zoom:"), nil);
+}
+
 static void cordisWindowMinimize(void *handle) {
 	if (handle == NULL) return;
+	cordisCancelPendingZoom((id)handle);
 	((void (*)(id, SEL, id))objc_msgSend)(
 		(id)handle, sel_registerName("miniaturize:"), nil);
 }
@@ -28,9 +41,20 @@ static void cordisWindowMinimize(void *handle) {
 static void cordisWindowMaximize(void *handle) {
 	if (handle == NULL) return;
 	id window = (id)handle;
+	cordisCancelPendingZoom(window);
 	if (cordisIsMiniaturized(window)) {
 		((void (*)(id, SEL, id))objc_msgSend)(
 			window, sel_registerName("deminiaturize:"), nil);
+		// 恢复动画期间 zoom: 会被丢弃；排到下一轮 run loop 再最大化。
+		if (!cordisIsZoomed(window)) {
+			((void (*)(id, SEL, SEL, id, double))objc_msgSend)(
+				window,
+				sel_registerName("performSelector:withObject:afterDelay:"),
+				sel_registerName("zoom:"),
+				nil,
+				0.2);
+		}
+		return;
 	}
 	// zoom: 是切换语义，已最大化时再发一次会还原，因此必须先判断。
 	if (!cordisIsZoomed(window)) {
@@ -42,6 +66,7 @@ static void cordisWindowMaximize(void *handle) {
 static void cordisWindowRestore(void *handle) {
 	if (handle == NULL) return;
 	id window = (id)handle;
+	cordisCancelPendingZoom(window);
 	if (cordisIsMiniaturized(window)) {
 		((void (*)(id, SEL, id))objc_msgSend)(
 			window, sel_registerName("deminiaturize:"), nil);
@@ -54,6 +79,7 @@ static void cordisWindowRestore(void *handle) {
 
 static void cordisWindowClose(void *handle) {
 	if (handle == NULL) return;
+	cordisCancelPendingZoom((id)handle);
 	((void (*)(id, SEL, id))objc_msgSend)(
 		(id)handle, sel_registerName("performClose:"), nil);
 }
