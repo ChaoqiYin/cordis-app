@@ -57,7 +57,7 @@ import { checkProjectFrameworkFile } from '../plugin/doctor.js'
 import { sendJson } from '../builtin/http-utils.js'
 import { installRoutes } from './api.js'
 import { readOptionalObjectJson } from '../json.js'
-import { createNativeService } from '../native/service.js'
+import { createNativeServices } from '../native/service.js'
 import type { NativeClientOptions } from '../native/client.js'
 
 /** 打包形态的 bundle 安装配置；只由进程配置注入，不接受 HTTP 请求覆盖。 */
@@ -294,12 +294,12 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
 
   // 原生服务必须在项目入口之前挂到根 ctx：项目 server 的 apply(ctx) 一执行
   // 就能用。`/info` 不可达或契约不匹配只让服务降级，不阻止 worker 启动。
-  const native = await createNativeService({
+  // 同一个 client 同时服务项目（全量）与插件（按 plugin.json 受限的视图）。
+  const native = await createNativeServices({
     ...(options.native ? { client: options.native } : {}),
     logger: logger('native'),
-    caller: 'project',
   })
-  kernel.service('native', () => native)
+  kernel.service('native', () => native.project)
 
   const failures: PluginFailure[] = []
   let manifest: ClientManifest = {
@@ -347,6 +347,7 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
     ...(options.dev ? { dev: true } : {}),
     ...(app?.ui ? { ui: app.ui } : {}),
     ...(enabledOrder ? { order: enabledOrder } : {}),
+    nativeForPlugin: (id, capabilities) => native.forPlugin(id, capabilities),
     configFor: (id) => config.get(id) ?? {},
   })
   failures.push(...loaded.failures)
