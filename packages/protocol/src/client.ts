@@ -5,6 +5,9 @@
  * 而前端 bundle 会把整个 barrel 一并打进来，于是 `node:os` 就成了打包错误。
  * 这也是设置这个分入口的全部理由：调用方按运行环境选择，而不是靠 tree-shaking
  * 祈祷它能把副作用式的 Node 导入摇掉。
+ *
+ * 原生能力契约（`native.ts`）同样不在这里转出：页面不直连外壳，它只属于
+ * worker 与外壳。
  */
 
 export * from './constants.js'
