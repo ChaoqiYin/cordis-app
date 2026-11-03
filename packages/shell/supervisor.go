@@ -78,7 +78,23 @@ func supervisorArgs(l layout) []string {
 	)
 }
 
-func startSupervisor(l layout) (*supervisor, error) {
+// nativeEndpoint 是外壳生成的回环原生服务地址与凭据。
+//
+// 两个变量在启动 supervisor 之前就已确定，worker 重启不会改变它们；supervisor
+// 只负责把它们原样转发给 worker。
+type nativeEndpoint struct {
+	url   string
+	token string
+}
+
+// 环境变量名必须与 packages/protocol/src/native.ts 的 ENV_NATIVE_URL /
+// ENV_NATIVE_TOKEN 逐字一致。
+const (
+	nativeURLEnv   = "CORDIS_APP_NATIVE_URL"
+	nativeTokenEnv = "CORDIS_APP_NATIVE_TOKEN"
+)
+
+func startSupervisor(l layout, nativeEp nativeEndpoint) (*supervisor, error) {
 	args := supervisorArgs(l)
 
 	cmd := exec.Command(l.nodeBin, args...)
@@ -89,7 +105,7 @@ func startSupervisor(l layout) (*supervisor, error) {
 	if l.packaged {
 		cmd.Dir = l.dataDir
 	}
-	cmd.Env = supervisorEnv(l)
+	cmd.Env = supervisorEnv(l, nativeEp)
 	setProcessGroup(cmd)
 
 	stdout, err := cmd.StdoutPipe()
@@ -160,15 +176,16 @@ func startSupervisor(l layout) (*supervisor, error) {
 //
 // 开发环境不走 PATH 裁剪：`go run` 时 node 本来就来自 PATH，裁掉它会连
 // supervisor 都起不来。裁剪只对正式安装生效，那里有随包分发的 node。
-func supervisorEnv(l layout) []string {
+func supervisorEnv(l layout, nativeEp nativeEndpoint) []string {
 	env := os.Environ()
 
 	// 必须先移除外层注入的 CORDIS_APP_*：用户 shell 里残留的调试配置不能
-	// 劫持项目根或资源根。之后只写外壳自己的值，保证每个键只出现一次。
+	// 劫持项目根、资源根或原生端点。之后只写外壳自己的值，保证每个键只出现一次。
 	env = filterEnv(env,
 		"NODE_OPTIONS", "NODE_PATH",
 		"CORDIS_APP_DATA", "CORDIS_APP_RESOURCES",
 		"CORDIS_APP_PROJECT", "CORDIS_APP_BUNDLE_PUBLIC_KEY",
+		nativeURLEnv, nativeTokenEnv,
 	)
 
 	env = append(env,
@@ -176,6 +193,13 @@ func supervisorEnv(l layout) []string {
 		"CORDIS_APP_PROJECT="+l.projectRoot,
 		"CORDIS_APP_RESOURCES="+l.resourcesDir,
 	)
+
+	if nativeEp.url != "" {
+		env = append(env, nativeURLEnv+"="+nativeEp.url)
+	}
+	if nativeEp.token != "" {
+		env = append(env, nativeTokenEnv+"="+nativeEp.token)
+	}
 
 	if key := bundlePublicKey(l); key != "" {
 		env = append(env, "CORDIS_APP_BUNDLE_PUBLIC_KEY="+key)

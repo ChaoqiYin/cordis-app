@@ -393,7 +393,7 @@ func TestSupervisorEnvOverridesInheritedProject(t *testing.T) {
 	t.Setenv("CORDIS_APP_BUNDLE_PUBLIC_KEY", "")
 
 	l := layout{dataDir: "/data", projectRoot: "/data", resourcesDir: "/data/app/hash/resources"}
-	env := supervisorEnv(l)
+	env := supervisorEnv(l, nativeEndpoint{})
 
 	assertEnvKeyOnce(t, env, "CORDIS_APP_PROJECT", "/data")
 	assertEnvKeyOnce(t, env, "CORDIS_APP_DATA", "/data")
@@ -409,7 +409,7 @@ func TestSupervisorEnvPublicKeyFromBundledFile(t *testing.T) {
 	writeTestFile(t, keyFile, "FILE-KEY\n")
 
 	l := layout{dataDir: "/data", projectRoot: "/data", resourcesDir: "/res", bundlePublicKeyFile: keyFile}
-	env := supervisorEnv(l)
+	env := supervisorEnv(l, nativeEndpoint{})
 
 	assertEnvKeyOnce(t, env, "CORDIS_APP_BUNDLE_PUBLIC_KEY", "FILE-KEY\n")
 }
@@ -420,7 +420,7 @@ func TestSupervisorEnvPublicKeyFromEnvironmentWins(t *testing.T) {
 	writeTestFile(t, keyFile, "FILE-KEY\n")
 
 	l := layout{dataDir: "/data", projectRoot: "/data", resourcesDir: "/res", bundlePublicKeyFile: keyFile}
-	env := supervisorEnv(l)
+	env := supervisorEnv(l, nativeEndpoint{})
 
 	assertEnvKeyOnce(t, env, "CORDIS_APP_BUNDLE_PUBLIC_KEY", "ENV-KEY")
 }
@@ -429,7 +429,7 @@ func TestSupervisorEnvMissingKeyWarnsAndDoesNotInject(t *testing.T) {
 	t.Setenv("CORDIS_APP_BUNDLE_PUBLIC_KEY", "")
 	l := layout{dataDir: "/data", projectRoot: "/data", resourcesDir: "/res", bundlePublicKeyFile: "/nope/key.pem"}
 
-	env, output := captureStderr(t, func() []string { return supervisorEnv(l) })
+	env, output := captureStderr(t, func() []string { return supervisorEnv(l, nativeEndpoint{}) })
 
 	if _, ok := envValue(env, "CORDIS_APP_BUNDLE_PUBLIC_KEY"); ok {
 		t.Fatal("公钥文件不存在时不该注入")
