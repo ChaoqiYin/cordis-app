@@ -34,8 +34,6 @@ export interface NativeClientOptions {
   token: string
   /** 非交互命令的 RPC 超时（毫秒）；缺省 5 秒。 */
   timeoutMs?: number
-  /** 注入 fetch，供测试或特殊宿主替换；缺省用全局 fetch。 */
-  fetch?: typeof fetch
 }
 
 /** 路径选择是交互命令：用户可能盯着对话框很久，不能按 RPC 超时打断。 */
@@ -47,7 +45,6 @@ export class NativeClient {
   private readonly base: string
   private readonly token: string
   private readonly timeoutMs: number
-  private readonly fetchImpl: typeof fetch
   private info: NativeInfo | undefined
 
   constructor(options: NativeClientOptions) {
@@ -55,7 +52,6 @@ export class NativeClient {
     this.base = options.url.endsWith('/') ? options.url : `${options.url}/`
     this.token = options.token
     this.timeoutMs = options.timeoutMs ?? NATIVE_DEFAULT_TIMEOUT_MS
-    this.fetchImpl = options.fetch ?? globalThis.fetch
   }
 
   /** 只有 `/info` 通过契约校验后才为 true。 */
@@ -135,7 +131,7 @@ export class NativeClient {
     const controller = new AbortController()
     const timer = timeoutMs === undefined ? undefined : setTimeout(() => controller.abort(), timeoutMs)
     try {
-      return await this.fetchImpl(new URL(path, this.base), {
+      return await globalThis.fetch(new URL(path, this.base), {
         ...init,
         headers: {
           // 鉴权头永远由 client 写；调用方不能覆盖。

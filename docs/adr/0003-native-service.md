@@ -81,8 +81,8 @@ HTTP 200 + 统一 envelope：
 
 - 错误码固定为 `cancelled`、`unsupported`、`denied`、`busy`、`invalid`、`timeout`、
   `internal`。HTTP 4xx/5xx 只表示 transport 或鉴权失败，业务结果一律在 envelope 里。
-- `nativeContractVersion` 当前为 **1**。worker 启动时校验；不匹配时
-  `ctx.native.available = false` 并告警，不阻止应用启动。
+- `NATIVE_CONTRACT_VERSION` 当前为 **1**；外壳通过 `/info.contractVersion` 报告。
+  worker 启动时校验；不匹配时 `ctx.native.available = false` 并告警，不阻止应用启动。
 - 同一时刻只允许一个 `path.choose*`，第二个返回 `busy`；窗口命令串行执行。
 - 交互类命令（`path.choose*`）不设 RPC 超时；其余默认 5 秒。
 
@@ -122,6 +122,8 @@ HTTP 200 + 统一 envelope：
 - 权限字符串与命令一一对应：`native:path.chooseOpen`、`native:window.state`。
 - `native:window.*` 这类通配只作书写便利，运行时展开成具体命令；审计日志记录的
   永远是展开后的命令名。
+- 裸 `native:*` 展开为除敏感原语外的全部命令；敏感原语仍需单独声明，不会因
+  通配而获得授权。
 - 项目 server 与 body 同等可信，默认拥有全部命令。
 - 插件按 `plugin.json.capabilities` 限制；worker 在插件 fork 出的 ctx 上挂受限视图，
   调用时再校验一次。`denied` 不终结插件，只让这次调用失败。
@@ -190,12 +192,12 @@ HTTP 200 + 统一 envelope：
 - Go 侧要维护三个平台的实现矩阵；窗口状态与窗口操作需要按平台写原生代码；Linux
   的对话框与通知依赖桌面环境工具，能力不齐。
 - 同进程不是安全沙箱，第三方插件仍可绕过 `ctx.native`。
-- 命令表是公开契约，新增或修改需要走 ADR 或提升 `nativeContractVersion`。
+- 命令表是公开契约，新增或修改需要走 ADR 或提升 `NATIVE_CONTRACT_VERSION`。
 - v1 没有事件通道，主题变化、窗口状态变化只能轮询。
 
 ## 实施顺序
 
-1. `protocol` 定义命令表、输入输出、错误码与 `nativeContractVersion`；扩展
+1. `protocol` 定义命令表、输入输出、错误码与 `NATIVE_CONTRACT_VERSION`；扩展
    `PluginCapability` 的 `native:` 前缀。
 2. 外壳新增 native server 与最小三条命令（`path.chooseOpen`、`window.setTitle`、
    `system.info`），建立 env 注入与回环鉴权。

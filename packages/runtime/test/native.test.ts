@@ -13,6 +13,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { startWorker, readWorkerOptions } from '../lib/worker/worker.js'
+import * as runtime from '../lib/index.js'
 import { findFreePort, generateToken } from '../lib/supervisor/supervisor.js'
 import {
   ENV_NATIVE_TOKEN,
@@ -393,6 +394,12 @@ test('path.choose* 不设 RPC 超时，用户慢慢选择不会被中断', async
 
 test('没有原生环境变量时 ctx.native 降级为不可用', async () => {
   const fixture = createFixture()
+  const logs: string[] = []
+  const originalWrite = process.stderr.write
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    logs.push(String(chunk))
+    return true
+  }) as typeof process.stderr.write
   const worker = await startNativeWorker(fixture)
   try {
     const info = await (
@@ -408,7 +415,14 @@ test('没有原生环境变量时 ctx.native 降级为不可用', async () => {
       code: 'unsupported',
       message: '当前没有可用的原生外壳',
     })
+    assert.ok(
+      logs.some((line) =>
+        /WARN\s+.*native caller=project command=system\.info code=unsupported durationMs=\d+/.test(line),
+      ),
+      `降级时的 unsupported 必须以 warn 级别写审计，实际日志：${logs.join('')}`,
+    )
   } finally {
+    process.stderr.write = originalWrite
     await worker.handle.close()
   }
 })
@@ -480,15 +494,15 @@ test('每次原生调用写审计日志：调用方、命令、结果码与耗�
 
     assert.ok(
       logs.some((line) =>
-        /native caller=project command=window\.setSize code=ok durationMs=\d+/.test(line),
+        /INFO\s+.*native caller=project command=window\.setSize code=ok durationMs=\d+/.test(line),
       ),
-      `审计日志必须记录项目、命令、结果码与耗时，实际日志：${logs.join('')}`,
+      `成功的审计日志必须记 info 级别并包含项目、命令、结果码与耗时，实际日志：${logs.join('')}`,
     )
     assert.ok(
       logs.some((line) =>
-        /native caller=project command=path\.chooseSave code=cancelled durationMs=\d+/.test(line),
+        /WARN\s+.*native caller=project command=path\.chooseSave code=cancelled durationMs=\d+/.test(line),
       ),
-      '失败结果同样要写审计',
+      `失败结果的审计日志必须记 warn 级别，实际日志：${logs.join('')}`,
     )
   } finally {
     process.stderr.write = originalWrite
@@ -605,15 +619,15 @@ test('插件只能调用声明的原生命令：允许的转发，未声明返�
 
     assert.ok(
       logs.some((line) =>
-        /native caller=limited command=system\.info code=ok durationMs=\d+/.test(line),
+        /INFO\s+.*native caller=limited command=system\.info code=ok durationMs=\d+/.test(line),
       ),
-      `审计日志必须记录插件 id 与命令，实际日志：${logs.join('')}`,
+      `成功调用必须记 info 级别并包含插件 id 与命令，实际日志：${logs.join('')}`,
     )
     assert.ok(
       logs.some((line) =>
-        /native caller=limited command=window\.setTitle code=denied durationMs=\d+/.test(line),
+        /WARN\s+.*native caller=limited command=window\.setTitle code=denied durationMs=\d+/.test(line),
       ),
-      '被拒绝的调用同样要写审计',
+      '被拒绝的调用必须以 warn 级别写审计',
     )
   } finally {
     process.stderr.write = originalWrite
@@ -782,4 +796,19 @@ test('插件配置变更重启后，受限的 ctx.native 不会退回全量', as
     await worker.handle.close()
     await fake.close()
   }
+})
+
+test('runtime 公共面只暴露服务与类型，不泄漏内部原生 client', () => {
+  for (const name of [
+    'NativeClient',
+    'connectNativeClient',
+    'NATIVE_CONNECT_TIMEOUT_MS',
+    'NATIVE_DEFAULT_TIMEOUT_MS',
+    'createNativeService',
+    'createNativeServices',
+  ]) {
+    assert.equal(name in runtime, false, `runtime 不应公开内部原生实现 ${name}`)
+  }
+  assert.equal(typeof runtime.startWorker, 'function', '嵌入方仍应能从 runtime 启动 worker')
+  assert.equal(typeof runtime.startApp, 'function', '嵌入方仍应能从 runtime 启动应用')
 })
