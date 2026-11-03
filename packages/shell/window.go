@@ -33,12 +33,16 @@ func activateWindow() {
 // runWindow 开窗并进入事件循环，直到窗口关闭或 supervisor 退出。
 //
 // 外壳不做任何导航拦截或注入：页面就是普通的网页，它唯一知道的东西是 URL。
-func runWindow(url string, sh *supervisor, debug bool, title string) {
+func runWindow(url string, sh *supervisor, debug bool, title string, nativeWindow *windowController) {
 	w := webview.New(debug)
 	if w == nil {
 		fmt.Fprintln(os.Stderr, "无法创建窗口")
 		return
 	}
+	// 控制器先挂上再开跑：worker 可能在窗口显示前就调用 window.*。
+	// detach 必须早于 Destroy，避免命令投递到已销毁的原生窗口。
+	nativeWindow.attach(w)
+	defer nativeWindow.detach()
 	defer w.Destroy()
 
 	w.SetTitle(title)

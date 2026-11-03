@@ -55,6 +55,8 @@ func registerLinux(reg *Registry, opts Options) {
 		})
 	}
 
+	registerWindow(reg, opts)
+
 	if notify := firstExisting(opts, splitCandidates(linuxNotifyCandidates)...); notify != "" {
 		reg.Register(CommandNotificationShow, func(ctx context.Context, input json.RawMessage) (any, error) {
 			return linuxNotification(ctx, opts, notify, input)

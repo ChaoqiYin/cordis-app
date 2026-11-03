@@ -65,9 +65,10 @@ func main() {
 
 	// 原生服务必须先监听成功再启动 supervisor：worker 一启动就会读取注入的
 	// 端点。平台命令在注册表里按当前环境的真实能力填充，缺失的外部工具不会
-	// 出现在 /info.commands。
+	// 出现在 /info.commands。窗口命令由 windowController 在开窗后接到 UI 线程。
+	window := newWindowController()
 	registry := native.NewRegistry()
-	native.RegisterAll(registry, native.Options{HasWindow: !degraded})
+	native.RegisterAll(registry, native.Options{HasWindow: !degraded, Window: window})
 	nativeServer, err := native.Start(native.Config{
 		Registry:  registry,
 		HasWindow: !degraded,
@@ -144,7 +145,7 @@ func main() {
 	}
 
 	// 打包形态的 app.json 路径要等 prepareApp 释放完才确定，读标题放在这里。
-	runWindow(addr.url, sh, *debug, appWindowTitle(l.appJson))
+	runWindow(addr.url, sh, *debug, appWindowTitle(l.appJson), window)
 }
 
 // appWindowTitle 读 app.json 的 name 作为窗口标题。

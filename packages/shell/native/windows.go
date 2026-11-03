@@ -34,6 +34,8 @@ func registerWindows(reg *Registry, opts Options) {
 		return windowsChoosePath(ctx, opts, pathSave, input)
 	})
 
+	registerWindow(reg, opts)
+
 	if opts.Exists(windowsPowerShell) {
 		reg.Register(CommandNotificationShow, func(ctx context.Context, input json.RawMessage) (any, error) {
 			return windowsNotification(ctx, opts, input)

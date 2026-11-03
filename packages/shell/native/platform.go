@@ -59,6 +59,9 @@ type Options struct {
 	Arch string
 	// HasWindow 表示外壳是否有窗口；--url 降级模式为 false。
 	HasWindow bool
+	// Window 是窗口命令的原语实现，由外壳注入。HasWindow 为 false 或
+	// Window 为 nil 时，window.* 不注册，调用返回 unsupported。
+	Window Window
 	// Runner 执行外部命令。
 	Runner Runner
 	// Exists 判断绝对路径是否存在；用于探测 zenity/kdialog 等外部工具。
@@ -106,6 +109,7 @@ func RegisterAll(reg *Registry, opts Options) {
 	case "linux":
 		registerLinux(reg, opts)
 	default:
+		registerWindow(reg, opts)
 		registerSystemInfo(reg, opts)
 	}
 }
