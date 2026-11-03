@@ -32,6 +32,7 @@ const (
 	CommandWindowState           = "window.state"
 	CommandNotificationShow      = "notification.show"
 	CommandShellOpenExternal     = "shell.openExternal"
+	CommandShellOpenPath         = "shell.openPath"
 	CommandShellShowItemInFolder = "shell.showItemInFolder"
 	CommandSystemInfo            = "system.info"
 )
@@ -53,6 +54,7 @@ var contractCommands = map[string]struct{}{
 	CommandWindowState:           {},
 	CommandNotificationShow:      {},
 	CommandShellOpenExternal:     {},
+	CommandShellOpenPath:         {},
 	CommandShellShowItemInFolder: {},
 	CommandSystemInfo:            {},
 }

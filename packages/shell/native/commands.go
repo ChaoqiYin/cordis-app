@@ -43,6 +43,10 @@ type shellOpenExternalInput struct {
 	URL string `json:"url"`
 }
 
+type shellOpenPathInput struct {
+	Path string `json:"path"`
+}
+
 type shellShowItemInFolderInput struct {
 	Path string `json:"path"`
 }

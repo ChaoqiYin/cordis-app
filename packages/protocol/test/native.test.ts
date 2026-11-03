@@ -24,13 +24,14 @@ test('原生端点与 token 的环境变量名与 ADR 一致', () => {
   assert.equal(ENV_NATIVE_TOKEN, 'CORDIS_APP_NATIVE_TOKEN')
 })
 
-test('命令表覆盖 ADR 0003 的 15 条命令', () => {
+test('命令表覆盖 ADR 0003 的 16 条命令', () => {
   assert.deepEqual([...NATIVE_COMMANDS].sort(), [
     'notification.show',
     'path.chooseDirectory',
     'path.chooseOpen',
     'path.chooseSave',
     'shell.openExternal',
+    'shell.openPath',
     'shell.showItemInFolder',
     'system.info',
     'window.close',

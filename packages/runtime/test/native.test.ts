@@ -812,3 +812,42 @@ test('runtime 公共面只暴露服务与类型，不泄漏内部原生 client',
   assert.equal(typeof runtime.startWorker, 'function', '嵌入方仍应能从 runtime 启动 worker')
   assert.equal(typeof runtime.startApp, 'function', '嵌入方仍应能从 runtime 启动应用')
 })
+
+test('native:shell.* 不授予敏感 shell 命令，shell.openPath 需单独声明', async () => {
+  const fake = await createFakeNative()
+  const fixture = createFixture([
+    { id: 'sheller', capabilities: ['native:shell.*'] },
+    { id: 'opener', capabilities: ['native:shell.*', 'native:shell.openPath'] },
+  ])
+  const worker = await startNativeWorker(fixture, {
+    native: { url: fake.url, token: fake.token },
+  })
+  try {
+    assert.deepEqual((await getPluginNativeInfo(worker, 'sheller')).commands, [
+      'shell.showItemInFolder',
+    ])
+
+    const denied = (await (await postPluginNative(worker, 'sheller', 'shell.openPath', {
+      path: '/tmp/report.pdf',
+    })).json()) as { code?: string }
+    assert.equal(denied.code, 'denied')
+
+    assert.deepEqual(
+      await (await postPluginNative(worker, 'opener', 'shell.openPath', {
+        path: '/tmp/report.pdf',
+      })).json(),
+      { ok: true, value: {} },
+    )
+
+    assert.deepEqual(
+      fake.requests
+        .filter((request) => request.path === '/invoke')
+        .map((request) => request.body?.command),
+      ['shell.openPath'],
+      '未声明的 shell.openPath 不得到达外壳',
+    )
+  } finally {
+    await worker.handle.close()
+    await fake.close()
+  }
+})

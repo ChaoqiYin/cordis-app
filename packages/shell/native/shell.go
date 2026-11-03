@@ -92,6 +92,34 @@ func openExternalHandler(opts Options, spec commandSpec) Handler {
 	}
 }
 
+// openPathHandler 校验本地路径后交给系统默认应用打开。
+//
+// 只接受存在且为绝对路径的输入：相对路径依赖 worker 的工作目录，语义不稳定。
+func openPathHandler(opts Options, spec commandSpec) Handler {
+	return func(_ context.Context, input json.RawMessage) (any, error) {
+		var in shellOpenPathInput
+		if err := decodeInput(input, &in); err != nil {
+			return nil, err
+		}
+		path := strings.TrimSpace(in.Path)
+		if path == "" {
+			return nil, &Error{Code: CodeInvalid, Message: "path 不能为空"}
+		}
+		if !filepath.IsAbs(path) {
+			return nil, &Error{Code: CodeInvalid, Message: "path 必须是绝对路径"}
+		}
+		if _, statErr := opts.Stat(path); statErr != nil {
+			return nil, &Error{Code: CodeInvalid, Message: "路径不存在: " + path}
+		}
+
+		args := append(append([]string(nil), spec.Args...), path)
+		if err := opts.Runner.Start(spec.Name, args...); err != nil {
+			return nil, &Error{Code: CodeInternal, Message: fmt.Sprintf("无法打开路径: %v", err)}
+		}
+		return struct{}{}, nil
+	}
+}
+
 // showItemInFolderHandler 在文件管理器中定位路径。
 func showItemInFolderHandler(opts Options, opener string, style showItemStyle) Handler {
 	return func(_ context.Context, input json.RawMessage) (any, error) {

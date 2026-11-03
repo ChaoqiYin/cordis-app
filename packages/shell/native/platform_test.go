@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -303,6 +304,7 @@ func TestLinuxRegistersCommandsOnlyWhenToolsExist(t *testing.T) {
 		native.CommandPathChooseSave,
 		native.CommandNotificationShow,
 		native.CommandShellOpenExternal,
+		native.CommandShellOpenPath,
 		native.CommandShellShowItemInFolder,
 		native.CommandSystemInfo,
 	}
@@ -499,6 +501,7 @@ func TestWindowsRegistersCommandsBasedOnTools(t *testing.T) {
 		native.CommandPathChooseSave,
 		native.CommandNotificationShow,
 		native.CommandShellOpenExternal,
+		native.CommandShellOpenPath,
 		native.CommandShellShowItemInFolder,
 		native.CommandSystemInfo,
 	}
@@ -671,10 +674,56 @@ func TestDarwinRegistersPathNotificationShellAndSystemCommands(t *testing.T) {
 		native.CommandPathChooseSave,
 		native.CommandNotificationShow,
 		native.CommandShellOpenExternal,
+		native.CommandShellOpenPath,
 		native.CommandShellShowItemInFolder,
 		native.CommandSystemInfo,
 	}
 	if got := infoCommands(t, srv); !reflect.DeepEqual(got, want) {
 		t.Fatalf("commands = %v，期望 %v", got, want)
+	}
+}
+
+func TestShellOpenPathOpensExistingAbsolutePath(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "report.txt")
+	if err := os.WriteFile(target, []byte("x"), 0o600); err != nil {
+		t.Fatalf("准备文件失败: %v", err)
+	}
+	runner := &fakeRunner{}
+	srv := platformServer(t, native.Options{
+		GOOS:   "darwin",
+		Exists: func(string) bool { return true },
+	}, runner)
+
+	result := invoke(t, srv, native.CommandShellOpenPath, map[string]any{"path": target})
+	if !result.OK {
+		t.Fatalf("shell.openPath 失败: %+v", result)
+	}
+	_, starts := runner.calls()
+	if len(starts) != 1 {
+		t.Fatalf("Start 调用次数 = %d，期望 1", len(starts))
+	}
+	if want := (recordedCall{Name: "/usr/bin/open", Args: []string{target}}); !reflect.DeepEqual(starts[0], want) {
+		t.Fatalf("调用 = %#v，期望 %#v", starts[0], want)
+	}
+}
+
+func TestShellOpenPathRejectsInvalidPaths(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing.txt")
+	for name, input := range map[string]map[string]any{
+		"空路径":  {"path": ""},
+		"相对路径": {"path": "relative/file.txt"},
+		"不存在":  {"path": missing},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := platformServer(t, native.Options{
+				GOOS:   "darwin",
+				Exists: func(string) bool { return true },
+			}, &fakeRunner{})
+			result := invoke(t, srv, native.CommandShellOpenPath, input)
+			if result.OK || result.Code != "invalid" {
+				t.Fatalf("shell.openPath = %+v，期望 invalid", result)
+			}
+		})
 	}
 }

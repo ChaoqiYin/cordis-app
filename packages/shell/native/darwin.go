@@ -42,6 +42,7 @@ func registerDarwin(reg *Registry, opts Options) {
 
 	if open != "" {
 		reg.Register(CommandShellOpenExternal, openExternalHandler(opts, commandSpec{Name: open}))
+		reg.Register(CommandShellOpenPath, openPathHandler(opts, commandSpec{Name: open}))
 		reg.Register(CommandShellShowItemInFolder, showItemInFolderHandler(opts, open, showItemDarwin))
 	}
 
