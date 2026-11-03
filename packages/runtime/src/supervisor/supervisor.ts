@@ -24,6 +24,8 @@ import {
   ENV_DEV,
   ENV_LOCAL_PLUGINS,
   ENV_MODE,
+  ENV_NATIVE_TOKEN,
+  ENV_NATIVE_URL,
   ENV_PORT,
   ENV_PROJECT,
   ENV_RESOURCES,
@@ -166,6 +168,10 @@ export class Supervisor {
           ...(this.options.mode ? { mode: this.options.mode } : {}),
           ...(this.options.dev ? { dev: true } : {}),
           version: this.version,
+          // 外壳把回环原生端点与 token 放进 supervisor 的环境；每次 fork 时
+          // 重新读取，worker 重启后仍然拿得到同一组值。
+          nativeUrl: process.env[ENV_NATIVE_URL],
+          nativeToken: process.env[ENV_NATIVE_TOKEN],
         }),
       })
       this.child = child
@@ -325,22 +331,36 @@ export function buildWorkerEnv(input: {
   dev?: boolean
   /** 框架版本；由 supervisor 注入，worker 据此生成 manifest 与 peer 校验 */
   version: string
+  /** 外壳注入的回环原生端点；缺省取 supervisor 进程的同名环境变量 */
+  nativeUrl?: string
+  /** 外壳注入的原生 token；与端点成对使用 */
+  nativeToken?: string
 }): NodeJS.ProcessEnv {
   const isWindows = process.platform === 'win32'
   const layout = resolveProjectLayout(input.projectRoot)
   // 公钥是外壳/CLI 对 supervisor 进程的显式配置，必须穿过白名单到达 worker。
   // 未设置（或为空）时不能留下空值键：worker 用真值判断它是否可信。
   const bundlePublicKey = process.env[ENV_BUNDLE_PUBLIC_KEY]
+  // 外壳把原生端点与 token 放进 supervisor 的环境；显式入参优先于外层值，
+  // 便于嵌入方在测试或特殊宿主里覆盖。
+  const nativeUrl = input.nativeUrl ?? process.env[ENV_NATIVE_URL]
+  const nativeToken = input.nativeToken ?? process.env[ENV_NATIVE_TOKEN]
   const base: NodeJS.ProcessEnv = isWindows
     ? // Windows 上 PATH 不能只留 bin/：系统 DLL 的查找依赖 System32 等目录。
       { ...process.env }
     : { PATH: '', HOME: input.projectRoot, TMPDIR: layout.tmpDir }
   // Windows 分支继承了整个环境，这里先清掉可能存在的空键，再由下方统一转发。
   if (!bundlePublicKey) delete base[ENV_BUNDLE_PUBLIC_KEY]
+  // 原生端点与 token 先从外层环境取出（显式入参优先），再清掉 base 里的
+  // 同名键后显式写入；避免继承来的值以另一种形式留在 worker 环境里。
+  delete base[ENV_NATIVE_URL]
+  delete base[ENV_NATIVE_TOKEN]
 
   return {
     ...base,
     ...(bundlePublicKey ? { [ENV_BUNDLE_PUBLIC_KEY]: bundlePublicKey } : {}),
+    ...(nativeUrl ? { [ENV_NATIVE_URL]: nativeUrl } : {}),
+    ...(nativeToken ? { [ENV_NATIVE_TOKEN]: nativeToken } : {}),
     [ENV_PORT]: String(input.port),
     [ENV_TOKEN]: input.token,
     [ENV_PROJECT]: input.projectRoot,

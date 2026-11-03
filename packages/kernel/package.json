@@ -18,10 +18,11 @@
   ],
   "scripts": {
     "build": "tsc -b tsconfig.json",
-    "typecheck": "tsc -b tsconfig.json --noEmit",
+    "typecheck": "tsc -b tsconfig.json",
     "test": "tsc -b tsconfig.json && node --test \"test/*.test.ts\""
   },
   "dependencies": {
+    "@cordis-app/protocol": "workspace:*",
     "@cordisjs/core": "3.18.1"
   },
   "devDependencies": {
