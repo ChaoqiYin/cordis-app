@@ -12,7 +12,7 @@ export {
   type SupervisorChild,
 } from './start-app.js'
 export { Supervisor, findFreePort, generateToken, buildWorkerEnv } from './supervisor/supervisor.js'
-export { startWorker, readWorkerOptions, type WorkerHandle, type WorkerOptions } from './worker/worker.js'
+export { startWorker, readWorkerOptions, type WorkerHandle, type WorkerOptions, type WorkerNativeOptions } from './worker/worker.js'
 export {
   PluginInstaller,
   DEFAULT_JOURNAL,

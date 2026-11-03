@@ -187,3 +187,15 @@ func TestIsTempBinary(t *testing.T) {
 		t.Fatal("安装目录下的二进制不该被识别为临时二进制")
 	}
 }
+
+func TestSupervisorEnvInjectsNativeEndpoint(t *testing.T) {
+	// 外层 shell 里残留的同名变量必须被清掉，只留下外壳自己生成的值。
+	t.Setenv("CORDIS_APP_NATIVE_URL", "http://127.0.0.1:1/hijack")
+	t.Setenv("CORDIS_APP_NATIVE_TOKEN", "hijack")
+
+	l := layout{dataDir: "/data", projectRoot: "/data", resourcesDir: "/res"}
+	env := supervisorEnv(l, nativeEndpoint{url: "http://127.0.0.1:4321", token: "secret"})
+
+	assertEnvKeyOnce(t, env, "CORDIS_APP_NATIVE_URL", "http://127.0.0.1:4321")
+	assertEnvKeyOnce(t, env, "CORDIS_APP_NATIVE_TOKEN", "secret")
+}

@@ -10,6 +10,28 @@
  * 由 worker 提供 `ctx`；插件不需要、也不应该从聚合包导入运行时代码。
  * 一旦这里出现运行时值，插件产物就会留下一条 `import 'cordis-app'`，
  * 而框架并不会在插件目录里为它提供可解析的实现。
+ *
+ * 原生能力契约也在这里转出：项目与插件的服务端通过 `ctx.native` 调用它，
+ * 调用方需要 `NativeCommand`、输入输出与 envelope 类型。前端入口
+ * `cordis-app/client` 刻意不转出这些类型——页面不直连外壳。
  */
 
 export type * from '@cordis-app/kernel'
+export type {
+  NativeCommand,
+  NativeEmptyInput,
+  NativeEmptyResult,
+  NativeErrorCode,
+  NativeFailure,
+  NativeInfo,
+  NativeInput,
+  NativeInvokeRequest,
+  NativeInvokeResponse,
+  NativeOutput,
+  NativePathFilter,
+  NativeResult,
+  NativeSystemInfo,
+  NativeTheme,
+  NativeWindowSize,
+  NativeWindowState,
+} from '@cordis-app/protocol'

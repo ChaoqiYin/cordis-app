@@ -502,9 +502,19 @@ supervisor（Node）
 worker（Node）
   │ 内核 + 内置插件：server / auth / router / static / ws / storage
   │ 项目 server 入口 → 应用插件（服务端 + 前端清单）
-  ▼
-浏览器 / 外壳窗口
+  │
+  │ ctx.native ──回环 HTTP + 独立 native token──▶ Go 外壳 native server
+  │                                                 │ 平台原语：路径 / 窗口 /
+  │                                                 │ 通知 / shell / 系统信息
+  ▼                                                 ▼
+浏览器 / 外壳窗口                                  操作系统
 ```
+
+项目页面与插件页面继续只通过 HTTP 调用 worker，不直连外壳；原生命令由 worker 的
+`ctx.native` 经回环 HTTP 转给外壳。外壳在启动 supervisor 前监听随机回环端口并生成
+native token，经 `CORDIS_APP_NATIVE_URL` / `CORDIS_APP_NATIVE_TOKEN` 注入；worker
+读取后立即从 `process.env` 删除，页面拿不到这两个值。浏览器模式、`--url` 模式或
+契约版本不匹配时 `ctx.native.available` 为 false，调用统一返回 `unsupported`。
 
 握手行只出现在 supervisor 的 stdout 上：
 
@@ -512,8 +522,8 @@ worker（Node）
 @@CORDIS_APP@@{"ready":true,"port":51482,"token":"…","version":"1.0.0","failures":[]}
 ```
 
-Go 外壳负责窗口、单实例锁、进程树回收与内嵌 UI 释放。浏览器模式下 `run`/`dev`/
-`start` 直接打印带 token 的访问地址，不依赖外壳。
+Go 外壳负责窗口、单实例锁、进程树回收、内嵌 UI 释放与 native server。浏览器模式下
+`run`/`dev`/`start` 直接打印带 token 的访问地址，不依赖外壳。
 
 ## 仓库结构
 

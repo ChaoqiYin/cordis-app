@@ -11,11 +11,12 @@ import { createHash } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import type { Kernel, MountedPlugin } from '@cordis-app/kernel'
+import type { Kernel, MountedPlugin, NativeService } from '@cordis-app/kernel'
 import {
   UI_CONTRACT_VERSION,
   type ClientManifest,
   type ClientPluginEntry,
+  type PluginCapability,
   type PluginFailure,
   type UiCapabilities,
 } from '@cordis-app/protocol'
@@ -41,6 +42,11 @@ export async function loadPlugins(options: {
   order?: string[]
   /** 开发模式：前端 URL 用时间戳而不是内容 hash。 */
   dev?: boolean
+  /**
+   * 为插件构造受限的 `ctx.native`。缺省时插件沿用根 ctx 的服务（测试或
+   * 嵌入方没有接原生子系统的情况）；worker 始终传入，权限来自 plugin.json。
+   */
+  nativeForPlugin?(pluginId: string, capabilities: readonly PluginCapability[] | undefined): NativeService
   configFor(id: string): unknown
 }): Promise<LoadResult> {
   const failures: PluginFailure[] = [...options.scan.failures]
@@ -56,7 +62,14 @@ export async function loadPlugins(options: {
         if (!entry) throw new Error(`服务端入口不存在: ${plugin.manifest.server}`)
         const mod = await import(pathToFileURL(entry).href)
         const definition = toDefinition(mod, id)
-        const handle = options.kernel.plugin(definition, options.configFor(id))
+        // 受限视图挂在插件自己的隔离作用域上；根 ctx 的全量服务不受影响，
+        // 插件通过 ctx.plugin() fork 出的子作用域继承同一份视图。
+        const native = options.nativeForPlugin?.(id, plugin.manifest.capabilities)
+        const handle = options.kernel.plugin(
+          definition,
+          options.configFor(id),
+          native ? { native } : undefined,
+        )
 
         // 服务端可导出初始状态，随清单一起送达前端，省掉一次「我是谁」的请求
         if (mod.default?.data !== undefined) data.set(id, mod.default.data)

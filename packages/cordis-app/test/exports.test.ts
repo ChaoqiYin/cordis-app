@@ -18,7 +18,24 @@ import { fileURLToPath } from 'node:url'
 import { FRAMEWORK_VERSION, SHARED_MODULE_TABLE } from '@cordis-app/protocol'
 // 类型层面必须可用：插件作者只依赖聚合包就能写服务端与前端入口。
 import type { ClientContext } from 'cordis-app/client'
-import type { KernelContext, RouteHandler } from 'cordis-app/server'
+import type {
+  KernelContext,
+  NativeCommand,
+  NativeErrorCode,
+  NativeInfo,
+  NativeInput,
+  NativeOutput,
+  NativeResult,
+  RouteHandler,
+} from 'cordis-app/server'
+
+/** 原生契约只属于服务端类型面，前端入口不能出现。 */
+// @ts-expect-error cordis-app/client 不应导出原生能力契约
+import type { NativeCommand as ClientNativeCommand } from 'cordis-app/client'
+
+/** 服务端只显式转出原生契约需要的类型，不再照搬整个 protocol 类型面。 */
+// @ts-expect-error cordis-app/server 不应转出 protocol 的无关类型
+import type { AppManifest } from 'cordis-app/server'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const packageRoot = join(here, '..')
@@ -32,8 +49,17 @@ const packageJson = JSON.parse(readFileSync(join(packageRoot, 'package.json'), '
 }
 
 /** 让类型导入参与检查，同时不影响运行时。 */
-type _ServerTypes = [KernelContext, RouteHandler]
-type _ClientTypes = ClientContext
+type _ServerTypes = [
+  KernelContext,
+  RouteHandler,
+  NativeCommand,
+  NativeErrorCode,
+  NativeInfo,
+  NativeInput<NativeCommand>,
+  NativeOutput<NativeCommand>,
+  NativeResult<NativeCommand>,
+]
+type _ClientTypes = [ClientContext, ClientNativeCommand]
 
 test('聚合包的子路径都能从消费者解析到真实文件', () => {
   assert.equal(packageJson.name, 'cordis-app')

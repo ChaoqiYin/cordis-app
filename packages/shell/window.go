@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"sync"
 
 	webview "github.com/webview/webview_go"
 )
@@ -33,13 +34,31 @@ func activateWindow() {
 // runWindow 开窗并进入事件循环，直到窗口关闭或 supervisor 退出。
 //
 // 外壳不做任何导航拦截或注入：页面就是普通的网页，它唯一知道的东西是 URL。
-func runWindow(url string, sh *supervisor, debug bool, title string) {
+func runWindow(url string, sh *supervisor, debug bool, title string, nativeWindow *windowController) {
 	w := webview.New(debug)
 	if w == nil {
 		fmt.Fprintln(os.Stderr, "无法创建窗口")
 		return
 	}
+	// 控制器先挂上再开跑：worker 可能在窗口显示前就调用 window.*。
+	// defer 后进先出：detach 先于 Destroy，避免命令投递到已销毁的原生窗口。
+	nativeWindow.attach(w)
 	defer w.Destroy()
+	defer nativeWindow.detach()
+
+	// 窗口关闭后 w.Run 返回，但后台 goroutine 可能仍在等待 supervisor 或
+	// 激活请求。dispatchWindow 用 closed 标记把投递与 Destroy 串行化：
+	// Run 返回后不再向已销毁的 webview 投递（窗口关闭时的 SIGSEGV 来源）。
+	var dispatchMu sync.Mutex
+	windowClosed := false
+	dispatchWindow := func(fn func()) {
+		dispatchMu.Lock()
+		defer dispatchMu.Unlock()
+		if windowClosed {
+			return
+		}
+		w.Dispatch(fn)
+	}
 
 	w.SetTitle(title)
 	w.SetSize(windowWidth, windowHeight, webview.HintNone)
@@ -49,7 +68,7 @@ func runWindow(url string, sh *supervisor, debug bool, title string) {
 	// 一个永远连不上的页面，却没有任何线索。
 	go func() {
 		sh.waitExit()
-		w.Dispatch(func() {
+		dispatchWindow(func() {
 			w.SetTitle(title + "（服务已停止）")
 			w.Eval(`document.body.innerHTML =
 				'<div style="font:15px/1.7 -apple-system,Segoe UI,sans-serif;padding:48px;color:#666">' +
@@ -60,7 +79,7 @@ func runWindow(url string, sh *supervisor, debug bool, title string) {
 	// 第二次双击图标：把已有窗口提到前台，而不是再起一个实例。
 	go func() {
 		for range activateRequest {
-			w.Dispatch(func() {
+			dispatchWindow(func() {
 				focusWindow(w.Window())
 			})
 		}
@@ -68,4 +87,9 @@ func runWindow(url string, sh *supervisor, debug bool, title string) {
 
 	// 事件循环必须占用主线程；webview 包的 init 已经 LockOSThread。
 	w.Run()
+
+	// Run 返回即窗口生命周期结束：先挡住后续投递，再让 defer 顺序销毁。
+	dispatchMu.Lock()
+	windowClosed = true
+	dispatchMu.Unlock()
 }

@@ -113,11 +113,26 @@ export interface PluginManifest {
   client?: string
   /** UI 出口需求；只做声明，v1 不因此阻断服务端加载 */
   ui?: PluginUiRequirements
-  /** 能力声明，仅用于安装 UI 展示，运行时不拦截 */
+  /**
+   * 能力声明。`native:<命令>` 由 worker 在运行时强制；其它前缀仅用于安装 UI 展示。
+   */
   capabilities?: PluginCapability[]
 }
 
-export type PluginCapability = 'fs:read' | 'fs:write' | 'net' | 'process' | 'storage'
+/**
+ * 插件能力。
+ *
+ * `native:<命令>` 与 ADR 0003 的命令一一对应，例如 `native:window.state`；
+ * `native:window.*` 只是书写便利，运行时会展开成具体命令。其余前缀保留原有
+ * 语义：安装时展示，运行时不拦截。
+ */
+export type PluginCapability =
+  | 'fs:read'
+  | 'fs:write'
+  | 'net'
+  | 'process'
+  | 'storage'
+  | `native:${string}`
 
 /** 前端启动时拉取的插件清单。 */
 export interface ClientManifest {

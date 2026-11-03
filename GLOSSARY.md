@@ -181,6 +181,31 @@ CLI 的 `--data` 是 `--project` 的兼容别名，二者都指项目根。Go �
 打包模式下 supervisor 的「项目根」就是桌面数据目录——运行时事实、`.cordis/`
 与 `data/` 都在那里；项目模式下才是源码项目根。两种同名参数不能混用。
 
+## 原生能力
+
+**原生能力（native）**
+只有桌面外壳能提供的系统原语：路径选择、窗口控制、系统通知等。由外壳实现，经
+回环 HTTP 暴露给 worker；项目和插件只通过 `ctx.native` 调用，页面不直连外壳。
+命令表与权限模型见 ADR 0003。
+
+**`ctx.native`**
+worker 侧原生能力的唯一入口。浏览器模式或没有外壳时 `available` 为 false，调用
+返回 `unsupported`。项目 server 与 body 同等可信，默认拥有全部命令；插件按
+`plugin.json.capabilities` 中的 `native:<命令>` 受限，运行时强制。
+
+**原子命令**
+原生命令的命名形式 `资源.动作`，一个命令对应一个系统原语。不出现 dialog、panel
+等 UI 控件形态，也不提供「导入 CSV」这类场景命令；复合流程由调用方组合。
+
+**原生 token**
+外壳为回环原生服务生成的随机凭据，只经 `CORDIS_APP_NATIVE_URL` /
+`CORDIS_APP_NATIVE_TOKEN` 传给 worker，worker 启动后从 `process.env` 删除。它与
+页面使用的 auth token 分离，页面永远拿不到。
+
+**原生能力契约版本（`NATIVE_CONTRACT_VERSION`）**
+worker 与外壳之间的原生命令契约版本，当前为 `1`。外壳通过 `/info` 的
+`contractVersion` 字段报告；不匹配时 worker 关闭原生能力并告警，不阻止应用启动。
+
 ## Node 版本契约
 
 **Node 版本契约**
@@ -205,7 +230,8 @@ CLI 的 `--data` 是 `--project` 的兼容别名，二者都指项目根。Go �
 ## 进程
 
 **外壳（Go shell）**
-可选的桌面进程：窗口、单实例锁、进程树回收、内嵌 UI 释放。
+可选的桌面进程：窗口、单实例锁、进程树回收、内嵌 UI 释放，以及原生能力服务
+（见「原生能力」）。
 
 **supervisor**
 Node 进程：找空闲端口、生成 token、fork worker、转发日志。worker 以退出码 75
