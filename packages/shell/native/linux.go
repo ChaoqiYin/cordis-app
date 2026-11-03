@@ -65,6 +65,7 @@ func registerLinux(reg *Registry, opts Options) {
 
 	if xdgOpen := firstExisting(opts, splitCandidates(linuxXdgOpenCandidates)...); xdgOpen != "" {
 		reg.Register(CommandShellOpenExternal, openExternalHandler(opts, commandSpec{Name: xdgOpen}))
+		reg.Register(CommandShellOpenPath, openPathHandler(opts, commandSpec{Name: xdgOpen}))
 		reg.Register(CommandShellShowItemInFolder, showItemInFolderHandler(opts, xdgOpen, showItemLinux))
 	}
 

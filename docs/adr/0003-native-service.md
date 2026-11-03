@@ -106,6 +106,7 @@ HTTP 200 + 统一 envelope：
 | `window.state` | `{}` | `{ maximized, minimized, focused, size }` |
 | `notification.show` | `{ title, body }` | `{}` |
 | `shell.openExternal` | `{ url }` | `{}` |
+| `shell.openPath` | `{ path }` | `{}` |
 | `shell.showItemInFolder` | `{ path }` | `{}` |
 | `system.info` | `{}` | `{ platform, arch, release, theme, hasWindow }` |
 
@@ -128,7 +129,7 @@ HTTP 200 + 统一 envelope：
 - 插件按 `plugin.json.capabilities` 限制；worker 在插件 fork 出的 ctx 上挂受限视图，
   调用时再校验一次。`denied` 不终结插件，只让这次调用失败。
 - 打包模式下 `plugin.json` 的内容 hash 与签名覆盖 `capabilities`，篡改会导致安装失败。
-- 敏感原语单独授权：`window.close`、`shell.openExternal`、`path.chooseSave`。
+- 敏感原语单独授权：`window.close`、`shell.openExternal`、`shell.openPath`、`path.chooseSave`。
 - Linux 能力不足时 `commands` 如实返回，不假装支持。
 
 ### 平台实现

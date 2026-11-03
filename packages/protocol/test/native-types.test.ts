@@ -2,7 +2,7 @@
  * 原生能力契约的类型面。
  *
  * 这是编译期测试：`node --test` 只负责执行它，真正的断言由 `tsc` 在
- * `pnpm typecheck` 时检查。它钉住调用方依赖的三件事——命令名恰好 15 条、
+ * `pnpm typecheck` 时检查。它钉住调用方依赖的三件事——命令名恰好 16 条、
  * 输入输出按命令名映射、`PluginCapability` 接受 `native:` 前缀。
  */
 
@@ -37,6 +37,7 @@ type ExpectedCommand =
   | 'window.state'
   | 'notification.show'
   | 'shell.openExternal'
+  | 'shell.openPath'
   | 'shell.showItemInFolder'
   | 'system.info'
 
@@ -49,7 +50,7 @@ type ExpectedErrorCode =
   | 'timeout'
   | 'internal'
 
-// NativeCommand 恰好覆盖 ADR 0003 的 15 条命令，命令映射没有多余键。
+// NativeCommand 恰好覆盖 ADR 0003 的 16 条命令，命令映射没有多余键。
 type _Commands = Assert<Equals<NativeCommand, ExpectedCommand>>
 type _MapKeys = Assert<Equals<keyof NativeCommandMap, NativeCommand>>
 type _ErrorCodes = Assert<Equals<NativeErrorCode, ExpectedErrorCode>>
@@ -60,6 +61,8 @@ const chooseSaveInput: NativeInput<'path.chooseSave'> = {
   defaultName: 'export.csv',
 }
 const chooseSaveOutput: NativeOutput<'path.chooseSave'> = { path: '/tmp/export.csv' }
+const openPathInput: NativeInput<'shell.openPath'> = { path: '/tmp/report.pdf' }
+const openPathOutput: NativeOutput<'shell.openPath'> = {}
 const windowState: NativeOutput<'window.state'> = {
   maximized: false,
   minimized: false,

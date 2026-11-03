@@ -37,6 +37,7 @@ export const NATIVE_COMMANDS = [
   'window.state',
   'notification.show',
   'shell.openExternal',
+  'shell.openPath',
   'shell.showItemInFolder',
   'system.info',
 ] as const
@@ -138,6 +139,11 @@ export interface NativeShellOpenExternalInput {
   url: string
 }
 
+/** 用系统默认应用打开本地路径；path 必须是绝对路径且存在。 */
+export interface NativeShellOpenPathInput {
+  path: string
+}
+
 export interface NativeShellShowItemInFolderInput {
   path: string
 }
@@ -210,6 +216,10 @@ export interface NativeCommandMap {
   }
   'shell.openExternal': {
     input: NativeShellOpenExternalInput
+    output: NativeEmptyResult
+  }
+  'shell.openPath': {
+    input: NativeShellOpenPathInput
     output: NativeEmptyResult
   }
   'shell.showItemInFolder': {

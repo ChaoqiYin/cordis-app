@@ -5,7 +5,7 @@
  *   - 具体命令按名字授权；
  *   - `native:window.*` 这类尾部通配在运行时展开成具体命令，审计日志里
  *     永远记录展开后的命令名；
- *   - 敏感原语（`window.close`、`shell.openExternal`、`path.chooseSave`）
+ *   - 敏感原语（`window.close`、`shell.openExternal`、`shell.openPath`、`path.chooseSave`）
  *     必须单独列出，通配不会顺带授予它们。
  *
  * 未知的 `native:` 值与其它前缀一律忽略：它们无法匹配到命令表，也就不会
@@ -18,6 +18,7 @@ import { NATIVE_COMMANDS, type NativeCommand, type PluginCapability } from '@cor
 export const NATIVE_SENSITIVE_COMMANDS: ReadonlySet<NativeCommand> = new Set([
   'window.close',
   'shell.openExternal',
+  'shell.openPath',
   'path.chooseSave',
 ])
 

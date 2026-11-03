@@ -50,6 +50,7 @@ func registerWindows(reg *Registry, opts Options) {
 	}
 
 	if opts.Exists(windowsExplorer) {
+		reg.Register(CommandShellOpenPath, openPathHandler(opts, commandSpec{Name: windowsExplorer}))
 		reg.Register(CommandShellShowItemInFolder, showItemInFolderHandler(opts, windowsExplorer, showItemWindows))
 	}
 
