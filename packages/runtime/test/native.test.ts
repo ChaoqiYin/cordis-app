@@ -30,6 +30,72 @@ interface Fixture {
   resourcesDir: string
 }
 
+/** 原生权限用例的插件：在项目本地插件根写一个只暴露 ctx.native 的服务端入口。 */
+interface PluginFixture {
+  id: string
+  capabilities?: string[]
+}
+
+/** 插件把受限的 ctx.native 暴露成自己的 HTTP 路由，测试从插件自己的路由观察。 */
+function pluginServer(id: string): string {
+  return `const readJson = async (req) => {
+  const chunks = []
+  for await (const chunk of req) chunks.push(chunk)
+  return chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {}
+}
+
+const respond = (res, value) => {
+  res.writeHead(200, { 'content-type': 'application/json' })
+  res.end(JSON.stringify(value))
+}
+
+export const name = ${JSON.stringify(id)}
+export const inject = ['router', 'native']
+
+let applied = 0
+
+export function apply(ctx) {
+  applied += 1
+  ctx.router.get('/api/${id}/native/info', (_req, res) => {
+    respond(res, { available: ctx.native.available, commands: ctx.native.commands() })
+  })
+  ctx.router.post('/api/${id}/native/invoke', async (req, res) => {
+    const body = await readJson(req)
+    respond(res, await ctx.native.invoke(body.command, body.input))
+  })
+  ctx.router.get('/api/${id}/alive', (_req, res) => {
+    respond(res, { alive: true })
+  })
+  ctx.router.get('/api/${id}/applied', (_req, res) => {
+    respond(res, { applied })
+  })
+}
+`
+}
+
+function writePluginFixture(projectRoot: string, plugin: PluginFixture): void {
+  const pluginDir = join(projectRoot, 'plugins', plugin.id)
+  mkdirSync(pluginDir, { recursive: true })
+  writeFileSync(
+    join(pluginDir, 'package.json'),
+    JSON.stringify({
+      name: plugin.id,
+      version: '1.0.0',
+      type: 'module',
+      peerDependencies: { 'cordis-app': '^1.0.0' },
+    }),
+  )
+  writeFileSync(
+    join(pluginDir, 'plugin.json'),
+    JSON.stringify({
+      id: plugin.id,
+      server: './index.js',
+      ...(plugin.capabilities ? { capabilities: plugin.capabilities } : {}),
+    }),
+  )
+  writeFileSync(join(pluginDir, 'index.js'), pluginServer(plugin.id))
+}
+
 /** 项目 server 把 ctx.native 暴露成 HTTP 路由，测试从项目自己的路由观察。 */
 const NATIVE_SERVER = `const readJson = async (req) => {
   const chunks = []
@@ -53,7 +119,7 @@ export default function apply(ctx) {
 }
 `
 
-function createFixture(): Fixture {
+function createFixture(plugins: PluginFixture[] = []): Fixture {
   const projectRoot = mkdtempSync(join(tmpdir(), 'cordis-native-'))
   const resourcesDir = join(projectRoot, 'resources')
   mkdirSync(join(resourcesDir, 'ui'), { recursive: true })
@@ -66,6 +132,7 @@ function createFixture(): Fixture {
   writeFileSync(join(projectRoot, 'app.json'), JSON.stringify({ name: 'native-test', version: '1.0.0', plugins: [] }))
   mkdirSync(join(projectRoot, 'server'), { recursive: true })
   writeFileSync(join(projectRoot, 'server', 'index.js'), NATIVE_SERVER)
+  for (const plugin of plugins) writePluginFixture(projectRoot, plugin)
   return { projectRoot, resourcesDir }
 }
 
@@ -452,6 +519,264 @@ test('有外壳时项目 server 的 ctx.native 可用并拥有全量命令', asy
       fake.requests[0]?.authorization,
       `Bearer ${fake.token}`,
       'client 必须用原生 token 鉴权，而不是页面 token',
+    )
+  } finally {
+    await worker.handle.close()
+    await fake.close()
+  }
+})
+
+/** 通过插件自己的路由调用它看到的 ctx.native。 */
+function postPluginNative(
+  worker: { base: string; token: string },
+  id: string,
+  command: NativeCommand,
+  input: unknown,
+): Promise<Response> {
+  return fetch(`${worker.base}/api/${id}/native/invoke`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${worker.token}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ command, input }),
+  })
+}
+
+async function getPluginNativeInfo(
+  worker: { base: string; token: string },
+  id: string,
+): Promise<{ available: boolean; commands: NativeCommand[] }> {
+  const response = await fetch(`${worker.base}/api/${id}/native/info`, {
+    headers: { authorization: `Bearer ${worker.token}` },
+  })
+  assert.equal(response.status, 200)
+  return (await response.json()) as { available: boolean; commands: NativeCommand[] }
+}
+
+test('插件只能调用声明的原生命令：允许的转发，未声明返回 denied 且不请求外壳', async () => {
+  const fake = await createFakeNative()
+  const fixture = createFixture([{ id: 'limited', capabilities: ['native:system.info'] }])
+  const logs: string[] = []
+  const originalWrite = process.stderr.write
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    logs.push(String(chunk))
+    return true
+  }) as typeof process.stderr.write
+
+  let worker: Awaited<ReturnType<typeof startNativeWorker>> | undefined
+  try {
+    worker = await startNativeWorker(fixture, {
+      native: { url: fake.url, token: fake.token },
+    })
+
+    // 插件看到的 commands() 只包含自己声明的命令。
+    assert.deepEqual(await getPluginNativeInfo(worker, 'limited'), {
+      available: true,
+      commands: ['system.info'],
+    })
+
+    const allowed = await postPluginNative(worker, 'limited', 'system.info', {})
+    assert.deepEqual(await allowed.json(), { ok: true, value: {} })
+    assert.deepEqual(
+      fake.requests.filter((request) => request.path === '/invoke').map((request) => request.body?.command),
+      ['system.info'],
+      '声明的命令必须真的转发到外壳',
+    )
+
+    // 未声明的命令在到达外壳之前就被拒绝。
+    const before = fake.requests.filter((request) => request.path === '/invoke').length
+    const denied = await postPluginNative(worker, 'limited', 'window.setTitle', { title: '标题' })
+    const deniedBody = (await denied.json()) as { ok: boolean; code?: string; message?: string }
+    assert.equal(deniedBody.ok, false)
+    assert.equal(deniedBody.code, 'denied')
+    assert.match(deniedBody.message ?? '', /window\.setTitle/)
+    assert.equal(
+      fake.requests.filter((request) => request.path === '/invoke').length,
+      before,
+      'denied 的调用不能到达 native server',
+    )
+
+    // denied 不终结插件：之后它仍然能提供其他功能。
+    const alive = await fetch(`${worker.base}/api/limited/alive`, {
+      headers: { authorization: `Bearer ${worker.token}` },
+    })
+    assert.deepEqual(await alive.json(), { alive: true })
+
+    assert.ok(
+      logs.some((line) =>
+        /native caller=limited command=system\.info code=ok durationMs=\d+/.test(line),
+      ),
+      `审计日志必须记录插件 id 与命令，实际日志：${logs.join('')}`,
+    )
+    assert.ok(
+      logs.some((line) =>
+        /native caller=limited command=window\.setTitle code=denied durationMs=\d+/.test(line),
+      ),
+      '被拒绝的调用同样要写审计',
+    )
+  } finally {
+    process.stderr.write = originalWrite
+    await worker?.handle.close()
+    await fake.close()
+  }
+})
+
+test('native:window.* 展开为具体命令；敏感原语仍需单独声明', async () => {
+  const fake = await createFakeNative()
+  const fixture = createFixture([
+    { id: 'windower', capabilities: ['native:window.*'] },
+    { id: 'closer', capabilities: ['native:window.*', 'native:window.close'] },
+  ])
+  const worker = await startNativeWorker(fixture, {
+    native: { url: fake.url, token: fake.token },
+  })
+  try {
+    const expected = NATIVE_COMMANDS.filter(
+      (command) => command.startsWith('window.') && command !== 'window.close',
+    )
+    assert.deepEqual((await getPluginNativeInfo(worker, 'windower')).commands, expected)
+
+    // 通配覆盖的资源内命令可用。
+    assert.deepEqual(await (await postPluginNative(worker, 'windower', 'window.setSize', {
+      width: 800,
+      height: 600,
+    })).json(), { ok: true, value: {} })
+    assert.deepEqual(await (await postPluginNative(worker, 'windower', 'window.state', {})).json(), {
+      ok: true,
+      value: {},
+    })
+
+    // 通配不越过资源边界，也不顺带授予敏感原语。
+    const outside = (await (await postPluginNative(worker, 'windower', 'path.chooseOpen', {})).json()) as {
+      code?: string
+    }
+    assert.equal(outside.code, 'denied')
+    const sensitive = (await (await postPluginNative(worker, 'windower', 'window.close', {})).json()) as {
+      code?: string
+    }
+    assert.equal(sensitive.code, 'denied')
+
+    // 单独声明后，敏感原语可以调用。
+    assert.deepEqual(await (await postPluginNative(worker, 'closer', 'window.close', {})).json(), {
+      ok: true,
+      value: {},
+    })
+
+    assert.deepEqual(
+      fake.requests
+        .filter((request) => request.path === '/invoke')
+        .map((request) => request.body?.command),
+      ['window.setSize', 'window.state', 'window.close'],
+      '只有被允许的命令能到达外壳',
+    )
+  } finally {
+    await worker.handle.close()
+    await fake.close()
+  }
+})
+
+test('同一 worker 中项目 server 保持全量，插件按各自声明受限', async () => {
+  const fake = await createFakeNative()
+  const fixture = createFixture([
+    { id: 'limited', capabilities: ['native:system.info'] },
+    { id: 'bare' },
+  ])
+  const worker = await startNativeWorker(fixture, {
+    native: { url: fake.url, token: fake.token },
+  })
+  try {
+    // 项目 server：根 ctx 不受插件声明影响。
+    assert.deepEqual(await (await postNative(worker, 'window.setTitle', { title: '项目' })).json(), {
+      ok: true,
+      value: {},
+    })
+    assert.deepEqual(await (await postNative(worker, 'path.chooseOpen', { multiple: true })).json(), {
+      ok: true,
+      value: {},
+    })
+
+    // 插件：只允许自己声明的命令。
+    assert.deepEqual(await (await postPluginNative(worker, 'limited', 'system.info', {})).json(), {
+      ok: true,
+      value: {},
+    })
+    const pluginDenied = (await (await postPluginNative(worker, 'limited', 'window.setTitle', {
+      title: '插件',
+    })).json()) as { code?: string }
+    assert.equal(pluginDenied.code, 'denied')
+
+    // 完全没有 capabilities 的插件没有任何原生命令。
+    const bareDenied = (await (await postPluginNative(worker, 'bare', 'system.info', {})).json()) as {
+      code?: string
+    }
+    assert.equal(bareDenied.code, 'denied')
+    assert.deepEqual((await getPluginNativeInfo(worker, 'bare')).commands, [])
+
+    assert.deepEqual(
+      fake.requests
+        .filter((request) => request.path === '/invoke')
+        .map((request) => request.body?.command),
+      ['window.setTitle', 'path.chooseOpen', 'system.info'],
+      '项目与插件被拒绝的调用都不能到达外壳',
+    )
+  } finally {
+    await worker.handle.close()
+    await fake.close()
+  }
+})
+
+test('插件配置变更重启后，受限的 ctx.native 不会退回全量', async () => {
+  const fake = await createFakeNative()
+  const fixture = createFixture([{ id: 'limited', capabilities: ['native:system.info'] }])
+  const worker = await startNativeWorker(fixture, {
+    native: { url: fake.url, token: fake.token },
+  })
+  try {
+    const before = (await (await postPluginNative(worker, 'limited', 'window.setTitle', {
+      title: '重启前',
+    })).json()) as { code?: string }
+    assert.equal(before.code, 'denied')
+
+    const changed = await fetch(`${worker.base}/api/config/limited`, {
+      method: 'PUT',
+      headers: {
+        authorization: `Bearer ${worker.token}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ value: { changed: true } }),
+    })
+    assert.equal(changed.status, 200)
+
+    // 等插件重新 apply；配置变更走 dispose → apply，不重启 worker。
+    let applied = 0
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const response = await fetch(`${worker.base}/api/limited/applied`, {
+        headers: { authorization: `Bearer ${worker.token}` },
+      })
+      if (response.ok) {
+        applied = ((await response.json()) as { applied: number }).applied
+        if (applied >= 2) break
+      }
+      await delay(10)
+    }
+    assert.ok(applied >= 2, `插件应已重启，实际 apply 次数：${applied}`)
+
+    assert.deepEqual((await getPluginNativeInfo(worker, 'limited')).commands, ['system.info'])
+    const after = (await (await postPluginNative(worker, 'limited', 'window.setTitle', {
+      title: '重启后',
+    })).json()) as { code?: string }
+    assert.equal(after.code, 'denied', '重启后必须仍然是受限视图')
+
+    assert.deepEqual(await (await postPluginNative(worker, 'limited', 'system.info', {})).json(), {
+      ok: true,
+      value: {},
+    })
+    assert.deepEqual(
+      fake.requests
+        .filter((request) => request.path === '/invoke')
+        .map((request) => request.body?.command),
+      ['system.info'],
     )
   } finally {
     await worker.handle.close()
