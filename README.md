@@ -496,6 +496,21 @@ hash、Ed25519 签名与 peer 范围；安装时先比 hash、再验签名，任
 worker 的鉴权仍走 supervisor 生成的会话 token，外壳从握手行取到后拼进入口
 地址，用户不需要手动输入 URL。不传 `--shell` 时行为不变。
 
+### 开发时的项目 Vite 配置
+
+`dev` 的 Vite root 是框架壳，但框架会读取项目根下的
+`vite.config.{ts,mts,cts,js,mjs,cjs}` 并与自己的配置合并：插件、`define`、CSS、
+额外 alias 都会生效。`root`、`base`、worker 代理与共享模块约束由框架保留，
+项目配置不能覆盖它们。需要程序化扩展时，`createProjectDevServer` 的
+`viteConfig` 选项会拿到合并后的配置，返回值作为最终配置。
+
+配置文件里 `import { defineConfig } from 'vite'` 需要项目自己安装 `vite`
+（与普通 Vite 项目一致）；只导出普通对象则不需要额外依赖。
+
+开发模式下 `react`、`react-dom`、`cordis-app/client` 等共享模块也只有一份：
+Vite 预构建第三方依赖时会把它们留成外部导入，统一交给 `/__shared/*.js`。
+请不要在项目配置里 alias `react` / `react-dom`，否则会绕过这个保证。
+
 ## 架构
 
 ```
