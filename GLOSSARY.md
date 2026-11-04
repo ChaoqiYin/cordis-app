@@ -74,6 +74,8 @@ worker。它决定安装来源与插件根的扫描范围，是进程配置，HT
 由框架提供给所有插件与宿主、必须只有一份实例的模块：`react`、`react-dom`、
 `react-dom/client`、`react/jsx-runtime`、`cordis-app/client`。插件构建时保持
 external。
+开发模式下 Vite 预构建第三方依赖时同样把它们排除，统一由 `/__shared/*.js`
+提供；项目 `vite.config` 不应 alias 这些说明符。
 
 **宿主出口**
 body 暴露给插件的 UI 扩展点：pages（`PluginPageOutlet`）、slots

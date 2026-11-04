@@ -13,6 +13,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   symlinkSync,
@@ -225,6 +226,68 @@ test('build 产出发布布局，body 与 server 都来自项目源码', async (
   const server = readFileSync(result.serverEntry, 'utf8')
   assert.match(server, /apply/, '项目 server 入口应被打包成可 import 的 ESM')
   assert.doesNotMatch(server, /interface|: number/, 'TypeScript 类型应被剥离')
+})
+
+test('server 目录的多入口各自产出到 dist/server/<name>.js', async () => {
+  const root = createProject()
+  writeFileSync(
+    join(root, 'server', 'scan-worker.ts'),
+    "export default function scan() { return 'SCAN_WORKER' }\n",
+  )
+  // 识别规则：只认脚本扩展名，不递归子目录，忽略 .d.ts。
+  mkdirSync(join(root, 'server', 'nested'), { recursive: true })
+  writeFileSync(join(root, 'server', 'nested', 'deep.ts'), 'export default 1\n')
+  writeFileSync(join(root, 'server', 'scan-worker.d.ts'), 'export declare const x: number\n')
+  writeFileSync(join(root, 'server', 'notes.txt'), 'not an entry\n')
+
+  const result = await buildProject({ projectRoot: root })
+  const workerEntry = join(result.outDir, 'server', 'scan-worker.js')
+
+  assert.ok(existsSync(result.serverEntry), '主入口仍是 dist/server/index.js')
+  assert.ok(existsSync(workerEntry), '第二个入口应产出 dist/server/scan-worker.js')
+  assert.equal(existsSync(join(result.outDir, 'server', 'deep.js')), false, '不递归子目录')
+  assert.equal(
+    existsSync(join(result.outDir, 'server', 'scan-worker.d.js')),
+    false,
+    '.d.ts 不是入口',
+  )
+  assert.equal(existsSync(join(result.outDir, 'server', 'notes.js')), false, '只认脚本扩展名')
+
+  const worker = await import(pathToFileURL(workerEntry).href)
+  assert.equal(worker.default(), 'SCAN_WORKER', '第二个入口应作为独立模块可加载')
+})
+
+test('单入口项目的 server 产物保持不变', async () => {
+  const root = createProject()
+  const result = await buildProject({ projectRoot: root })
+
+  assert.deepEqual(
+    readdirSync(join(result.outDir, 'server')).sort(),
+    ['index.js', 'index.js.map'],
+    '只有 index 时不额外产出其他入口',
+  )
+  const server = await import(pathToFileURL(result.serverEntry).href)
+  assert.equal(server.default(), 42, '主入口的原有行为不变')
+})
+
+test('dev watcher 把 server 多入口产出到开发目录，路径与 build 一致', async () => {
+  const root = createProject()
+  writeFileSync(
+    join(root, 'server', 'scan-worker.ts'),
+    "export default function scan() { return 'DEV_SCAN' }\n",
+  )
+
+  const watcher = await createProjectWatcher({ projectRoot: root })
+  try {
+    const workerEntry = join(watcher.devRoot, 'server', 'scan-worker.js')
+    assert.ok(existsSync(watcher.serverEntry), '主入口仍产出 server/index.js')
+    assert.ok(existsSync(workerEntry), '开发目录应产出 server/scan-worker.js')
+
+    const worker = await import(pathToFileURL(workerEntry).href)
+    assert.equal(worker.default(), 'DEV_SCAN')
+  } finally {
+    await watcher.close()
+  }
 })
 
 test('构建把项目 server 与本地插件的第三方依赖打进产物，dist 不含 node_modules', async () => {
@@ -597,6 +660,137 @@ test('dev server 没有 worker token 时地址不带 token fragment', async () =
   })
   try {
     assert.equal(dev.url, `http://127.0.0.1:${dev.port}/`)
+  } finally {
+    await dev.close()
+  }
+})
+
+test('dev 预构建的依赖复用 /__shared 的 React，不再打第二份', async () => {
+  // 回归：Radix / react-i18next 的 hooks 依赖同一个 React 实例。Vite 预构建
+  // 若把依赖里的 `import 'react'` 就地打包，useContext 读到的 dispatcher 来自
+  // 另一份副本，页面直接报 Cannot read properties of null。
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'cordis-dev-shared-')))
+  const depDir = join(root, 'node_modules', 'hook-dep')
+  mkdirSync(join(root, 'src'), { recursive: true })
+  mkdirSync(depDir, { recursive: true })
+  writeFileSync(
+    join(depDir, 'package.json'),
+    JSON.stringify({ name: 'hook-dep', version: '1.0.0', type: 'module', main: 'index.js' }),
+  )
+  writeFileSync(
+    join(depDir, 'index.js'),
+    [
+      "import React from 'react'",
+      "import { createRoot } from 'react-dom/client'",
+      'export function useDep() { return React.useContext(React.createContext(null)) }',
+      'export { createRoot }',
+      '',
+    ].join('\n'),
+  )
+  writeFileSync(
+    join(root, 'src', 'body.tsx'),
+    [
+      "import { useDep } from 'hook-dep'",
+      'export default function Body() { useDep(); return null }',
+      '',
+    ].join('\n'),
+  )
+
+  const dev = await createProjectDevServer({
+    projectRoot: root,
+    port: await freePort(),
+    strictPort: true,
+    worker: { port: 9000 },
+  })
+  try {
+    for (const shared of Object.keys(SHARED_MODULE_TABLE)) {
+      assert.ok(
+        !dev.server.config.optimizeDeps.include?.some(
+          (id) => typeof id === 'string' && (id === shared || id.startsWith(`${shared}/`)),
+        ),
+        `${shared} 不能留在 optimizeDeps.include 里`,
+      )
+      assert.ok(
+        dev.server.config.optimizeDeps.exclude?.includes(shared),
+        `${shared} 必须排除出预构建`,
+      )
+    }
+
+    const body = await dev.server.transformRequest(join(root, 'src', 'body.tsx'))
+    const depUrl = [...(body?.code ?? '').matchAll(/from\s+["']([^"']*hook-dep[^"']*)["']/g)][0]?.[1]
+    assert.ok(depUrl, 'body 应把 hook-dep 交给 Vite 预构建')
+
+    const dep = await dev.server.transformRequest(depUrl)
+    assert.match(
+      dep?.code ?? '',
+      /from\s+["']\/@id\/__x00__cordis-app:shared:react["']/,
+      '预构建依赖的 react 导入必须指向共享模块',
+    )
+    assert.match(
+      dep?.code ?? '',
+      /from\s+["']\/@id\/__x00__cordis-app:shared:react-dom\/client["']/,
+      'react-dom/client 同样必须指向共享模块',
+    )
+    assert.doesNotMatch(
+      dep?.code ?? '',
+      /Symbol\.for\(\s*["']react\.(?:transitional\.element|portal|fragment)["']\s*\)/,
+      '预构建依赖不能自带 React 实现',
+    )
+
+    // 共享模块的 default 转发要真的能加载：react-i18next 的 IcuTransWithoutContext
+    // 写的是 `import React from 'react'`。
+    const shared = await fetch(
+      `http://127.0.0.1:${dev.port}/@id/__x00__cordis-app:shared:react`,
+    )
+    assert.equal(shared.status, 200)
+    assert.match(await shared.text(), /export default __shared\.default/)
+  } finally {
+    await dev.close()
+  }
+})
+
+test('dev 加载项目根 vite.config，但不交出 root 与共享模块约束', async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'cordis-dev-vite-config-')))
+  mkdirSync(join(root, 'src'), { recursive: true })
+  writeFileSync(join(root, 'src', 'body.tsx'), 'export default function Body() { return null }\n')
+  writeFileSync(
+    join(root, 'vite.config.mjs'),
+    [
+      'export default {',
+      "  root: '/definitely-not-the-shell',",
+      "  base: '/wrong/',",
+      "  define: { __PROJECT_FLAG__: JSON.stringify('mounted') },",
+      "  server: { headers: { 'x-project': 'yes' }, fs: { allow: ['/tmp/cordis-extra'] } },",
+      "  optimizeDeps: { exclude: ['project-only-dep'] },",
+      "  plugins: [{ name: 'project-marker-plugin' }],",
+      '}',
+      '',
+    ].join('\n'),
+  )
+
+  const dev = await createProjectDevServer({
+    projectRoot: root,
+    port: await freePort(),
+    strictPort: true,
+    worker: { port: 9000 },
+    // 程序化挂载点叠加在项目文件之后。
+    viteConfig: (config) => ({
+      ...config,
+      define: { ...config.define, __HOOK_FLAG__: JSON.stringify('yes') },
+    }),
+  })
+  try {
+    const config = dev.server.config
+    assert.match(config.root, /dist\/shell$/, 'root 必须仍是框架壳')
+    assert.equal(config.base, '/', 'base 不能交给项目改')
+    assert.equal(config.define?.__PROJECT_FLAG__, JSON.stringify('mounted'))
+    assert.equal(config.define?.__HOOK_FLAG__, JSON.stringify('yes'))
+    assert.equal(config.server.headers?.['x-project'], 'yes', '项目 server 项要生效')
+    assert.ok(config.server.fs.allow.includes('/tmp/cordis-extra'), '项目的 fs.allow 要保留')
+    assert.ok(config.server.proxy?.['/api'], '框架代理不能被项目配置挤掉')
+    assert.ok(config.plugins.some((plugin) => plugin.name === 'project-marker-plugin'))
+    assert.ok(config.optimizeDeps.exclude?.includes('project-only-dep'))
+    assert.ok(config.optimizeDeps.exclude?.includes('react'), '共享模块始终排除')
   } finally {
     await dev.close()
   }

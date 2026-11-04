@@ -25,10 +25,22 @@ import {
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { build as esbuild, type BuildOptions } from 'esbuild'
-import { build as viteBuild, createServer, type Plugin, type ViteDevServer } from 'vite'
+import {
+  build as viteBuild,
+  createServer,
+  loadConfigFromFile,
+  mergeConfig,
+  type Alias,
+  type AliasOptions,
+  type InlineConfig,
+  type Plugin,
+  type UserConfig,
+  type ViteDevServer,
+} from 'vite'
 import react from '@vitejs/plugin-react'
 import { RUNTIME_BANNER_MARKER, clientPreset, serverPreset } from '@cordis-app/preset'
 import {
+  SHARED_MODULES,
   SHARED_MODULE_TABLE,
   SHARED_PREFIX,
   WS_PATH,
@@ -309,19 +321,85 @@ function importMapPlugin(): Plugin {
  *
  * `server/index.ts` 与 `server/index.js` 都接受；都没有时产出一个空 apply，
  * 让「只有前端」的项目也能得到完整布局。
+ *
+ * `server/` 顶层除 index 外的脚本入口各自作为独立入口打包到输出目录下的
+ * `<name>.js`，供 `worker_threads` 等场景按路径加载。子目录不参与：
+ * 入口集合必须能从一次目录读取完整得出，否则产物名会与相对路径纠缠。
  */
 async function buildProjectServer(
   projectRoot: string,
   outfile: string,
   options: { minify: boolean },
 ): Promise<string> {
-  const source = findProjectServer(projectRoot)
-  if (!source) {
-    mkdirSync(dirname(outfile), { recursive: true })
+  const entries = projectServerEntries(projectRoot)
+  const main = entries.find((entry) => entry.name === 'index')
+  mkdirSync(dirname(outfile), { recursive: true })
+
+  if (!main) {
     writeFileSync(outfile, 'export default function apply() {}\n')
-    return outfile
+  } else {
+    await buildServerEntry(projectRoot, main.source, outfile, options)
   }
 
+  const outDir = dirname(outfile)
+  for (const entry of entries) {
+    if (entry.name === 'index') continue
+    await buildServerEntry(projectRoot, entry.source, join(outDir, `${entry.name}.js`), options)
+  }
+
+  return main ? main.source : outfile
+}
+
+/** 项目 server 入口的扩展名；顺序也是同名入口的优先级。 */
+const SERVER_ENTRY_EXTENSIONS = ['.ts', '.mts', '.js', '.mjs'] as const
+
+interface ProjectServerEntry {
+  /** 去扩展名后的产物名。 */
+  name: string
+  source: string
+  /** 扩展名优先级，数字越小越优先。 */
+  priority: number
+}
+
+/**
+ * 列出 `server/` 顶层的脚本入口。
+ *
+ * 文件名（去扩展名）就是产物名；子目录与 `.d.ts` 声明文件不参与。同名入口
+ * 按扩展名优先级只取一个，避免两份源码争抢同一个产物。
+ */
+function projectServerEntries(projectRoot: string): ProjectServerEntry[] {
+  const dir = join(projectRoot, 'server')
+  const found = new Map<string, ProjectServerEntry>()
+
+  for (const entry of readdirSafe(dir)) {
+    if (!entry.isFile()) continue
+    if (entry.name.endsWith('.d.ts') || entry.name.endsWith('.d.mts')) continue
+
+    const extension = SERVER_ENTRY_EXTENSIONS.find((candidate) => entry.name.endsWith(candidate))
+    if (!extension) continue
+
+    const name = entry.name.slice(0, -extension.length)
+    if (name === '') continue
+
+    const candidate: ProjectServerEntry = {
+      name,
+      source: join(dir, entry.name),
+      priority: SERVER_ENTRY_EXTENSIONS.indexOf(extension),
+    }
+    const existing = found.get(name)
+    if (!existing || candidate.priority < existing.priority) found.set(name, candidate)
+  }
+
+  return [...found.values()]
+}
+
+/** 用同一个服务端预设构建单个入口，保持 external、banner 与 sourcemap 一致。 */
+async function buildServerEntry(
+  projectRoot: string,
+  source: string,
+  outfile: string,
+  options: { minify: boolean },
+): Promise<void> {
   await esbuild(
     buildOptions(
       serverPreset({
@@ -334,15 +412,6 @@ async function buildProjectServer(
       projectRoot,
     ),
   )
-  return source
-}
-
-function findProjectServer(projectRoot: string): string | undefined {
-  for (const name of ['index.ts', 'index.mts', 'index.js', 'index.mjs']) {
-    const candidate = join(projectRoot, 'server', name)
-    if (existsSync(candidate)) return candidate
-  }
-  return undefined
 }
 
 /**
@@ -777,6 +846,18 @@ export interface ProjectDevServerOptions {
   worker: { port: number; token?: string }
   /** 固定端口（用户显式 --port 时） */
   strictPort?: boolean
+  /**
+   * 项目级 Vite 配置挂载点。
+   *
+   * 框架先加载 `<projectRoot>/vite.config.*`（存在时）并与框架配置合并，再把
+   * 结果交给这个函数；返回值就是最终配置。它适合程序化追加插件或在配置文件
+   * 之外做条件判断。
+   *
+   * 这是程序化扩展的逃生口：返回值直接交给 Vite。共享模块单实例的兜底仍会
+   * 执行，但 root、代理等项可以通过这里改写。只想补充插件 / define 时，
+   * 直接用项目根下的 vite.config 即可，不必传这个选项。
+   */
+  viteConfig?: (config: UserConfig) => UserConfig | Promise<UserConfig>
 }
 
 export interface ProjectDevServer {
@@ -797,33 +878,11 @@ export async function createProjectDevServer(
   }
 
   const workerOrigin = `http://127.0.0.1:${options.worker.port}`
-  const server = await createServer({
-    configFile: false,
-    root: shellDir,
-    logLevel: 'warn',
-    appType: 'spa',
-    plugins: [
-      devJsxRuntimePlugin(),
-      ...react(),
-      bodyPlugin(resolveProjectLayout(options.projectRoot).bodyEntry),
-      importMapPlugin(),
-      sharedModulesPlugin(),
-      serveSharedModules(),
-    ],
-    resolve: {
-      alias: {
-        'cordis-app/ui': hostEntry,
-      },
-    },
-    server: {
-      host: '127.0.0.1',
-      ...(options.port ? { port: options.port, strictPort: options.strictPort === true } : {}),
-      fs: {
-        allow: [shellDir, options.projectRoot, packageRoot],
-      },
-      proxy: devProxyConfig(workerOrigin),
-    },
-  })
+  const baseConfig = projectDevServerConfig(options, workerOrigin)
+  // 项目配置只允许“补充”：root、共享模块单实例与 worker 代理由框架持有。
+  const projectConfig = await loadProjectViteConfig(options.projectRoot)
+  const merged = mergeProjectViteConfig(baseConfig, projectConfig)
+  const server = await createServer(options.viteConfig ? await options.viteConfig(merged) : merged)
 
   await server.listen()
   const address = server.httpServer?.address()
@@ -843,6 +902,201 @@ export async function createProjectDevServer(
       await server.close()
     },
   }
+}
+
+/**
+ * 把共享模块从预构建的 include 里摘出来，只保留 exclude。
+ *
+ * `@vitejs/plugin-react` 的 config 钩子会把 `react`、`react-dom`、
+ * `react/jsx-dev-runtime`、`react/jsx-runtime` 写进 `optimizeDeps.include`。
+ * include 的优先级高于 exclude：这些说明符同时出现时会被当成预构建入口，
+ * 而入口不能标记为 external，esbuild 直接报 “entry point cannot be marked
+ * as external”。Vite 的 config 钩子只能往数组里追加、不能删除，所以在这里
+ * 等配置解析完成后改写。
+ */
+function sharedModuleSingleInstancePlugin(): Plugin {
+  return {
+    name: 'cordis-app:shared-single-instance',
+    configResolved(config) {
+      const environments = [
+        config.optimizeDeps,
+        ...Object.values(config.environments).map((environment) => environment.optimizeDeps),
+      ]
+      for (const optimizeDeps of environments) {
+        if (optimizeDeps.include) {
+          optimizeDeps.include = optimizeDeps.include.filter(
+            (id) => typeof id !== 'string' || !isSharedSpecifier(id),
+          )
+        }
+        optimizeDeps.exclude = unique([...(optimizeDeps.exclude ?? []), ...SHARED_MODULES])
+      }
+    },
+  }
+}
+
+/** `react` 覆盖 `react/jsx-runtime` 等子路径，与 Vite 的 exclude 匹配规则一致。 */
+function isSharedSpecifier(id: string): boolean {
+  return SHARED_MODULES.some((shared) => id === shared || id.startsWith(`${shared}/`))
+}
+
+/**
+ * 框架自己的开发服务器配置。
+ *
+ * 关键约束集中在两处，改动时不要拆散：
+ *   - `optimizeDeps.exclude` 必须包含全部共享模块。Vite 预构建第三方依赖
+ *     （Radix、react-i18next 等）时，若这些依赖的 `import 'react'` 被就地
+ *     打包，就会生成第二份 React，与 `/__shared/react.js` 的 hooks 互不认账。
+ *     排除后预构建把它们留成外部导入，再由 `sharedModulesPlugin` 指向同一份
+ *     共享产物。
+ *   - `sharedModulesPlugin` 与 `devJsxRuntimePlugin` 必须排在依赖扫描之前。
+ */
+function projectDevServerConfig(
+  options: ProjectDevServerOptions,
+  workerOrigin: string,
+): InlineConfig {
+  return {
+    configFile: false,
+    root: shellDir,
+    base: '/',
+    logLevel: 'warn',
+    appType: 'spa',
+    plugins: [
+      devJsxRuntimePlugin(),
+      ...react(),
+      // 放在 react() 之后：它必须看到 plugin-react 注入的 optimizeDeps.include。
+      sharedModuleSingleInstancePlugin(),
+      bodyPlugin(resolveProjectLayout(options.projectRoot).bodyEntry),
+      importMapPlugin(),
+      sharedModulesPlugin(),
+      serveSharedModules(),
+    ],
+    resolve: {
+      alias: {
+        'cordis-app/ui': hostEntry,
+      },
+    },
+    // 预构建只处理“不共享”的依赖；共享模块一律留给 /__shared。
+    optimizeDeps: {
+      exclude: [...SHARED_MODULES],
+    },
+    server: {
+      host: '127.0.0.1',
+      ...(options.port ? { port: options.port, strictPort: options.strictPort === true } : {}),
+      fs: {
+        allow: [shellDir, options.projectRoot, packageRoot],
+      },
+      proxy: devProxyConfig(workerOrigin),
+    },
+  }
+}
+
+/** 项目根下 Vite 配置文件名的查找顺序，与 Vite 自己的默认顺序一致。 */
+const PROJECT_VITE_CONFIG_FILES = [
+  'vite.config.ts',
+  'vite.config.mts',
+  'vite.config.cts',
+  'vite.config.js',
+  'vite.config.mjs',
+  'vite.config.cjs',
+]
+
+/**
+ * 加载项目级 Vite 配置。
+ *
+ * 开发服务器的 root 是框架壳，Vite 默认不会去项目根找配置；这里用 Vite 自己
+ * 的加载器显式读一次，让项目能挂 PostCSS、Tailwind、额外 alias 等。项目没有
+ * 配置文件时返回 undefined，行为与之前完全一致。
+ */
+async function loadProjectViteConfig(projectRoot: string): Promise<UserConfig | undefined> {
+  const configFile = PROJECT_VITE_CONFIG_FILES.map((name) => join(projectRoot, name)).find(
+    (file) => existsSync(file),
+  )
+  if (!configFile) return undefined
+
+  try {
+    const loaded = await loadConfigFromFile(
+      { command: 'serve', mode: 'development' },
+      configFile,
+      projectRoot,
+      'warn',
+    )
+    return loaded?.config
+  } catch (error) {
+    throw new Error(`项目 Vite 配置加载失败：${configFile}\n${(error as Error).message}`, {
+      cause: error,
+    })
+  }
+}
+
+/**
+ * 把项目配置合并进框架配置。
+ *
+ * `mergeConfig` 的默认语义是“后者覆盖前者”，但框架必须保住的项不能交给
+ * 项目决定：root 被换掉，body 与 /__shared 的路径就全部失效；proxy 被换掉，
+ * worker 的 WebSocket 就接不上；共享模块被重新丢进预构建，hooks 立刻报错。
+ * 因此合并后重新钉住这些项，其余配置（插件、define、CSS、额外 alias）照常
+ * 生效。
+ */
+function mergeProjectViteConfig(
+  base: InlineConfig,
+  project: UserConfig | undefined,
+): InlineConfig {
+  if (!project) return base
+
+  const merged = mergeConfig(base, project)
+  merged.configFile = false
+  merged.root = base.root
+  merged.base = base.base
+  merged.appType = base.appType
+
+  // 框架 alias 放在最前面：数组形式下先匹配先赢。mergeConfig 已经带入过
+  // 一份，先滤掉再插到队首，避免重复条目。
+  merged.resolve = {
+    ...merged.resolve,
+    alias: [
+      { find: 'cordis-app/ui', replacement: hostEntry },
+      ...aliasEntries(merged.resolve?.alias).filter(
+        (entry) => entry.find !== 'cordis-app/ui',
+      ),
+    ],
+  }
+
+  // 共享模块永远排除；项目可以继续往 exclude 里追加自己的依赖。
+  merged.optimizeDeps = {
+    ...(merged.optimizeDeps ?? {}),
+    exclude: unique([...(merged.optimizeDeps?.exclude ?? []), ...SHARED_MODULES]),
+  }
+
+  merged.server = {
+    ...merged.server,
+    host: base.server?.host,
+    // 端口只有显式传参时才钉死；否则允许项目配置自己的端口。
+    ...(base.server?.port !== undefined
+      ? { port: base.server.port, strictPort: base.server.strictPort }
+      : {}),
+    fs: {
+      ...merged.server?.fs,
+      allow: unique([
+        ...(base.server?.fs?.allow ?? []),
+        ...(merged.server?.fs?.allow ?? []),
+      ]),
+    },
+    // 框架代理优先，项目的其它代理项保留。
+    proxy: { ...merged.server?.proxy, ...base.server?.proxy },
+  }
+
+  return merged
+}
+
+/** 把 alias 的数组 / 对象两种写法统一成数组，便于固定匹配顺序。 */
+function aliasEntries(alias: AliasOptions | undefined): Alias[] {
+  if (!alias) return []
+  if (Array.isArray(alias)) return [...alias]
+  return Object.entries(alias).map(([find, replacement]) => ({ find, replacement }))
+}
+
+function unique<T>(values: T[]): T[] {
+  return [...new Set(values)]
 }
 
 /**
@@ -866,7 +1120,16 @@ function sharedModulesPlugin(): Plugin {
       const specifier = id.slice('\0cordis-app:shared:'.length)
       const definition = SHARED_MODULE_TABLE[specifier as keyof typeof SHARED_MODULE_TABLE]
       if (!definition) return undefined
-      return `export * from ${JSON.stringify(`${SHARED_PREFIX}/${definition.file}`)}`
+      const url = JSON.stringify(`${SHARED_PREFIX}/${definition.file}`)
+      // `export *` 不转发 default，而 react-i18next 的 IcuTransWithoutContext 等
+      // 依赖写的是 `import React from 'react'`。用命名空间补一条 default，
+      // 对没有 default 的共享模块（如 cordis-app/client）也只是导出 undefined。
+      return [
+        `import * as __shared from ${url}`,
+        `export * from ${url}`,
+        'export default __shared.default',
+        '',
+      ].join('\n')
     },
   }
 }
