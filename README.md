@@ -47,6 +47,8 @@ cordis-app 只支持**项目模式**：应用就是一个普通目录，`package
 
 - `plugins` 的键是**插件 id**，不是 npm 包名；顺序即启用顺序。缺省或空数组表示
   「发现即启用」。
+- `uninstalledPlugins` 可选，记录显式卸载的插件 id；缺省表示没有卸载任何插件。
+  它不改变 `plugins` 的启用顺序语义，详见[插件生命周期](#插件生命周期)。
 - `pluginSource` 可选，声明项目自己的插件包来源模块，只在打包形态生效；详见
   [项目自定义插件包来源](#项目自定义插件包来源)。
 - `ui` 是项目 body 能提供的能力。同一个形状也出现在 `plugin.json.ui`，表示插件
@@ -80,6 +82,13 @@ node packages/cli/lib/cli.js dev --project /tmp/cordis-demo
 
 ```bash
 node packages/cli/lib/cli.js remove cordis-app-example-hello --project /tmp/cordis-demo
+```
+
+卸载会保留插件配置，并把插件放进「已卸载」列表；用 `enable hello` 可以按卸载
+记录装回来：
+
+```bash
+node packages/cli/lib/cli.js enable hello --project /tmp/cordis-demo
 ```
 
 发布构建与运行构建产物：
@@ -486,17 +495,44 @@ const openMenu = useMenu('video')
 重复 id 保留高优先级插件，低优先级产生一条失败记录；应用继续启动，只让冲突插件
 不可用。
 
-安装有两个来源，由进程配置决定，HTTP 请求不能切换：
+安装来源（`InstallSource`）有两个，由进程配置决定，HTTP 请求不能切换：
 
-- **项目模式**：npm 源在项目根执行包管理器，更新 `package.json`、lockfile，并把
-  插件 id 写进 `app.json.plugins`。
-- **打包模式**：只接受签名插件包。安装到 `<桌面数据目录>/plugins/<id>@<version>/`，
-  事实写入 `<桌面数据目录>/installed.json`，不运行 npm。
+- **项目模式**：`npm` 源在项目根执行**项目实际使用的包管理器**，更新
+  `package.json`、lockfile，并把插件 id 写进 `app.json.plugins`。
+- **打包模式**：`bundle` 源只接受签名插件包。安装到
+  `<桌面数据目录>/plugins/<id>@<version>/`，事实写入
+  `<桌面数据目录>/installed.json`，不运行 npm。
 
 两种来源共用同一个安装事务：开始前快照事实文件并写事务日志，失败或被中断时回滚。
 **只读安装目录**指代码与依赖安装后不再修改（桌面形态就是「桌面打包」一节的
 安装目录）；**可写用户数据**指 `<project>/data`（项目模式）或桌面数据目录
 （打包模式）。公共 `app.lock` 已移除。
+
+### 包管理器检测
+
+项目模式的安装/卸载按项目实际使用的包管理器执行，不再固定使用 npm。检测器只读
+项目根文件、不执行命令，按以下顺序判断（命中即停）：
+
+1. **显式 `yarnPath`**：通过 `process.execPath <yarnPath>` 执行，保留最高优先级。
+2. **`package.json#packageManager`**：取第一个 `@` 之前的名字；名字必须是
+   npm、pnpm、yarn、bun 之一，否则报错。
+3. **唯一的 lockfile**：`pnpm-lock.yaml` → pnpm，`yarn.lock` → yarn，
+   `bun.lock` / `bun.lockb` → bun，`package-lock.json` /
+   `npm-shrinkwrap.json` → npm。
+4. **多个 lockfile 指向不同管理器**：用 `node_modules` 证据消歧——
+   `node_modules/.pnpm` → pnpm，`node_modules/.package-lock.json` → npm，
+   `node_modules/.yarn-integrity` → yarn。证据必须命中候选之一；命中多个或一个
+   都不命中视为歧义。
+5. **没有 lockfile**：同样用 `node_modules` 证据判断，证据唯一才采用。
+6. **没有任何信号**：回退 npm。
+
+信号冲突且无法消歧时直接报错，错误信息列出检测到的 lockfile/证据与候选管理器，
+并说明如何修正（删除多余 lockfile、补 `packageManager`、或清理 `node_modules`）。
+**不会静默回退到 npm**，因此不会在 pnpm 项目里悄悄生成 `package-lock.json`。
+npm、pnpm、yarn、bun 统一使用 `add <spec>` / `remove <name>`；执行失败时错误
+信息带上管理器名称与实际命令。中断的安装/卸载事务在恢复时使用事务日志里记录的
+同一个包管理器；旧日志没有该字段时回退 npm。已有的 `package-lock.json` 不会被
+自动删除。
 
 ### 项目自定义插件包来源
 
@@ -536,7 +572,50 @@ export async function readArchive(spec, ctx) {
 安全边界：来源模块是项目代码，与项目 server 入口同等可信；HTTP 请求只能传
 `spec`，不能指定模块路径或替换实现。模块必须自行限制允许的 `spec`，否则任何
 能访问安装接口的人都能让它请求任意地址。来源模块只在打包形态启用，项目模式
-仍走 npm。
+仍走项目实际使用的包管理器（见[包管理器检测](#包管理器检测)）。
+
+## 插件生命周期
+
+插件在界面上只有两个状态和两个动作：
+
+| 状态 | 可用动作 |
+| --- | --- |
+| 已启用 | 卸载 |
+| 已卸载 | 启用 |
+
+没有「停用」状态，也不提供「停用」按钮。`app.json.plugins` 仍然表示启用顺序，
+不是白名单；显式卸载的插件 id 记录在可选的 `app.json.uninstalledPlugins` 中。
+项目模式下这个字段随项目提交，团队共享「哪些插件被卸载了」。
+
+已卸载插件不再出现在页面、插槽、菜单、设置和前端清单里，
+`/__plugins/<id>/…` 返回 404，加载失败列表也只反映启用中的插件。插件配置不会被
+删除，重新启用后仍然存在。重复卸载或启用是幂等的；安装一个已卸载插件会同时清除
+它的已卸载状态。
+
+### 三种来源
+
+设置页与 `GET /api/plugins` 为每个插件标出来源，并据此决定卸载动作：
+
+| 来源（`origin`） | 含义 | 卸载动作 | 启用动作 |
+| --- | --- | --- | --- |
+| 随包（`builtin`） | `resources/plugins`，随产物分发 | 只写状态；不删文件、不跑包管理器 | 只清状态 |
+| 项目本地（`local`） | `<project>/plugins` | 只写状态；不删源码 | 只清状态 |
+| 外部（`external`） | 项目依赖，或打包模式的用户安装目录 | 项目依赖：跑项目包管理器 `remove`；打包模式：移除用户安装目录 | 有卸载记录则按记录重装；没有可用 spec 时明确说明原因 |
+
+来源标识与安装来源（`InstallSource`）不是一回事：前者面向用户，决定卸载动作；
+后者是 `npm` / `bundle`，决定磁盘动作由谁执行。
+
+### 卸载与启用
+
+- 卸载项目依赖插件会真正更新 `package.json` 与 lockfile，并留下卸载记录；卸载
+  随包、项目本地插件只改变启用状态，文件仍在。
+- 启用随包或项目本地插件只清除已卸载状态；启用外部插件时，有卸载记录就按记录
+  的版本或 spec 重装，不能重装时明确说明原因，不静默失败。
+- 重新启用后插件追加到 `app.json.plugins` 末尾；需要固定顺序时手动调整。
+- 卸载记录保存在可写数据目录：项目模式是
+  `<project>/data/plugins-state.json`，打包模式是用户数据目录的
+  `plugins-state.json`。打包模式不修改只读的 `dist/app.json`。
+- 卸载不会删除插件配置，`GET /api/config` 中的插件配置在重新启用后仍然可用。
 
 ## 签名插件包
 
@@ -555,9 +634,10 @@ hash、Ed25519 签名与 peer 范围；安装时先比 hash、再验签名，任
 | 命令 | 作用 |
 | --- | --- |
 | `new <名字>` | 创建项目（只写文件，不联网） |
-| `add <包名[@版本]>` | 安装插件，支持 npm 包名、tarball、`file:` 路径 |
-| `remove <包名>` | 卸载插件 |
-| `list [--json]` | 列出项目依赖中的插件与启用状态 |
+| `add <包名[@版本]>` | 安装插件，支持 npm 包名、tarball、`file:` 路径；安装成功后清除该插件的已卸载状态 |
+| `remove <包名\|插件 id>` | 卸载插件：随包/项目本地只改状态，项目依赖走项目包管理器移除；保留插件配置 |
+| `enable <插件 id>` | 重新启用已卸载插件；有卸载记录时按记录的版本或 spec 重装 |
+| `list [--json]` | 列出插件、来源标识与「已启用 / 已卸载」状态 |
 | `run` | 以源码形态启动项目（前台）；只接受已构建的 JS 入口，不编译 TS/TSX |
 | `dev [--shell]` | 开发模式：Vite HMR、项目 server 与插件变化重启 worker；接受 TS/TSX 入口并在 `.cordis/dev` 编译；`--shell` 用桌面外壳开窗，开发时也能使用原生能力 |
 | `build` | 构建 `dist/` 可发布布局；编译插件 TS/TSX 入口并改写产物清单 |
