@@ -108,6 +108,16 @@ export interface WorkerOptions {
   /** bundle 安装配置 */
   bundle?: WorkerBundleOptions
   /**
+   * 覆盖项目模式下的包管理器执行器。只由进程配置注入，供测试与嵌入方使用；
+   * HTTP 请求不能设置它，否则调用方就能指定任意命令。
+   */
+  packageManager?: (command: string, args: string[], cwd: string) => Promise<void>
+  /**
+   * 覆盖重启请求。只由进程配置注入，供测试使用，避免测试进程被 `exit(75)`
+   * 终止；HTTP 请求不能设置它。
+   */
+  requestRestart?: () => void
+  /**
    * 原生传输端点。supervisor 从环境变量读取后注入；直接调用 `startWorker`
    * 时可由测试或嵌入方提供。缺省时 `ctx.native.available` 为 false。
    */
@@ -236,6 +246,7 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
     projectRoot: layout.projectRoot,
     frameworkVersion,
     ...(bundleSource ? { source: bundleSource } : {}),
+    ...(options.packageManager ? { run: options.packageManager } : {}),
     // 项目模式的事务日志属于项目 `.cordis/`；打包模式的项目根可能只读，
     // 日志必须和 bundle 的事实文件一起放在用户数据目录。
     ...(packaged && userDataDir
@@ -403,7 +414,7 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
     scan: () => scanPluginRoots(pluginRoots, { frameworkVersion }),
     state: pluginState,
     failures,
-    requestRestart: () => setTimeout(() => void restart(), 50),
+    requestRestart: options.requestRestart ?? (() => setTimeout(() => void restart(), 50)),
   })
 
   // 完整就绪：HTTP 已监听且全部插件加载完成，才标记 healthy。
