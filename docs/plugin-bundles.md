@@ -162,6 +162,23 @@ writeFileSync(`hello-plugin-${version}.cordis-plugin`, createTarGz(files))
 它写在用户数据目录，不是项目里的公共 `app.lock`。文件损坏时安装器会硬失败，
 不会静默清空用户的安装记录。
 
+### 卸载与启用状态
+
+打包模式的 `app.json` 是只读构建产物（位于 `dist/` 或释放目录），卸载/启用状态
+**不能写回它**。状态写在用户数据目录：
+
+- `<userData>/plugins-state.json` 保存已卸载 id 集合与卸载明细（包名、版本、
+  来源、原始 spec）。写入使用临时文件 + rename，worker 重启后状态仍在。
+- 外部插件卸载时由 bundle 来源物理移除 `<userData>/plugins/<id>@<version>/`，
+  并写入卸载记录；启用时按记录的 spec 重新安装，成功后清除记录并写入新的
+  `installed` 元数据。
+- 随包插件（`resources/plugins`）卸载只是逻辑移除：写状态，不删产物，不跑包
+  管理器；重新启用只清状态。随包插件可以卸载，只是不能、也不应该删除随包
+  产物。
+- 已卸载插件不再进入前端清单，`/__plugins/<id>/…` 返回 404；插件配置保留。
+- 没有卸载记录或记录缺少 spec 时，插件仍显示为已卸载，但 `reinstallable` 为
+  false，需要重新提供插件包。
+
 ## 7. 安全边界
 
 - 归档来源默认只接受本地路径或 `file://`；远程 URL 必须由进程配置注入
@@ -181,6 +198,7 @@ writeFileSync(`hello-plugin-${version}.cordis-plugin`, createTarGz(files))
 | --- | --- | --- |
 | 安装来源 | npm（项目包管理器） | `.cordis-plugin` 签名包 |
 | 事实文件 | `package.json`、项目 lockfile、`app.json` | `<userData>/installed.json` |
+| 卸载状态 | `app.json.uninstalledPlugins` + `<project>/data/plugins-state.json` | `<userData>/plugins-state.json`（不写只读 `app.json`） |
 | 安装位置 | `<project>/node_modules` | `<userData>/plugins/<id>@<version>/` |
 | 可写数据 | `<project>/data` | `<userData>` |
 | 是否需要 npm | 是 | 否 |

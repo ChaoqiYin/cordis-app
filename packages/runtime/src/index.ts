@@ -85,6 +85,19 @@ export {
   type ScanOptions,
 } from './plugin/catalog.js'
 export {
+  PluginStateStore,
+  planPluginViews,
+  resolvePluginStatePath,
+  type InstalledPluginRecord,
+  type PluginOrigin,
+  type PluginState,
+  type PluginStateStoreOptions,
+  type PluginView,
+  type PluginViews,
+  type UninstalledPluginRecord,
+  type UninstalledPluginView,
+} from './plugin/plugin-state.js'
+export {
   checkProjectFramework,
   checkProjectFrameworkFile,
   type ProjectFrameworkCheck,
