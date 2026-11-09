@@ -56,7 +56,7 @@ import {
   startWorker,
 } from '@cordis-app/runtime'
 import type { BundleManifest, WorkerHandle } from '@cordis-app/runtime'
-import { commandNew, parseArgs } from '../lib/index.js'
+import { commandEnable, commandNew, commandRemove, parseArgs } from '../lib/index.js'
 
 /** 插件前端必须不 import 任何模块：它经 data URL 加载，没有模块解析环境。 */
 const PLUGIN_CLIENT = `
@@ -946,6 +946,136 @@ test('项目本地插件根能发现 examples/hello-plugin', () => {
     assert.equal(scan.plugins[0]?.rootKind, 'local')
     assert.deepEqual(scan.plugins[0]?.manifest.ui, { pages: true })
     assert.equal(scan.roots.get('hello'), pluginRoot)
+  } finally {
+    rmSync(work, { recursive: true, force: true })
+  }
+})
+
+/** 项目模式 worker：CLI 生命周期动作之后，用它验证 HTTP 看到同一份状态。 */
+async function startProjectWorker(
+  projectRoot: string,
+): Promise<{ handle: WorkerHandle; token: string; base: string }> {
+  const port = await findFreePort()
+  const token = generateToken()
+  const handle = await startWorker({ port, token, projectRoot })
+  return { handle, token, base: `http://127.0.0.1:${port}` }
+}
+
+test('CLI 与 HTTP 共用生命周期：remove 后插件从清单消失，enable 后恢复', async () => {
+  const work = mkdtempSync(join(tmpdir(), 'cordis-cli-lifecycle-'))
+  const projectRoot = join(work, 'demo')
+  const pluginRoot = join(projectRoot, 'plugins', 'local-demo')
+
+  try {
+    const io = {
+      out: () => {},
+      err: () => {},
+      frameworkVersion: FRAMEWORK_VERSION,
+    }
+    assert.equal(
+      await commandNew(parseArgs(['new', 'demo', '--project', projectRoot]), io),
+      0,
+    )
+
+    // 项目本地插件：卸载只写状态，文件保留。
+    mkdirSync(pluginRoot, { recursive: true })
+    writeFileSync(
+      join(pluginRoot, 'plugin.json'),
+      JSON.stringify({ id: 'local-demo', displayName: 'Local Demo', server: 'server.js' }),
+    )
+    writeFileSync(
+      join(pluginRoot, 'package.json'),
+      JSON.stringify({
+        name: 'cordis-local-demo',
+        version: '1.0.0',
+        type: 'module',
+        peerDependencies: { 'cordis-app': `^${FRAMEWORK_VERSION}` },
+      }),
+    )
+    writeFileSync(
+      join(pluginRoot, 'server.js'),
+      `export const inject = ['router']
+export function apply(ctx) {
+  ctx.router.get('/api/local-demo', (_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ from: 'local-demo' }))
+  })
+}
+`,
+    )
+    const appJson = readJson(join(projectRoot, 'app.json'))
+    appJson.plugins = ['local-demo']
+    writeFileSync(join(projectRoot, 'app.json'), JSON.stringify(appJson, null, 2) + '\n')
+
+    let packageManagerCalls = 0
+    const commandIO = {
+      ...io,
+      async packageManager() {
+        packageManagerCalls++
+      },
+    }
+
+    // 卸载：与设置页同一套语义，不跑包管理器，不删文件。
+    assert.equal(
+      await commandRemove(parseArgs(['remove', 'local-demo', '--project', projectRoot]), commandIO),
+      0,
+    )
+    assert.equal(packageManagerCalls, 0, '项目本地插件卸载不得跑包管理器')
+    assert.equal(existsSync(join(pluginRoot, 'plugin.json')), true, '逻辑卸载不删文件')
+    assert.deepEqual(readJson(join(projectRoot, 'app.json')).uninstalledPlugins, ['local-demo'])
+
+    // worker 只看到启用视图：路由未挂载，/api/plugins 标为已卸载。
+    const first = await startProjectWorker(projectRoot)
+    try {
+      const route = await fetch(`${first.base}/api/local-demo`, {
+        headers: { authorization: `Bearer ${first.token}` },
+      })
+      assert.equal(route.status, 404, '已卸载插件不得挂载路由')
+      const res = await fetch(`${first.base}/api/plugins`, {
+        headers: { authorization: `Bearer ${first.token}` },
+      })
+      assert.equal(res.status, 200)
+      const body = (await res.json()) as {
+        plugins: Array<{ id: string; enabled: boolean; origin: string }>
+        uninstalled: unknown[]
+      }
+      const row = body.plugins.find((entry) => entry.id === 'local-demo')
+      assert.ok(row, '完整扫描视图仍应包含物理存在的已卸载插件')
+      assert.equal(row.enabled, false)
+      assert.equal(row.origin, 'local')
+      assert.equal(body.uninstalled.length, 0, '物理存在的插件不重复进已卸载列表')
+    } finally {
+      await first.handle.close()
+    }
+
+    // 启用：只清状态，插件回到启用顺序末尾。
+    assert.equal(
+      await commandEnable(parseArgs(['enable', 'local-demo', '--project', projectRoot]), commandIO),
+      0,
+    )
+    assert.equal(packageManagerCalls, 0, '恢复项目本地插件不得跑包管理器')
+    const appAfterEnable = readJson(join(projectRoot, 'app.json'))
+    assert.deepEqual(appAfterEnable.uninstalledPlugins, [])
+    assert.deepEqual(appAfterEnable.plugins, ['local-demo'])
+
+    const second = await startProjectWorker(projectRoot)
+    try {
+      const res = await fetch(`${second.base}/api/plugins`, {
+        headers: { authorization: `Bearer ${second.token}` },
+      })
+      assert.equal(res.status, 200)
+      const body = (await res.json()) as {
+        plugins: Array<{ id: string; enabled: boolean }>
+      }
+      assert.equal(body.plugins.find((entry) => entry.id === 'local-demo')?.enabled, true)
+      const api = await fetch(`${second.base}/api/local-demo`, {
+        headers: { authorization: `Bearer ${second.token}` },
+      })
+      assert.equal(api.status, 200)
+      assert.deepEqual(await api.json(), { from: 'local-demo' })
+    } finally {
+      await second.handle.close()
+    }
   } finally {
     rmSync(work, { recursive: true, force: true })
   }

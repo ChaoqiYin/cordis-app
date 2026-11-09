@@ -6,6 +6,7 @@ export {
   commandAdd,
   commandBuild,
   commandDev,
+  commandEnable,
   commandList,
   commandNew,
   commandRemove,
