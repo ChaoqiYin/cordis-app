@@ -584,6 +584,30 @@ test('TSX 入口产出 .js，产物清单改写，源清单与其他字段不变
   ])
 })
 
+test('入口归一化后的产物路径冲突时构建失败，且不产出 dist', async () => {
+  const root = createProject()
+  const pluginRoot = join(root, 'plugins', 'demo')
+  mkdirSync(join(pluginRoot, 'src'), { recursive: true })
+  writeFileSync(
+    join(pluginRoot, 'plugin.json'),
+    JSON.stringify({ id: 'demo', client: 'src/index.tsx', server: 'src/index.ts' }),
+  )
+  writeFileSync(join(pluginRoot, 'src', 'index.tsx'), 'export default function activate() {}\n')
+  writeFileSync(join(pluginRoot, 'src', 'index.ts'), 'export default function apply() {}\n')
+
+  await assert.rejects(
+    () => buildProject({ projectRoot: root }),
+    (error: Error) => {
+      assert.match(error.message, /demo/, '错误应指出插件 id')
+      assert.match(error.message, /前端 src\/index\.tsx/, '错误应指出前端入口')
+      assert.match(error.message, /服务端 src\/index\.ts/, '错误应指出服务端入口')
+      assert.match(error.message, /src\/index\.js/, '错误应指出冲突的产物路径')
+      return true
+    },
+  )
+  assert.equal(existsSync(join(root, 'dist')), false, '冲突时不能产出 dist')
+})
+
 test('插件入口扩展名不受支持时构建失败，且不产出 dist', async () => {
   const root = createProject()
   writeFileSync(

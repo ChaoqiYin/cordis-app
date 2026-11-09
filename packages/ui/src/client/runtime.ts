@@ -121,8 +121,7 @@ export class ClientRuntime {
   // ---- 菜单状态：命令式 API 与 Hooks 的唯一交汇点 ----
 
   openMenu(menuId: string, x: number, y: number, context?: unknown): void {
-    // 未传上下文时保持原有对象形状，避免给 SSR 断言多出一个 undefined 属性
-    this.menu = context === undefined ? { menuId, x, y } : { menuId, x, y, context }
+    this.menu = { menuId, x, y, context }
     this.emitMenu()
   }
 

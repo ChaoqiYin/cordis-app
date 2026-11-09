@@ -573,7 +573,7 @@ async function buildPluginRoots(
       }
       ids.set(id, root.kind)
 
-      built.push(await buildPluginPackage(pluginRoot, manifestPath, manifest, id, outRoot, options))
+      built.push(await buildPluginPackage(pluginRoot, manifest, id, outRoot, options))
     }
   }
 
@@ -627,37 +627,58 @@ const BUILDABLE_ENTRY_EXTENSIONS = new Set([
 
 async function buildPluginPackage(
   pluginRoot: string,
-  manifestPath: string,
   manifest: PluginManifest,
   id: string,
   outRoot: string,
   options: BuildPluginsOptions,
 ): Promise<BuiltPlugin> {
-  const pluginOut = join(outRoot, id)
-  mkdirSync(pluginOut, { recursive: true })
-  copyIfExists(join(pluginRoot, 'package.json'), join(pluginOut, 'package.json'))
-
   const files: string[] = []
   const entries: Array<{ kind: 'client' | 'server'; relativePath: string }> = []
   if (manifest.client) entries.push({ kind: 'client', relativePath: manifest.client })
   if (manifest.server) entries.push({ kind: 'server', relativePath: manifest.server })
 
+  // 入口校验与产物路径计算必须在任何写入之前完成：两个入口若只差扩展名，
+  // 归一化后会指向同一个 .js，后写覆盖先写。
+  const outputPaths = new Map<string, Array<{ kind: 'client' | 'server'; relativePath: string }>>()
+  for (const entry of entries) {
+    const extension = extname(entry.relativePath).toLowerCase()
+    if (!BUILDABLE_ENTRY_EXTENSIONS.has(extension)) {
+      throw new Error(
+        `插件 ${id} 的 ${entry.kind} 入口扩展名不受支持：${entry.relativePath}。` +
+          `构建只接受 esbuild 支持的 JS/TS 入口：${[...BUILDABLE_ENTRY_EXTENSIONS].join(' / ')}。`,
+      )
+    }
+    const source = join(pluginRoot, entry.relativePath)
+    if (!existsSync(source)) {
+      throw new Error(`插件 ${id} 的 ${entry.kind} 入口不存在：${entry.relativePath}`)
+    }
+
+    const builtRelativePath = toManifestPath(pluginEntryOutputPath(entry.relativePath))
+    const group = outputPaths.get(builtRelativePath) ?? []
+    group.push(entry)
+    outputPaths.set(builtRelativePath, group)
+  }
+
+  for (const [builtRelativePath, group] of outputPaths) {
+    if (group.length < 2) continue
+    const declared = group
+      .map((entry) => `${entry.kind === 'server' ? '服务端' : '前端'} ${entry.relativePath}`)
+      .join('、')
+    throw new Error(
+      `插件 ${id} 的入口构建后指向同一路径：${builtRelativePath}（${declared}）。` +
+        '请为 server 与 client 使用不同的文件名。',
+    )
+  }
+
+  const pluginOut = join(outRoot, id)
+  mkdirSync(pluginOut, { recursive: true })
+  copyIfExists(join(pluginRoot, 'package.json'), join(pluginOut, 'package.json'))
+
   /** 产物清单里的入口改写；源目录的 plugin.json 始终不动。 */
   const builtEntries: Partial<Record<'client' | 'server', string>> = {}
 
   for (const { kind, relativePath } of entries) {
-    const extension = extname(relativePath).toLowerCase()
-    if (!BUILDABLE_ENTRY_EXTENSIONS.has(extension)) {
-      throw new Error(
-        `插件 ${id} 的 ${kind} 入口扩展名不受支持：${relativePath}。` +
-          `构建只接受 esbuild 支持的 JS/TS 入口：${[...BUILDABLE_ENTRY_EXTENSIONS].join(' / ')}。`,
-      )
-    }
     const source = join(pluginRoot, relativePath)
-    if (!existsSync(source)) {
-      throw new Error(`插件 ${id} 的 ${kind} 入口不存在：${relativePath}`)
-    }
-
     // 产物保留目录与 basename，扩展名统一改成运行时接受的 .js。
     const builtRelativePath = pluginEntryOutputPath(relativePath)
     const outfile = join(pluginOut, builtRelativePath)
@@ -692,7 +713,7 @@ async function buildPluginPackage(
 
   if (entries.length === 0) {
     // 没有声明入口的插件（纯配置/资源包）原样复制，运行时会被告知不可加载。
-    copyIfExists(manifestPath, join(pluginOut, 'plugin.json'))
+    // plugin.json 随目录一起复制，不必单独再拷一次。
     copyDirectory(pluginRoot, pluginOut)
     options.log(`  ${id}: 没有构建入口，已原样复制`)
   } else {

@@ -6,13 +6,7 @@
  */
 
 import { Children, cloneElement, type ReactElement, type ReactNode } from 'react'
-import { useMenu } from 'cordis-app/client'
-
-interface MenuEvent {
-  preventDefault(): void
-  clientX: number
-  clientY: number
-}
+import { useMenu, type MenuEvent } from 'cordis-app/client'
 
 type TriggerChild = ReactElement<{ onContextMenu?: (event: MenuEvent) => void }>
 

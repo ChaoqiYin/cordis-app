@@ -54,7 +54,9 @@ worker。它决定安装来源与插件根的扫描范围，是进程配置，HT
 
 **`plugin.json`**
 插件身份清单：`id`、`displayName`、`version`、`server`/`client` 入口、`ui`
-需求、`capabilities` 安全能力。
+需求、`capabilities` 安全能力。源清单的 `server`/`client` 可以指向 TS/TSX；
+`dev` / `build` 会把它们改写为实际 `.js` 产物路径，生成运行时清单，源清单
+保持不变。运行时只读这份运行时清单。
 
 **插件 id**
 `plugin.json.id`，必须是 URL 安全段。它是挂载键（`/__plugins/<id>/…`）与
