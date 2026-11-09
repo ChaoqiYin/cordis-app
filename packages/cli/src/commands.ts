@@ -75,7 +75,7 @@ export interface CommandIO {
   openBrowser?(url: string): void
   /** 覆盖 UI 产物目录探测 */
   resourcesDir?: string
-  /** 执行包管理器，测试时替换；默认在项目根执行 npm */
+  /** 执行包管理器，测试时替换；默认按项目检测结果执行 npm / pnpm / yarn / bun */
   packageManager?(command: string, args: string[], cwd: string): Promise<void>
   /** 构建实现；测试时替换，避免真的跑 Vite */
   projectBuilder?(options: { projectRoot: string; outDir?: string }): Promise<BuildResult>

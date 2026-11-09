@@ -24,6 +24,13 @@ import {
 } from '@cordis-app/protocol'
 import { readPluginId } from './catalog.js'
 import {
+  LOCKFILE_MANAGERS,
+  detectPackageManager,
+  packageManagerByName,
+  type DetectedPackageManager,
+  type PackageManagerName,
+} from './package-manager.js'
+import {
   uiCompatibilityFor,
   type InstallContext,
   type InstallSource,
@@ -33,14 +40,7 @@ import {
 const execFileAsync = promisify(execFile)
 
 /** 包管理器可能写出的 lockfile。事务会把实际存在与后来新建的都纳入快照。 */
-export const NPM_LOCKFILE_NAMES = [
-  'pnpm-lock.yaml',
-  'package-lock.json',
-  'npm-shrinkwrap.json',
-  'yarn.lock',
-  'bun.lock',
-  'bun.lockb',
-] as const
+export const NPM_LOCKFILE_NAMES = Object.keys(LOCKFILE_MANAGERS)
 
 /** node_modules 的布局快照：解析键 → 解析到的真实路径。 */
 export type LayoutSnapshot = Map<string, string>
@@ -62,10 +62,18 @@ export interface NpmSourceOptions {
 interface NpmJournalData {
   snapshot: Record<string, string>
   versions: Record<string, string>
+  /**
+   * 本次实际使用的包管理器。恢复时优先用它，保证中断事务不会被另一种
+   * 管理器接管、凭空写出第二个 lockfile。旧日志没有这个字段时回退 npm。
+   */
+  packageManager?: PackageManagerName
 }
 
 export class NpmInstallSource implements InstallSource {
   readonly kind = 'npm' as const
+
+  /** 检测结果按来源实例缓存：同一次事务的安装与回滚必须用同一个管理器。 */
+  private detected?: DetectedPackageManager
 
   constructor(private readonly options: NpmSourceOptions) {}
 
@@ -89,7 +97,7 @@ export class NpmInstallSource implements InstallSource {
       const version = this.versionOf(path)
       if (version) versions[packageNameFromKey(key)] = version
     }
-    return { snapshot: Object.fromEntries(snapshot), versions }
+    return { snapshot: Object.fromEntries(snapshot), versions, packageManager: this.packageManager().name }
   }
 
   /**
@@ -106,12 +114,16 @@ export class NpmInstallSource implements InstallSource {
     const journal = (data ?? {}) as Partial<NpmJournalData>
     if (!journal.snapshot) return
 
+    // 恢复必须复用事务开始时的管理器：当前项目即使已经改了 packageManager，
+    // 也不能让半截事务的清理动作写出第二种 lockfile。旧日志没有字段时回退 npm。
+    const manager = journalManager(journal.packageManager)
+
     const before = new Map(Object.entries(journal.snapshot))
     const current = this.snapshot()
 
     const added = new Set(this.addedPluginNames(before, current))
     for (const name of added) {
-      await this.runPackageManager(['remove', name])
+      await this.runPackageManager(['remove', name], manager)
     }
 
     const afterCleanup = this.snapshot()
@@ -121,7 +133,7 @@ export class NpmInstallSource implements InstallSource {
       const version = journal.versions?.[name]
       if (!version) continue
       if (afterCleanup.get(key) === path && this.versionOf(path) === version) continue
-      await this.runPackageManager(['add', `${name}@${version}`])
+      await this.runPackageManager(['add', `${name}@${version}`], manager)
     }
   }
 
@@ -329,14 +341,44 @@ export class NpmInstallSource implements InstallSource {
     return name
   }
 
-  private async runPackageManager(args: string[]): Promise<void> {
+  /**
+   * 检测一次项目包管理器。检测只读文件，不执行命令；冲突时抛错而不是回退 npm。
+   * 结果按来源实例缓存，保证一次事务里安装与回滚使用同一个管理器。
+   */
+  private packageManager(): DetectedPackageManager {
+    this.detected ??= detectPackageManager({
+      projectRoot: this.options.projectRoot,
+      ...(this.options.yarnPath !== undefined ? { yarnPath: this.options.yarnPath } : {}),
+    })
+    return this.detected
+  }
+
+  /**
+   * 执行一次包管理器命令。四个管理器统一使用 `add` / `remove`。
+   *
+   * `override` 只用于事务恢复：日志里记录了本次事务开始时的管理器，恢复必须
+   * 复用它，不能重新检测。执行失败时把管理器与完整命令写进错误，避免用户只
+   * 看到一句 `ENOENT`。
+   */
+  private async runPackageManager(
+    args: string[],
+    override?: PackageManagerName,
+  ): Promise<void> {
+    const manager = override
+      ? packageManagerByName(override, {
+          ...(this.options.yarnPath !== undefined ? { yarnPath: this.options.yarnPath } : {}),
+        })
+      : this.packageManager()
     const run = this.options.run ?? defaultRun
-    if (this.options.yarnPath && existsSync(this.options.yarnPath)) {
-      // 单文件 CLI（yarn.cjs）可以直接随包分发，不需要用户机器上有全局安装
-      await run(process.execPath, [this.options.yarnPath, ...args], this.options.projectRoot)
-      return
+    const argv = [...manager.argsPrefix, ...args]
+    try {
+      await run(manager.command, argv, this.options.projectRoot)
+    } catch (error) {
+      throw new Error(
+        `${manager.name} 执行失败（${[manager.command, ...argv].join(' ')}）：${(error as Error).message}`,
+        { cause: error },
+      )
     }
-    await run('npm', args, this.options.projectRoot)
   }
 
   private readPluginManifest(name: string): PluginManifest {
@@ -425,6 +467,11 @@ export class NpmInstallSource implements InstallSource {
       return undefined
     }
   }
+}
+
+/** 日志里的管理器字段归一化；旧日志或损坏值回退 npm。 */
+function journalManager(value: unknown): PackageManagerName {
+  return value === 'pnpm' || value === 'yarn' || value === 'bun' ? value : 'npm'
 }
 
 function packageNameOf(spec: string): string {

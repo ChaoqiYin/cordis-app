@@ -23,8 +23,15 @@ interface Fixture {
   installer: PluginInstaller
   /** 下一次 `add` 要落下的包 */
   queue: Array<() => void>
-  /** 依次收到的包管理器命令，用来断言回滚动作 */
+  /** 依次收到的包管理器参数，用来断言回滚动作 */
   calls: string[][]
+  /** 依次收到的完整命令（含管理器名），用来断言检测结果 */
+  runs: Array<{ command: string; args: string[] }>
+}
+
+interface FixtureOptions {
+  /** 替换默认的模拟包管理器；仍会记录命令 */
+  run?: (command: string, args: string[], cwd: string) => Promise<void>
 }
 
 const LOCKFILES = ['pnpm-lock.yaml', 'package-lock.json', 'npm-shrinkwrap.json', 'yarn.lock', 'bun.lock', 'bun.lockb']
@@ -36,7 +43,7 @@ const INITIAL_LOCK = 'lockfileVersion: initial\n'
  * `run` 收到的是 `['add', spec]` 或 `['remove', name]`，这里按命令模拟包管理器
  * 对 node_modules / package.json / lockfile 的改动，从而让安装器看到真实变化。
  */
-function createFixture(): Fixture {
+function createFixture(options: FixtureOptions = {}): Fixture {
   const projectRoot = mkdtempSync(join(tmpdir(), 'cordis-installer-'))
   const nodeModules = join(projectRoot, 'node_modules')
   mkdirSync(nodeModules, { recursive: true })
@@ -55,13 +62,19 @@ function createFixture(): Fixture {
     nodeModules,
     queue: [],
     calls: [],
+    runs: [],
     installer: undefined as unknown as PluginInstaller,
   }
   fixture.installer = new PluginInstaller({
     projectRoot,
     frameworkVersion: '1.0.0',
-    async run(_command, args) {
+    async run(command, args, cwd) {
       fixture.calls.push(args)
+      fixture.runs.push({ command, args })
+      if (options.run) {
+        await options.run(command, args, cwd)
+        return
+      }
       if (args[0] === 'add') {
         const task = fixture.queue.shift()
         if (!task) throw new Error('测试没有准备 add 的动作')
@@ -193,6 +206,48 @@ function writeJournal(
   )
 }
 
+/** 落一份 v3 日志，data 里可带 packageManager。 */
+function writeJournalV3(
+  fixture: Fixture,
+  journal: {
+    action: 'install' | 'remove'
+    spec: string
+    data: Record<string, unknown>
+    files?: Record<string, string | null>
+  },
+): void {
+  mkdirSync(join(fixture.projectRoot, '.cordis'), { recursive: true })
+  writeFileSync(
+    join(fixture.projectRoot, JOURNAL),
+    JSON.stringify({
+      version: 3,
+      source: 'npm',
+      action: journal.action,
+      spec: journal.spec,
+      startedAt: new Date().toISOString(),
+      files:
+        journal.files ??
+        {
+          [join(fixture.projectRoot, 'package.json')]: readFileSync(
+            join(fixture.projectRoot, 'package.json'),
+            'utf8',
+          ),
+          [join(fixture.projectRoot, 'app.json')]: readFileSync(
+            join(fixture.projectRoot, 'app.json'),
+            'utf8',
+          ),
+          ...Object.fromEntries(
+            Object.entries(lockfileSnapshot(fixture)).map(([name, content]) => [
+              join(fixture.projectRoot, name),
+              content,
+            ]),
+          ),
+        },
+      data: journal.data,
+    }),
+  )
+}
+
 // ---------------------------------------------------------------- 安装
 
 test('安装新插件把插件 id 追加到 app.json 的启用列表', async () => {
@@ -203,6 +258,7 @@ test('安装新插件把插件 id 追加到 app.json 的启用列表', async () 
   assert.equal(result.id, 'theme-picker')
   assert.equal(result.restarted, false, '新插件不必重启，直接挂载即可')
 
+  assert.deepEqual(fixture.runs[0], { command: 'pnpm', args: ['add', 'theme-picker'] }, '按 pnpm-lock 检测到 pnpm')
   assert.deepEqual(readApp(fixture).plugins, ['theme-picker'], 'app.json 记的是插件 id')
   assert.equal(readPackage(fixture).dependencies['theme-picker'], '^2.1.3', '依赖写进项目 package.json')
 })
@@ -532,6 +588,96 @@ test('没有事务日志时 recover 是空操作', async () => {
   const fixture = createFixture()
   assert.equal(await fixture.installer.recover(), undefined)
   assert.deepEqual(fixture.calls, [])
+})
+
+// ---------------------------------------------------------------- 包管理器适配
+
+test('安装事务日志记录检测到的包管理器', async () => {
+  const fixture = createFixture()
+  let recorded: { data?: { packageManager?: string } } | undefined
+  fixture.queue.push(() => {
+    recorded = JSON.parse(readFileSync(join(fixture.projectRoot, JOURNAL), 'utf8'))
+    writePlugin(fixture, 'theme-picker')
+    addDependency(fixture, 'theme-picker', '^1.0.0')
+    writeLock(fixture, `${INITIAL_LOCK}# added theme-picker\n`)
+  })
+
+  await fixture.installer.install('theme-picker')
+
+  assert.equal(recorded?.data?.packageManager, 'pnpm', '日志要记下本次实际使用的管理器')
+})
+
+test('恢复使用事务日志里的包管理器，而不是当前检测结果', async () => {
+  const fixture = createFixture()
+  // 当前项目没有任何信号，重新检测会回退 npm；日志里的 pnpm 必须优先。
+  rmSync(join(fixture.projectRoot, 'pnpm-lock.yaml'))
+  const keepDir = join(fixture.nodeModules, 'keep')
+  mkdirSync(keepDir, { recursive: true })
+  writeJournalV3(fixture, {
+    action: 'remove',
+    spec: 'keep',
+    data: {
+      snapshot: { keep: keepDir },
+      versions: { keep: '1.2.0' },
+      packageManager: 'pnpm',
+    },
+  })
+  installTask(fixture, 'keep', { version: '1.2.0' })
+
+  await fixture.installer.recover()
+
+  assert.deepEqual(fixture.runs.at(-1), { command: 'pnpm', args: ['add', 'keep@1.2.0'] })
+})
+
+test('旧事务日志没有 packageManager 字段时回退 npm', async () => {
+  const fixture = createFixture()
+  const keepDir = join(fixture.nodeModules, 'keep')
+  mkdirSync(keepDir, { recursive: true })
+  // v2 日志没有包管理器字段，即便项目现在是 pnpm 也按 npm 恢复。
+  writeJournal(fixture, {
+    action: 'remove',
+    spec: 'keep',
+    snapshot: { keep: keepDir },
+    versions: { keep: '1.2.0' },
+  })
+  installTask(fixture, 'keep', { version: '1.2.0' })
+
+  await fixture.installer.recover()
+
+  assert.deepEqual(fixture.runs.at(-1), { command: 'npm', args: ['add', 'keep@1.2.0'] })
+})
+
+test('包管理器信号冲突时明确报错，且不执行任何包管理器命令', async () => {
+  const fixture = createFixture()
+  rmSync(join(fixture.projectRoot, 'pnpm-lock.yaml'))
+  writeFileSync(join(fixture.projectRoot, 'package-lock.json'), '{}')
+  writeFileSync(join(fixture.projectRoot, 'yarn.lock'), '')
+
+  await assert.rejects(
+    () => fixture.installer.install('theme-picker'),
+    (error: Error) =>
+      /冲突|歧义/.test(error.message) &&
+      /npm/.test(error.message) &&
+      /yarn/.test(error.message) &&
+      /packageManager|删除/.test(error.message),
+  )
+  assert.deepEqual(fixture.runs, [], '检测失败不能先跑一次包管理器')
+})
+
+test('包管理器执行失败时错误信息包含管理器与命令', async () => {
+  const fixture = createFixture({
+    async run() {
+      throw new Error('spawn ENOENT')
+    },
+  })
+
+  await assert.rejects(
+    () => fixture.installer.install('theme-picker'),
+    (error: Error) =>
+      /pnpm/.test(error.message) &&
+      /add theme-picker/.test(error.message) &&
+      /ENOENT/.test(error.message),
+  )
 })
 
 // ---------------------------------------------------------------- 布局快照

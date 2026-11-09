@@ -223,6 +223,76 @@ test('运行形态决定安装来源：项目模式 npm，打包模式 bundle', 
   }
 })
 
+test('pnpm 项目卸载插件只调用 pnpm remove，不生成 package-lock.json', async () => {
+  const fixture = createFixture()
+  writeFileSync(join(fixture.projectRoot, 'pnpm-lock.yaml'), 'lockfileVersion: initial\n')
+  const calls: Array<{ command: string; args: string[]; cwd: string }> = []
+  const port = await findFreePort()
+  const token = generateToken()
+  const handle = await startWorker({
+    port,
+    token,
+    projectRoot: fixture.projectRoot,
+    resourcesDir: fixture.resourcesDir,
+    async packageManager(command, args, cwd) {
+      calls.push({ command, args, cwd })
+    },
+    requestRestart: () => {},
+  })
+
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/api/plugins/demo`, {
+      method: 'DELETE',
+      headers: { authorization: `Bearer ${token}` },
+    })
+    assert.equal(res.status, 200)
+
+    assert.deepEqual(calls, [
+      { command: 'pnpm', args: ['remove', 'demo'], cwd: fixture.projectRoot },
+    ])
+    assert.equal(
+      existsSync(join(fixture.projectRoot, 'package-lock.json')),
+      false,
+      'pnpm 项目不能被悄悄写出 package-lock.json',
+    )
+  } finally {
+    await handle.close()
+  }
+})
+
+test('package.json#packageManager 在 e2e 中优先于 lockfile', async () => {
+  const fixture = createFixture()
+  writeFileSync(join(fixture.projectRoot, 'package-lock.json'), '{}')
+  const pkg = JSON.parse(readFileSync(join(fixture.projectRoot, 'package.json'), 'utf8'))
+  pkg.packageManager = 'yarn@4.5.0'
+  writeFileSync(join(fixture.projectRoot, 'package.json'), JSON.stringify(pkg, null, 2))
+
+  const calls: string[] = []
+  const port = await findFreePort()
+  const token = generateToken()
+  const handle = await startWorker({
+    port,
+    token,
+    projectRoot: fixture.projectRoot,
+    resourcesDir: fixture.resourcesDir,
+    async packageManager(command) {
+      calls.push(command)
+    },
+    requestRestart: () => {},
+  })
+
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/api/plugins/demo`, {
+      method: 'DELETE',
+      headers: { authorization: `Bearer ${token}` },
+    })
+    assert.equal(res.status, 200)
+    assert.deepEqual(calls, ['yarn'])
+  } finally {
+    await handle.close()
+  }
+})
+
 test('打包模式不做项目侧 doctor：不兼容的项目依赖不影响启动', async () => {
   // 桌面形态的项目根是数据目录，根本没有 package.json；即便有，它也不是 npm
   // 安装事实。用一份「项目模式下会硬失败」的依赖，证明打包形态确实跳过了检查。
