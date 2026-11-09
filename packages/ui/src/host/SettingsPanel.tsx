@@ -8,7 +8,9 @@
  * 自动生成的存在理由：schemastery 的 `role()` 提供 UI 元数据，
  * 声明的类型决定控件类型。这要求我们直接读 schema 的结构而不是实例化表单库。
  *
- * 插件管理（安装 / 卸载）也在这里——它是框架自己的设置分组，不是插件贡献的。
+ * 插件管理也在这里——它是框架自己的设置分组，不是插件贡献的。插件生命周期
+ * 只有「已启用 / 已卸载」两个状态与「卸载 / 启用」两个动作，不提供「停用」。
+ * 数据与回调由 `SettingsPanel` 注入，`PluginManager` 本身不发请求，便于 SSR 测试。
  */
 
 import { createElement, useCallback, useEffect, useState, type ReactNode } from 'react'
@@ -17,15 +19,50 @@ import { SchemaForm } from './schema-form.js'
 import { Icon } from './icons.js'
 import { HttpError, useRuntime, useSettings } from 'cordis-app/client'
 
-interface PluginInfo {
+/** 插件来源对用户展示的三分类。 */
+export type PluginOrigin = 'builtin' | 'local' | 'external'
+
+/** `GET /api/plugins` 完整扫描视图里的一个插件。 */
+export interface PluginInfo {
   id: string
+  packageName?: string
   displayName?: string
+  version?: string
+  rootKind: 'builtin' | 'local' | 'dependency' | 'user'
+  origin: PluginOrigin
+  enabled: boolean
   files: string[]
+  /** 物理存在的已卸载插件能否直接启用；缺省视为可以。 */
+  reinstallable?: boolean
 }
 
-interface PluginFailure {
+/** `GET /api/plugins` 里扫描不到、但有卸载记录的插件。 */
+export interface UninstalledPluginInfo {
+  id: string
+  displayName?: string
+  version?: string
+  rootKind: 'builtin' | 'local' | 'dependency' | 'user'
+  origin: PluginOrigin
+  sourceKind?: 'npm' | 'bundle'
+  packageName?: string
+  spec?: string
+  reinstallable: boolean
+  uninstalledAt?: string
+}
+
+export interface PluginFailure {
   id: string
   reason: string
+}
+
+export interface PluginManagerProps {
+  plugins: PluginInfo[]
+  uninstalled: UninstalledPluginInfo[]
+  failures: PluginFailure[]
+  busy?: string | null
+  onInstall(spec: string): Promise<void>
+  onUninstall(id: string): Promise<void>
+  onEnable(id: string): Promise<void>
 }
 
 type ConfigMap = Record<string, unknown>
@@ -36,18 +73,24 @@ export function SettingsPanel(): ReactNode {
   const [config, setConfig] = useState<ConfigMap>({})
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
-  const [installed, setInstalled] = useState<PluginInfo[]>([])
+  const [plugins, setPlugins] = useState<PluginInfo[]>([])
+  const [uninstalled, setUninstalled] = useState<UninstalledPluginInfo[]>([])
   const [failures, setFailures] = useState<PluginFailure[]>([])
 
   const reload = useCallback(async () => {
     try {
-      const [next, plugins] = await Promise.all([
+      const [next, inventory] = await Promise.all([
         runtime.http.get<ConfigMap>('/api/config'),
-        runtime.http.get<{ plugins: PluginInfo[]; failures: PluginFailure[] }>('/api/plugins'),
+        runtime.http.get<{
+          plugins: PluginInfo[]
+          uninstalled: UninstalledPluginInfo[]
+          failures: PluginFailure[]
+        }>('/api/plugins'),
       ])
       setConfig(next)
-      setInstalled(plugins.plugins)
-      setFailures(plugins.failures)
+      setPlugins(inventory.plugins)
+      setUninstalled(inventory.uninstalled ?? [])
+      setFailures(inventory.failures)
       setError(null)
     } catch (e) {
       setError(e instanceof HttpError ? e.message : String(e))
@@ -83,7 +126,8 @@ export function SettingsPanel(): ReactNode {
       <section className="settings-group">
         <h2>插件</h2>
         <PluginManager
-          installed={installed}
+          plugins={plugins}
+          uninstalled={uninstalled}
           failures={failures}
           busy={busy}
           onInstall={async (spec) => {
@@ -97,10 +141,20 @@ export function SettingsPanel(): ReactNode {
               setBusy(null)
             }
           }}
-          onRemove={async (id) => {
+          onUninstall={async (id) => {
             setBusy(id)
             try {
               await runtime.http.delete(`/api/plugins/${encodeURIComponent(id)}`)
+            } catch (e) {
+              setError(e instanceof HttpError ? e.message : String(e))
+            } finally {
+              setBusy(null)
+            }
+          }}
+          onEnable={async (id) => {
+            setBusy(id)
+            try {
+              await runtime.http.post(`/api/plugins/${encodeURIComponent(id)}/enable`)
             } catch (e) {
               setError(e instanceof HttpError ? e.message : String(e))
             } finally {
@@ -146,14 +200,73 @@ function defaultOf(schema: unknown): Record<string, unknown> {
   return (node?.meta?.default as Record<string, unknown> | undefined) ?? {}
 }
 
-function PluginManager(props: {
-  installed: PluginInfo[]
-  failures: PluginFailure[]
-  busy: string | null
-  onInstall(spec: string): Promise<void>
-  onRemove(id: string): Promise<void>
-}): ReactNode {
-  const [spec, setSpec] = useState('')
+const ORIGIN_LABEL: Record<PluginOrigin, string> = {
+  builtin: '随包',
+  local: '项目本地',
+  external: '外部',
+}
+
+interface UninstalledRow {
+  id: string
+  displayName: string
+  version?: string
+  origin: PluginOrigin
+  reinstallable: boolean
+}
+
+/**
+ * 已卸载分组 = `plugins` 中 `enabled: false` 的条目 + `uninstalled` 数组。
+ *
+ * 两边都出现同一个 id 时保留扫描结果（它有真实的展示信息与物理状态），
+ * 保证一个插件只渲染一行。
+ */
+function mergeUninstalled(
+  plugins: PluginInfo[],
+  uninstalled: UninstalledPluginInfo[],
+): UninstalledRow[] {
+  const rows: UninstalledRow[] = []
+  const seen = new Set<string>()
+
+  for (const plugin of plugins) {
+    if (plugin.enabled) continue
+    seen.add(plugin.id)
+    rows.push({
+      id: plugin.id,
+      displayName: plugin.displayName ?? plugin.id,
+      ...(plugin.version ? { version: plugin.version } : {}),
+      origin: plugin.origin,
+      reinstallable: plugin.reinstallable !== false,
+    })
+  }
+
+  for (const entry of uninstalled) {
+    if (seen.has(entry.id)) continue
+    seen.add(entry.id)
+    rows.push({
+      id: entry.id,
+      displayName: entry.displayName ?? entry.id,
+      ...(entry.version ? { version: entry.version } : {}),
+      origin: entry.origin,
+      reinstallable: entry.reinstallable,
+    })
+  }
+
+  return rows
+}
+
+/**
+ * 纯插件管理组件：不发请求，数据与回调全部由 `SettingsPanel` 注入。
+ *
+ * 不持有 React 状态，安装表单使用非受控输入；这样 SSR 与元素树测试都能
+ * 直接渲染并检查按钮行为。
+ */
+export function PluginManager(props: PluginManagerProps): ReactNode {
+  const busy = props.busy ?? null
+  const enabled = props.plugins.filter((plugin) => plugin.enabled)
+  const uninstalled = mergeUninstalled(props.plugins, props.uninstalled)
+  const enabledIds = new Set(enabled.map((plugin) => plugin.id))
+  // 失败列表只反映真正启用中的插件；已卸载插件不参与加载。
+  const failures = props.failures.filter((failure) => enabledIds.has(failure.id))
 
   return (
     <div className="plugin-manager">
@@ -161,50 +274,92 @@ function PluginManager(props: {
         className="plugin-install"
         onSubmit={(event) => {
           event.preventDefault()
-          const trimmed = spec.trim()
-          if (!trimmed) return
-          void props.onInstall(trimmed).then(() => setSpec(''))
+          const form = event.currentTarget
+          const input = form.elements.namedItem('spec')
+          const value = input instanceof HTMLInputElement ? input.value.trim() : ''
+          if (!value) return
+          void props.onInstall(value).then(() => form.reset())
         }}
       >
         <input
           type="text"
-          value={spec}
+          name="spec"
           placeholder="包名或 tarball URL，例如 @scope/plugin-foo@1.2.3"
-          onChange={(event) => setSpec(event.target.value)}
           spellCheck={false}
         />
-        <button type="submit" className="button" disabled={!spec.trim() || props.busy === 'install'}>
-          {props.busy === 'install' ? '安装中…' : '安装'}
+        <button type="submit" className="button" disabled={busy === 'install'}>
+          {busy === 'install' ? '安装中…' : '安装'}
         </button>
       </form>
 
-      {props.installed.length === 0 && <p className="settings-empty">还没有安装插件。</p>}
+      <section className="plugin-group">
+        <h3>已启用</h3>
+        {enabled.length === 0 ? (
+          <p className="settings-empty">还没有已启用的插件。</p>
+        ) : (
+          <ul className="plugin-list">
+            {enabled.map((plugin) => (
+              <li key={plugin.id} className="plugin-row" data-plugin-id={plugin.id}>
+                <Icon name="puzzle" className="plugin-icon" />
+                <div className="plugin-meta">
+                  <span className="plugin-name">{plugin.displayName ?? plugin.id}</span>
+                  <span className="plugin-id">{plugin.id}</span>
+                </div>
+                {plugin.version && <span className="plugin-version">v{plugin.version}</span>}
+                <OriginBadge origin={plugin.origin} />
+                <button
+                  type="button"
+                  className="button button-ghost"
+                  disabled={busy === plugin.id}
+                  onClick={() => void props.onUninstall(plugin.id)}
+                >
+                  卸载
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
 
-      <ul className="plugin-list">
-        {props.installed.map((plugin) => (
-          <li key={plugin.id} className="plugin-row">
-            <Icon name="puzzle" className="plugin-icon" />
-            <div className="plugin-meta">
-              <span className="plugin-name">{plugin.displayName ?? plugin.id}</span>
-              <span className="plugin-id">{plugin.id}</span>
-            </div>
-            <button
-              type="button"
-              className="button button-ghost"
-              disabled={props.busy === plugin.id}
-              onClick={() => void props.onRemove(plugin.id)}
-            >
-              卸载
-            </button>
-          </li>
-        ))}
-      </ul>
+      <section className="plugin-group">
+        <h3>已卸载</h3>
+        {uninstalled.length === 0 ? (
+          <p className="settings-empty">没有已卸载的插件。</p>
+        ) : (
+          <ul className="plugin-list">
+            {uninstalled.map((plugin) => (
+              <li key={plugin.id} className="plugin-row" data-plugin-id={plugin.id}>
+                <Icon name="puzzle" className="plugin-icon" />
+                <div className="plugin-meta">
+                  <span className="plugin-name">{plugin.displayName}</span>
+                  <span className="plugin-id">{plugin.id}</span>
+                </div>
+                {plugin.version && <span className="plugin-version">v{plugin.version}</span>}
+                <OriginBadge origin={plugin.origin} />
+                {!plugin.reinstallable && (
+                  <span className="plugin-reason">
+                    无法一键重装：没有可用的重装记录，请通过安装表单重新安装。
+                  </span>
+                )}
+                <button
+                  type="button"
+                  className="button button-ghost"
+                  disabled={!plugin.reinstallable || busy === plugin.id}
+                  onClick={() => void props.onEnable(plugin.id)}
+                >
+                  启用
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
 
-      {props.failures.length > 0 && (
+      {failures.length > 0 && (
         <div className="notice notice-warn">
           <strong>以下插件加载失败</strong>
           <ul>
-            {props.failures.map((failure) => (
+            {failures.map((failure) => (
               <li key={failure.id}>
                 <code>{failure.id}</code> — {failure.reason}
               </li>
@@ -213,5 +368,13 @@ function PluginManager(props: {
         </div>
       )}
     </div>
+  )
+}
+
+function OriginBadge(props: { origin: PluginOrigin }): ReactNode {
+  return (
+    <span className={`plugin-origin plugin-origin-${props.origin}`}>
+      {ORIGIN_LABEL[props.origin]}
+    </span>
   )
 }

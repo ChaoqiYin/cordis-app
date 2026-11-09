@@ -13,7 +13,15 @@ export { ErrorBoundary } from './ErrorBoundary.js'
 export { PluginMenuTrigger } from './PluginMenuTrigger.js'
 export { PluginPageOutlet } from './PluginPageOutlet.js'
 export { PluginSlot } from './PluginSlot.js'
-export { SettingsPanel } from './SettingsPanel.js'
+export {
+  PluginManager,
+  SettingsPanel,
+  type PluginFailure,
+  type PluginInfo,
+  type PluginManagerProps,
+  type PluginOrigin,
+  type UninstalledPluginInfo,
+} from './SettingsPanel.js'
 export {
   currentPath,
   installHistoryListener,
