@@ -5,10 +5,19 @@
  */
 
 import type { ConfigStore, Kernel, KernelContext } from '@cordis-app/kernel'
-import type { ClientManifest, PluginFailure, RuntimeMode } from '@cordis-app/protocol'
+import type {
+  ClientManifest,
+  PluginFailure,
+  PluginInventory,
+  RuntimeMode,
+} from '@cordis-app/protocol'
 import { parseJson, readBody, sendError, sendJson } from '../builtin/http-utils.js'
 import type { PluginScan } from '../plugin/catalog.js'
-import { planPluginViews, type PluginStateStore } from '../plugin/plugin-state.js'
+import {
+  buildInstalledPluginRecord,
+  planPluginViews,
+  type PluginStateStore,
+} from '../plugin/plugin-state.js'
 import type { PluginInstaller } from '../plugin/installer.js'
 import { PluginLifecycle, PluginLifecycleError } from '../plugin/plugin-lifecycle.js'
 
@@ -63,7 +72,7 @@ export function installRoutes(ctx: KernelContext, options: ApiOptions): void {
   ctx.router.get('/api/plugins', (_req, res) => {
     const manifest = options.getManifest()
     const views = planPluginViews(options.scan(), options.state.read())
-    sendJson(res, 200, {
+    const inventory: PluginInventory = {
       plugins: views.plugins.map((view) => ({
         id: view.id,
         // 两套身份都交给前端：展示与卸载各自需要不同的那个
@@ -73,6 +82,8 @@ export function installRoutes(ctx: KernelContext, options: ApiOptions): void {
         rootKind: view.rootKind,
         origin: view.origin,
         enabled: view.enabled,
+        // 与 uninstalled 条目同源：物理存在时能否通过「启用」恢复，由视图规划判定。
+        reinstallable: view.reinstallable,
         files: manifest.plugins[view.id]?.files ?? [],
       })),
       uninstalled: views.uninstalled,
@@ -81,7 +92,8 @@ export function installRoutes(ctx: KernelContext, options: ApiOptions): void {
         views.failures,
         options.failures.filter((failure) => !views.uninstalledIds.has(failure.id)),
       ),
-    })
+    }
+    sendJson(res, 200, inventory)
   })
 
   /** 安装：粘贴包名或 tarball URL。不提供搜索、评分、版本选择。 */
@@ -97,13 +109,15 @@ export function installRoutes(ctx: KernelContext, options: ApiOptions): void {
         snapshotPaths: [options.state.statePath],
         commit: (installed) => {
           // 安装即启用：清除该 id 的已卸载状态并写入新的安装元数据。
-          options.state.setInstalled(installed.id, {
-            spec: body.spec!,
-            sourceKind: installer.sourceKind,
-            ...(installed.packageName ? { packageName: installed.packageName } : {}),
-            ...(installed.version ? { version: installed.version } : {}),
-            installedAt: now().toISOString(),
-          })
+          options.state.setInstalled(
+            installed.id,
+            buildInstalledPluginRecord(
+              body.spec!,
+              installer.sourceKind,
+              installed,
+              now().toISOString(),
+            ),
+          )
         },
       })
       // 安装动作本身已经写盘，进程内无法可靠卸载 require.cache，

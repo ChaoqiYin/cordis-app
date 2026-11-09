@@ -135,12 +135,12 @@ export class PluginInstaller {
   async install(spec: string, hooks: InstallerTransactionHooks = {}): Promise<InstallResult> {
     // 上一次事务若没走完（进程被杀、机器断电），先还原再叠加新的改动。
     await this.recover()
-    return this.transact('install', spec, () => this.defaultSource.install(spec, this.context), undefined, hooks)
+    return this.physical('install', spec, () => this.defaultSource.install(spec, this.context), hooks)
   }
 
   async remove(spec: string, hooks: InstallerTransactionHooks = {}): Promise<InstallResult> {
     await this.recover()
-    return this.transact('remove', spec, () => this.defaultSource.remove(spec, this.context), undefined, hooks)
+    return this.physical('remove', spec, () => this.defaultSource.remove(spec, this.context), hooks)
   }
 
   /**
@@ -156,23 +156,40 @@ export class PluginInstaller {
     hooks: InstallerTransactionHooks = {},
   ): Promise<InstallResult> {
     await this.recover()
-    return this.transact(action, spec, undefined, result, hooks)
+    const journal = this.beginJournal(action, spec, hooks, false)
+    return this.commit(journal, result, hooks)
   }
 
   /**
-   * 执行一次带日志的事务。
-   *
-   * 日志必须在来源动手之前落盘，且包含来源的声明式快照。来源不写日志，
-   * 事务也不理解任何来源的内部细节。逻辑动作（没有 `apply`）不调用来源，
-   * 因此也不捕获来源状态。
+   * 物理事务入口：由安装来源执行真实的磁盘动作。`apply` 必填，来源状态在
+   * 来源动手之前捕获进日志。
    */
-  private async transact(
+  private async physical(
     action: 'install' | 'remove',
     spec: string,
-    apply: (() => Promise<SourceInstallResult>) | undefined,
-    fallback: SourceInstallResult | undefined,
-    hooks: InstallerTransactionHooks = {},
+    apply: () => Promise<SourceInstallResult>,
+    hooks: InstallerTransactionHooks,
   ): Promise<InstallResult> {
+    const journal = this.beginJournal(action, spec, hooks, true)
+    let result: SourceInstallResult
+    try {
+      result = await apply()
+    } catch (error) {
+      throw await this.rollbackError(journal, error)
+    }
+    return this.commit(journal, result, hooks)
+  }
+
+  /**
+   * 事务开始：日志必须在来源动手之前落盘，且包含来源的声明式快照。
+   * 来源不写日志，事务也不理解任何来源的内部细节。
+   */
+  private beginJournal(
+    action: 'install' | 'remove',
+    spec: string,
+    hooks: InstallerTransactionHooks,
+    captureSource: boolean,
+  ): InstallJournal {
     const source = this.defaultSource
     const journal: InstallJournal = {
       version: 3,
@@ -181,22 +198,34 @@ export class PluginInstaller {
       spec,
       startedAt: new Date().toISOString(),
       files: captureFiles([...source.snapshotPaths(), ...(hooks.snapshotPaths ?? [])]),
-      ...(apply ? { data: source.capture() } : {}),
+      ...(captureSource ? { data: source.capture() } : {}),
     }
     this.writeJournal(journal)
+    return journal
+  }
 
+  /** 物理动作成功后提交：先跑 hooks.commit，再删除日志；任一步失败都回滚。 */
+  private async commit(
+    journal: InstallJournal,
+    result: SourceInstallResult,
+    hooks: InstallerTransactionHooks,
+  ): Promise<InstallResult> {
     try {
-      const result = apply ? await apply() : fallback!
       await hooks.commit?.(result)
       this.clearJournal()
       return toInstallResult(result)
     } catch (error) {
-      const note = await this.rollback(journal)
-      if (note) {
-        throw new Error(`${(error as Error).message}；${note}`)
-      }
-      throw error
+      throw await this.rollbackError(journal, error)
     }
+  }
+
+  /** 回滚并把回滚失败的信息附到原始错误后面。 */
+  private async rollbackError(journal: InstallJournal, error: unknown): Promise<Error> {
+    const note = await this.rollback(journal)
+    if (note) {
+      return new Error(`${(error as Error).message}；${note}`)
+    }
+    return error as Error
   }
 
   /**

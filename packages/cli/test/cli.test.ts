@@ -415,6 +415,33 @@ test('list 合并扫描结果、随包插件与已卸载状态，显示来源', 
   assert.match(output, /已启用/)
 })
 
+test('list 与 remove 纳入项目模式配置的用户插件根', async () => {
+  const root = join(tempDir(), 'demo')
+  await commandNew(parseArgs(['new', 'demo', '--project', root]), fakeIO().io)
+  const userPlugins = join(tempDir(), 'user-plugins')
+  writePluginDir(join(userPlugins, 'user-pkg'), 'user-pkg', 'user-id')
+
+  const list = fakeIO({ userPluginsDir: userPlugins })
+  assert.equal(await commandList(parseArgs(['list', '--project', root, '--json']), list.io), 0)
+  const row = JSON.parse(list.out.join('\n')).plugins.find((entry: any) => entry.id === 'user-id')
+  assert.equal(row.rootKind, 'user')
+  assert.equal(row.origin, 'external')
+  assert.equal(row.status, 'enabled')
+
+  // 项目模式的 user 插件与随包/本地插件一样只写状态，不跑包管理器。
+  const calls: string[][] = []
+  const remove = fakeIO({
+    userPluginsDir: userPlugins,
+    async packageManager(_command, args) {
+      calls.push(args)
+    },
+  })
+  assert.equal(await commandRemove(parseArgs(['remove', 'user-id', '--project', root]), remove.io), 0)
+  assert.deepEqual(calls, [])
+  assert.equal(existsSync(join(userPlugins, 'user-pkg', 'plugin.json')), true)
+  assert.equal(readJson(join(root, 'app.json')).uninstalledPlugins.includes('user-id'), true)
+})
+
 test('list 展示已卸载但物理不存在的插件及其重装信息', async () => {
   const root = join(tempDir(), 'demo')
   await commandNew(parseArgs(['new', 'demo', '--project', root]), fakeIO().io)

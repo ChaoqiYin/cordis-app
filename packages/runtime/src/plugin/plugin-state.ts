@@ -17,9 +17,16 @@
 
 import { mkdirSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import type { PluginFailure, RuntimeMode } from '@cordis-app/protocol'
+import type {
+  PluginEntryBase,
+  PluginFailure,
+  PluginOrigin,
+  PluginRootKind,
+  RuntimeMode,
+  UninstalledPluginEntry,
+} from '@cordis-app/protocol'
 import { readOptionalObjectJson } from '../json.js'
-import type { InstalledPlugin, PluginRootKind, PluginScan } from './catalog.js'
+import { pluginVersion, type InstalledPlugin, type PluginScan } from './catalog.js'
 import type { InstallSourceKind } from './install-source.js'
 
 /** 安装成功后的元数据；卸载时从这里合成重装 spec。 */
@@ -30,6 +37,27 @@ export interface InstalledPluginRecord {
   packageName?: string
   version?: string
   installedAt: string
+}
+
+/**
+ * 构造安装记录。
+ *
+ * HTTP 安装、CLI 安装与生命周期重装必须写出完全相同的字段集合，否则同一
+ * 插件从不同入口安装后，「已卸载」列表里的重装信息会不一致。
+ */
+export function buildInstalledPluginRecord(
+  spec: string,
+  sourceKind: InstallSourceKind,
+  installed: { packageName?: string; version?: string },
+  installedAt: string,
+): InstalledPluginRecord {
+  return {
+    spec,
+    sourceKind,
+    ...(installed.packageName ? { packageName: installed.packageName } : {}),
+    ...(installed.version ? { version: installed.version } : {}),
+    installedAt,
+  }
 }
 
 /** 一次卸载的完整记录；`sourceKind` / `packageName` / `spec` 对随包/本地可省略。 */
@@ -48,14 +76,12 @@ export interface UninstalledPluginRecord {
  * 读取状态后的合并结果。
  *
  * `uninstalledIds` 是有效 id 集合；`uninstalled` 只包含其中存在明细记录的 id。
- * `staleUninstalledIds` 是状态文件里有、但真源已不再声明的记录——不展示，
- * 并在下一次 `write()` 时清理。
+ * 状态文件里有、但真源已不再声明的记录不展示，并在下一次 `write()` 时清理。
  */
 export interface PluginState {
   installed: Record<string, InstalledPluginRecord>
   uninstalled: Record<string, UninstalledPluginRecord>
   uninstalledIds: string[]
-  staleUninstalledIds: string[]
 }
 
 export interface PluginStateStoreOptions {
@@ -110,7 +136,6 @@ export class PluginStateStore {
         installed: file.installed,
         uninstalled: file.uninstalled,
         uninstalledIds: Object.keys(file.uninstalled),
-        staleUninstalledIds: [],
       }
     }
 
@@ -119,19 +144,16 @@ export class PluginStateStore {
     const uninstalledIds =
       app === undefined ? Object.keys(file.uninstalled) : stringArray(app.uninstalledPlugins)
 
-    const effective = new Set(uninstalledIds)
     const uninstalled: Record<string, UninstalledPluginRecord> = {}
     for (const id of uninstalledIds) {
       const record = file.uninstalled[id]
       if (record) uninstalled[id] = record
     }
-    const staleUninstalledIds = Object.keys(file.uninstalled).filter((id) => !effective.has(id))
 
     return {
       installed: file.installed,
       uninstalled,
       uninstalledIds,
-      staleUninstalledIds,
     }
   }
 
@@ -171,7 +193,6 @@ export class PluginStateStore {
       installed,
       uninstalled: { ...state.uninstalled, [record.id]: record },
       uninstalledIds,
-      staleUninstalledIds: [],
     }
     if (this.mode === 'packaged') this.write(next)
     else this.writeProjectState(next, { removeEnabledId: record.id })
@@ -181,9 +202,8 @@ export class PluginStateStore {
   /**
    * 清除已卸载状态并把 id 追加到启用顺序末尾。
    *
-   * 与 `clearUninstalled` 的区别：启用是一个用户动作，必须让插件重新进入
-   * `app.json.plugins`（数组存在时）；`clearUninstalled` 只用于内部清理，
-   * 不改变启用顺序。打包模式的 app.json 只读，只写状态文件。
+   * 启用是一个用户动作，必须让插件重新进入 `app.json.plugins`（数组存在时）。
+   * 打包模式的 app.json 只读，只写状态文件。
    */
   markEnabled(id: string): PluginState {
     const state = this.read()
@@ -193,25 +213,9 @@ export class PluginStateStore {
       installed: state.installed,
       uninstalled,
       uninstalledIds: state.uninstalledIds.filter((candidate) => candidate !== id),
-      staleUninstalledIds: [],
     }
     if (this.mode === 'packaged') this.write(next)
     else this.writeProjectState(next, { appendEnabledId: id })
-    return next
-  }
-
-  /** 清除一个 id 的已卸载状态；不触碰 app.json.plugins 的启用顺序。 */
-  clearUninstalled(id: string): PluginState {
-    const state = this.read()
-    const uninstalled = { ...state.uninstalled }
-    delete uninstalled[id]
-    const next: PluginState = {
-      installed: state.installed,
-      uninstalled,
-      uninstalledIds: state.uninstalledIds.filter((candidate) => candidate !== id),
-      staleUninstalledIds: [],
-    }
-    this.write(next)
     return next
   }
 
@@ -224,18 +228,7 @@ export class PluginStateStore {
       installed: { ...state.installed, [id]: record },
       uninstalled,
       uninstalledIds: state.uninstalledIds.filter((candidate) => candidate !== id),
-      staleUninstalledIds: [],
     }
-    this.write(next)
-    return next
-  }
-
-  /** 删除安装元数据；已卸载记录与 app.json 不变。 */
-  removeInstalled(id: string): PluginState {
-    const state = this.read()
-    const installed = { ...state.installed }
-    delete installed[id]
-    const next: PluginState = { ...state, installed }
     this.write(next)
     return next
   }
@@ -288,35 +281,12 @@ export class PluginStateStore {
   }
 }
 
-/** 插件来源对用户展示的三分类。 */
-export type PluginOrigin = 'builtin' | 'local' | 'external'
-
 /** 完整扫描视图里的一个插件；`enabled` 决定它是否进入启用视图。 */
-export interface PluginView {
-  plugin: InstalledPlugin
-  id: string
+export interface PluginView extends PluginEntryBase {
+  /** 扫描到的插件实体必然有包名；协议类型对卸载记录放宽为可选。 */
   packageName: string
-  displayName: string
-  version?: string
-  rootKind: PluginRootKind
-  origin: PluginOrigin
-  enabled: boolean
-  /** 已卸载时能否通过「启用」恢复；手工写 app.json 的条目没有记录，为 false。 */
-  reinstallable: boolean
-}
-
-/** 已卸载列表里的条目：扫描结果里找不到、但有卸载记录或 app.json 声明。 */
-export interface UninstalledPluginView {
-  id: string
-  displayName?: string
-  version?: string
-  rootKind: PluginRootKind
-  origin: PluginOrigin
-  sourceKind?: InstallSourceKind
-  packageName?: string
-  spec?: string
-  reinstallable: boolean
-  uninstalledAt?: string
+  /** 扫描到的插件实体；loader 与静态资源需要它的包根。 */
+  entry: InstalledPlugin
 }
 
 /** 视图规划的完整输出：`enabledScan` 给 loader，`plugins` / `uninstalled` / `failures` 组装 API。 */
@@ -328,11 +298,9 @@ export interface PluginViews {
   /** 启用视图的扫描形态，可直接传给 `loadPlugins()`。 */
   enabledScan: PluginScan
   /** 已卸载列表：只含扫描不到、但有卸载记录的插件，避免与 plugins 重复。 */
-  uninstalled: UninstalledPluginView[]
+  uninstalled: UninstalledPluginEntry[]
   /** 已卸载 id 集合。 */
   uninstalledIds: Set<string>
-  /** 启用视图的 id→包根映射；静态资源按它分发。 */
-  enabledRoots: Map<string, string>
   /** 只属于启用中插件的失败记录。 */
   failures: PluginFailure[]
 }
@@ -346,28 +314,28 @@ export interface PluginViews {
 export function planPluginViews(scan: PluginScan, state: PluginState): PluginViews {
   const uninstalledIds = new Set(state.uninstalledIds)
 
-  const plugins: PluginView[] = scan.plugins.map((plugin) => {
-    const enabled = !uninstalledIds.has(plugin.id)
-    const version = plugin.manifest.version ?? plugin.packageJson.version
+  const plugins: PluginView[] = scan.plugins.map((entry) => {
+    const enabled = !uninstalledIds.has(entry.id)
+    const version = pluginVersion(entry)
     return {
-      plugin,
-      id: plugin.id,
-      packageName: plugin.packageName,
-      displayName: plugin.manifest.displayName ?? plugin.id,
+      entry,
+      id: entry.id,
+      packageName: entry.packageName,
+      displayName: entry.manifest.displayName ?? entry.id,
       ...(version ? { version } : {}),
-      rootKind: plugin.rootKind,
-      origin: originOf(plugin.rootKind),
+      rootKind: entry.rootKind,
+      origin: originOf(entry.rootKind),
       enabled,
       // 物理存在时，只有生命周期卸载留下的记录才能保证「启用」只是清状态；
       // 手工写进 app.json 的 id 没有记录，不提供一键启用。
-      reinstallable: !enabled && state.uninstalled[plugin.id] !== undefined,
+      reinstallable: !enabled && state.uninstalled[entry.id] !== undefined,
     }
   })
 
   const enabled = plugins.filter((plugin) => plugin.enabled)
   const scannedIds = new Set(scan.plugins.map((plugin) => plugin.id))
 
-  const uninstalled: UninstalledPluginView[] = []
+  const uninstalled: UninstalledPluginEntry[] = []
   for (const id of state.uninstalledIds) {
     if (scannedIds.has(id)) continue
     const record = state.uninstalled[id]
@@ -387,7 +355,8 @@ export function planPluginViews(scan: PluginScan, state: PluginState): PluginVie
     })
   }
 
-  const enabledRoots = new Map(enabled.map((plugin) => [plugin.id, plugin.plugin.root]))
+  // 启用视图的 id→包根映射只有这一份：静态资源与 loader 都从 enabledScan 取。
+  const enabledRoots = new Map(enabled.map((view) => [view.id, view.entry.root]))
   // 已卸载插件不参与加载，它的失败也不该出现在启用视图里。
   const failures = scan.failures.filter((failure) => !uninstalledIds.has(failure.id))
 
@@ -395,13 +364,12 @@ export function planPluginViews(scan: PluginScan, state: PluginState): PluginVie
     plugins,
     enabled,
     enabledScan: {
-      plugins: enabled.map((plugin) => plugin.plugin),
+      plugins: enabled.map((view) => view.entry),
       failures,
       roots: enabledRoots,
     },
     uninstalled,
     uninstalledIds,
-    enabledRoots,
     failures,
   }
 }

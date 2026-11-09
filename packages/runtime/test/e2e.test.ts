@@ -890,6 +890,7 @@ test('已卸载插件在启动时被过滤：loader、前端清单、静态资�
         rootKind: 'dependency',
         origin: 'external',
         enabled: false,
+        reinstallable: false,
         files: [],
       },
     ])
@@ -997,6 +998,11 @@ test('API 返回完整扫描视图：enabled / origin / rootKind / version / fil
     assert.equal(byId.get('user-one')!.rootKind, 'user')
 
     assert.equal(byId.get('dep-off')!.enabled, false)
+    assert.equal(
+      byId.get('dep-off')!.reinstallable,
+      false,
+      '物理存在但没有卸载记录的插件不提供一键启用',
+    )
     assert.equal((byId.get('dep-off')!.files as string[]).length, 0, '已卸载插件没有前端文件')
     for (const id of ['builtin-one', 'local-one', 'dep-on', 'user-one']) {
       assert.equal(byId.get(id)!.enabled, true)
@@ -1200,11 +1206,15 @@ test('卸载随包、项目本地与项目模式 user 插件：只写状态、�
     ).json()
     const byId = new Map(list.plugins.map((plugin: { id: string }) => [plugin.id, plugin])) as Map<
       string,
-      { enabled: boolean }
+      { enabled: boolean; reinstallable: boolean }
     >
     assert.equal(byId.get('builtin-one')!.enabled, false)
     assert.equal(byId.get('local-one')!.enabled, false)
     assert.equal(byId.get('user-one')!.enabled, false)
+    // 物理存在且有卸载记录：plugins 条目本身就要带出 reinstallable。
+    assert.equal(byId.get('builtin-one')!.reinstallable, true)
+    assert.equal(byId.get('local-one')!.reinstallable, true)
+    assert.equal(byId.get('user-one')!.reinstallable, true)
   } finally {
     await worker.handle.close()
   }
