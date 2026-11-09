@@ -405,6 +405,7 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
 
   installRoutes(ctx, {
     kernel,
+    mode: packaged ? 'packaged' : 'project',
     projectRoot: layout.projectRoot,
     dataDir: layout.dataDir,
     installer,

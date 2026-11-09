@@ -590,6 +590,91 @@ test('没有事务日志时 recover 是空操作', async () => {
   assert.deepEqual(fixture.calls, [])
 })
 
+// ---------------------------------------------------------------- 生命周期事务
+
+test('额外快照文件与物理动作同事务：提交钩子失败时一起回滚', async () => {
+  const fixture = createFixture()
+  installTask(fixture, 'theme-picker', { version: '2.1.3' })
+  const statePath = join(fixture.projectRoot, 'data', 'plugins-state.json')
+  mkdirSync(join(fixture.projectRoot, 'data'), { recursive: true })
+  writeFileSync(statePath, '{"version":1,"installed":{},"uninstalled":{}}\n')
+  const before = readFileSync(statePath, 'utf8')
+
+  await assert.rejects(
+    () =>
+      fixture.installer.install('theme-picker', {
+        snapshotPaths: [statePath],
+        commit() {
+          // 模拟状态写盘只完成一半后失败：事务必须把状态文件也还原。
+          writeFileSync(statePath, '{"broken":true}\n')
+          throw new Error('状态写入失败')
+        },
+      }),
+    /状态写入失败/,
+  )
+
+  assert.equal(readFileSync(statePath, 'utf8'), before, '状态文件必须回到事务前')
+  assert.equal(existsSync(join(fixture.nodeModules, 'theme-picker')), false, '新包必须被撤回')
+  assert.deepEqual(readApp(fixture).plugins, [], 'app.json 的启用顺序必须回滚')
+  assert.equal(existsSync(join(fixture.projectRoot, JOURNAL)), false, '回滚后不留下事务日志')
+})
+
+test('提交钩子在物理动作之后执行，并能读到实际安装结果', async () => {
+  const fixture = createFixture()
+  installTask(fixture, 'theme-picker', { version: '2.1.3' })
+  const seen: Array<{ id: string; version?: string }> = []
+
+  const result = await fixture.installer.install('theme-picker', {
+    commit(installed) {
+      seen.push({ id: installed.id, ...(installed.version ? { version: installed.version } : {}) })
+    },
+  })
+
+  assert.deepEqual(seen, [{ id: 'theme-picker', version: '2.1.3' }])
+  assert.equal(result.id, 'theme-picker')
+})
+
+test('逻辑卸载走同一条事务：状态写入失败时回滚，成功时提交', async () => {
+  const fixture = createFixture()
+  const statePath = join(fixture.projectRoot, 'data', 'plugins-state.json')
+  mkdirSync(join(fixture.projectRoot, 'data'), { recursive: true })
+  writeFileSync(statePath, 'before\n')
+
+  await assert.rejects(
+    () =>
+      fixture.installer.logical(
+        'remove',
+        'demo',
+        { id: 'demo', restarted: true, reason: '逻辑卸载' },
+        {
+          snapshotPaths: [statePath],
+          commit() {
+            writeFileSync(statePath, 'half-written\n')
+            throw new Error('逻辑卸载状态写入失败')
+          },
+        },
+      ),
+    /逻辑卸载状态写入失败/,
+  )
+  assert.equal(readFileSync(statePath, 'utf8'), 'before\n')
+  assert.deepEqual(fixture.calls, [], '逻辑卸载不能调用包管理器')
+
+  const result = await fixture.installer.logical(
+    'remove',
+    'demo',
+    { id: 'demo', restarted: true, reason: '逻辑卸载' },
+    {
+      snapshotPaths: [statePath],
+      commit() {
+        writeFileSync(statePath, 'committed\n')
+      },
+    },
+  )
+  assert.deepEqual(result, { id: 'demo', restarted: true, reason: '逻辑卸载' })
+  assert.equal(readFileSync(statePath, 'utf8'), 'committed\n')
+  assert.equal(existsSync(join(fixture.projectRoot, JOURNAL)), false)
+})
+
 // ---------------------------------------------------------------- 包管理器适配
 
 test('安装事务日志记录检测到的包管理器', async () => {

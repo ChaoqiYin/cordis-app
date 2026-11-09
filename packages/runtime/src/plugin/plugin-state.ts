@@ -152,19 +152,13 @@ export class PluginStateStore {
       return
     }
 
-    const ids = uniqueStrings(state.uninstalledIds)
-    const idSet = new Set(ids)
-    const uninstalled: Record<string, UninstalledPluginRecord> = {}
-    for (const id of ids) {
-      const record = state.uninstalled[id]
-      if (record) uninstalled[id] = record
-    }
-
-    writeStateFile(this.statePath, { version: 1, installed: state.installed, uninstalled })
-    this.writeAppUninstalledIds(ids)
+    this.writeProjectState(state)
   }
 
-  /** 记录一次卸载：移出 installed、写入 uninstalled，并更新 app.json。 */
+  /**
+   * 记录一次卸载：移出 installed、写入 uninstalled，并把 id 从
+   * `app.json.plugins` 的启用顺序里移除。
+   */
   markUninstalled(record: UninstalledPluginRecord): PluginState {
     const state = this.read()
     const installed = { ...state.installed }
@@ -179,7 +173,30 @@ export class PluginStateStore {
       uninstalledIds,
       staleUninstalledIds: [],
     }
-    this.write(next)
+    if (this.mode === 'packaged') this.write(next)
+    else this.writeProjectState(next, { removeEnabledId: record.id })
+    return next
+  }
+
+  /**
+   * 清除已卸载状态并把 id 追加到启用顺序末尾。
+   *
+   * 与 `clearUninstalled` 的区别：启用是一个用户动作，必须让插件重新进入
+   * `app.json.plugins`（数组存在时）；`clearUninstalled` 只用于内部清理，
+   * 不改变启用顺序。打包模式的 app.json 只读，只写状态文件。
+   */
+  markEnabled(id: string): PluginState {
+    const state = this.read()
+    const uninstalled = { ...state.uninstalled }
+    delete uninstalled[id]
+    const next: PluginState = {
+      installed: state.installed,
+      uninstalled,
+      uninstalledIds: state.uninstalledIds.filter((candidate) => candidate !== id),
+      staleUninstalledIds: [],
+    }
+    if (this.mode === 'packaged') this.write(next)
+    else this.writeProjectState(next, { appendEnabledId: id })
     return next
   }
 
@@ -223,12 +240,49 @@ export class PluginStateStore {
     return next
   }
 
-  private writeAppUninstalledIds(ids: string[]): void {
+  /** 项目模式：状态文件 + `app.json` 一起写；可同时调整启用顺序。 */
+  private writeProjectState(
+    state: PluginState,
+    options: { removeEnabledId?: string; appendEnabledId?: string } = {},
+  ): void {
+    const ids = uniqueStrings(state.uninstalledIds)
+    const uninstalled: Record<string, UninstalledPluginRecord> = {}
+    for (const id of ids) {
+      const record = state.uninstalled[id]
+      if (record) uninstalled[id] = record
+    }
+
+    writeStateFile(this.statePath, { version: 1, installed: state.installed, uninstalled })
+    this.writeAppJson(ids, options)
+  }
+
+  /**
+   * 更新 `app.json` 的 `uninstalledPlugins`，并按需调整 `plugins` 启用顺序。
+   *
+   * `plugins` 缺省时保持缺省（发现即启用）；只有数组存在时才追加/移除，
+   * 这样不会把「未声明顺序」的项目悄悄变成「显式白名单」。
+   */
+  private writeAppJson(
+    ids: string[],
+    options: { removeEnabledId?: string; appendEnabledId?: string },
+  ): void {
     const app = readOptionalObjectJson<Record<string, unknown>>(this.appJsonPath)
     // app.json 不存在（打包布局或纯后端项目）时没有可写的 id 真源；
     // 状态文件仍保存明细，后续读取会退回状态文件。
     if (app === undefined) return
     app.uninstalledPlugins = ids
+
+    if (Array.isArray(app.plugins)) {
+      let plugins = app.plugins.filter((entry): entry is string => typeof entry === 'string')
+      if (options.removeEnabledId !== undefined) {
+        plugins = plugins.filter((id) => id !== options.removeEnabledId)
+      }
+      if (options.appendEnabledId !== undefined && !plugins.includes(options.appendEnabledId)) {
+        plugins = [...plugins, options.appendEnabledId]
+      }
+      app.plugins = plugins
+    }
+
     mkdirSync(dirname(this.appJsonPath), { recursive: true })
     writeFileSync(this.appJsonPath, JSON.stringify(app, null, 2) + '\n')
   }

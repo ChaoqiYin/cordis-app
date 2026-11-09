@@ -5,14 +5,17 @@
  */
 
 import type { ConfigStore, Kernel, KernelContext } from '@cordis-app/kernel'
-import type { ClientManifest, PluginFailure } from '@cordis-app/protocol'
+import type { ClientManifest, PluginFailure, RuntimeMode } from '@cordis-app/protocol'
 import { parseJson, readBody, sendError, sendJson } from '../builtin/http-utils.js'
-import { findPlugin, type PluginScan } from '../plugin/catalog.js'
+import type { PluginScan } from '../plugin/catalog.js'
 import { planPluginViews, type PluginStateStore } from '../plugin/plugin-state.js'
 import type { PluginInstaller } from '../plugin/installer.js'
+import { PluginLifecycle, PluginLifecycleError } from '../plugin/plugin-lifecycle.js'
 
 export interface ApiOptions {
   kernel: Kernel
+  /** 运行形态；决定打包模式的用户插件是否物理移除。 */
+  mode: RuntimeMode
   /** 项目根；插件、配置、数据都从这里推导 */
   projectRoot: string
   dataDir: string
@@ -34,10 +37,21 @@ export interface ApiOptions {
   failures: PluginFailure[]
   /** 由 worker 注入：请求优雅重启 */
   requestRestart?: () => void
+  /** 时钟注入，测试用。 */
+  now?: () => Date
 }
 
 export function installRoutes(ctx: KernelContext, options: ApiOptions): void {
   const { installer } = options
+  const lifecycle = new PluginLifecycle({
+    mode: options.mode,
+    installer,
+    state: options.state,
+    scan: options.scan,
+    ...(options.requestRestart ? { requestRestart: options.requestRestart } : {}),
+    ...(options.now ? { now: options.now } : {}),
+  })
+  const now = () => (options.now ? options.now() : new Date())
 
   /**
    * 插件列表：完整扫描视图 + 已卸载记录 + 启用中的失败。
@@ -78,7 +92,20 @@ export function installRoutes(ctx: KernelContext, options: ApiOptions): void {
       return
     }
     try {
-      const result = await installer.install(body.spec)
+      const result = await installer.install(body.spec, {
+        // 状态文件不属于安装来源，但必须与物理安装一起回滚。
+        snapshotPaths: [options.state.statePath],
+        commit: (installed) => {
+          // 安装即启用：清除该 id 的已卸载状态并写入新的安装元数据。
+          options.state.setInstalled(installed.id, {
+            spec: body.spec!,
+            sourceKind: installer.sourceKind,
+            ...(installed.packageName ? { packageName: installed.packageName } : {}),
+            ...(installed.version ? { version: installed.version } : {}),
+            installedAt: now().toISOString(),
+          })
+        },
+      })
       // 安装动作本身已经写盘，进程内无法可靠卸载 require.cache，
       // 所以一律走重启；result.restarted 用于向调用方说明原因。
       sendJson(res, 200, result)
@@ -88,23 +115,27 @@ export function installRoutes(ctx: KernelContext, options: ApiOptions): void {
     }
   })
 
-  ctx.router.delete('/api/plugins/:id', async (req, res, params) => {
-    const id = params.id!
-    // 路径参数来自列表里的插件 id；安装器只认包名，必须在这里完成身份转换。
-    const plugin = findPlugin(options.scan(), id)
-    if (!plugin) {
-      sendError(res, 404, 'not_found', `未安装插件 ${id}`)
-      return
-    }
+  /**
+   * 卸载：未知 id 404，已卸载幂等 200。
+   *
+   * 语义从「删除插件并删除配置」改为「卸载并保留配置」；按插件来源分流物理
+   * 动作，由 PluginLifecycle 统一处理。重复动作幂等，只有真正改变状态时才
+   * 请求重启。
+   */
+  ctx.router.delete('/api/plugins/:id', async (_req, res, params) => {
     try {
-      // 用插件 id 而不是包名：bundle 来源以 id 为目录身份，npm 源会在内部
-      // 把 id 归一成包名。设置页不需要知道这次运行用的是哪种来源。
-      const result = await installer.remove(plugin.id)
-      options.config.delete(plugin.id)
-      sendJson(res, 200, result)
-      options.requestRestart?.()
+      sendJson(res, 200, await lifecycle.uninstall(params.id!))
     } catch (error) {
-      sendError(res, 400, 'remove_failed', (error as Error).message)
+      sendLifecycleError(res, error, 'remove_failed')
+    }
+  })
+
+  /** 启用：物理存在只清状态，物理不存在按卸载记录重装。 */
+  ctx.router.post('/api/plugins/:id/enable', async (_req, res, params) => {
+    try {
+      sendJson(res, 200, await lifecycle.enable(params.id!))
+    } catch (error) {
+      sendLifecycleError(res, error, 'enable_failed')
     }
   })
 
@@ -158,4 +189,17 @@ function mergeFailures(current: PluginFailure[], startup: PluginFailure[]): Plug
     merged.set(`${failure.id}\0${failure.reason}`, failure)
   }
   return [...merged.values()]
+}
+
+/** 生命周期错误映射：404 / 409 是预期结果，其余按操作失败处理。 */
+function sendLifecycleError(
+  res: Parameters<typeof sendError>[0],
+  error: unknown,
+  fallbackCode: string,
+): void {
+  if (error instanceof PluginLifecycleError) {
+    sendError(res, error.status, error.code, error.message)
+    return
+  }
+  sendError(res, 400, fallbackCode, (error as Error).message)
 }

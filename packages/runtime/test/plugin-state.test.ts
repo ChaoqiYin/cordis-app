@@ -158,18 +158,26 @@ test('markUninstalled 把 installed 明细移到 uninstalled，并写入 app.jso
   assert.equal(state.installed.gone, undefined)
   assert.deepEqual(state.uninstalled.gone, uninstalledRecord('gone'))
   assert.deepEqual(readJson(appJson).uninstalledPlugins, ['gone'])
+  // 卸载意味着不再启用：启用顺序里不能再保留该 id。
+  assert.deepEqual(readJson(appJson).plugins, ['keep'])
 
   // 重复记录同一个 id 不产生重复项。
   store.markUninstalled(uninstalledRecord('gone'))
   assert.deepEqual(store.read().uninstalledIds, ['gone'])
+  assert.deepEqual(readJson(appJson).plugins, ['keep'])
 })
 
 test('clearUninstalled 只清状态，不动 app.json.plugins 的启用顺序', () => {
   const root = tempDir()
-  const appJson = writeAppJson(root, { name: 'demo', version: '1.0.0', plugins: ['a', 'b'] })
+  const appJson = writeAppJson(root, {
+    name: 'demo',
+    version: '1.0.0',
+    plugins: ['a', 'b'],
+    uninstalledPlugins: ['a'],
+  })
+  seedStateFile(root, { a: uninstalledRecord('a') })
   const store = projectStore(root)
 
-  store.markUninstalled(uninstalledRecord('a'))
   store.clearUninstalled('a')
 
   const state = store.read()
@@ -177,6 +185,56 @@ test('clearUninstalled 只清状态，不动 app.json.plugins 的启用顺序', 
   assert.deepEqual(state.uninstalled, {})
   assert.deepEqual(readJson(appJson).plugins, ['a', 'b'])
   assert.deepEqual(readJson(appJson).uninstalledPlugins, [])
+})
+
+test('markEnabled 清除已卸载状态并把 id 追加到启用列表末尾', () => {
+  const root = tempDir()
+  const appJson = writeAppJson(root, { name: 'demo', version: '1.0.0', plugins: ['a', 'b'] })
+  const store = projectStore(root)
+
+  store.markUninstalled(uninstalledRecord('a'))
+  store.markEnabled('a')
+
+  const state = store.read()
+  assert.deepEqual(state.uninstalledIds, [])
+  assert.deepEqual(state.uninstalled, {})
+  assert.deepEqual(readJson(appJson).plugins, ['b', 'a'], '重新启用追加到末尾')
+  assert.deepEqual(readJson(appJson).uninstalledPlugins, [])
+})
+
+test('markEnabled 在 app.json.plugins 缺省时保持缺省（发现即启用）', () => {
+  const root = tempDir()
+  const appJson = writeAppJson(root, { name: 'demo', version: '1.0.0' })
+  const store = projectStore(root)
+
+  store.markUninstalled(uninstalledRecord('a'))
+  store.markEnabled('a')
+
+  const app = readJson(appJson)
+  assert.equal(app.plugins, undefined)
+  assert.deepEqual(app.uninstalledPlugins, [])
+})
+
+test('打包模式 markEnabled 只写状态文件，不碰只读 app.json', () => {
+  const root = tempDir()
+  const userDataDir = join(root, 'user-data')
+  const appJson = writeAppJson(root, { name: 'demo', version: '1.0.0', plugins: ['a'] })
+  const store = new PluginStateStore({
+    mode: 'packaged',
+    projectRoot: root,
+    userDataDir,
+  })
+  store.write({
+    installed: {},
+    uninstalled: { a: uninstalledRecord('a') },
+    uninstalledIds: ['a'],
+    staleUninstalledIds: [],
+  })
+
+  store.markEnabled('a')
+
+  assert.deepEqual(store.read().uninstalledIds, [])
+  assert.deepEqual(readJson(appJson).plugins, ['a'], '打包模式的 app.json 只读')
 })
 
 test('setInstalled 清除同 id 的已卸载状态', () => {
