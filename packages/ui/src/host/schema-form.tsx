@@ -10,7 +10,13 @@
  * 插件 restart，逐字符保存等于逐字符重启。
  */
 
-import { useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import {
+  contentKey,
+  mergeInitial,
+  resolveRole,
+  shouldResetDraft,
+} from './schema-form-model.js'
 
 /** schemastery 的结构子集。只声明我们真正读的字段。 */
 export interface SchemaNode {
@@ -44,12 +50,32 @@ export function SchemaForm(props: {
   onSave(value: Record<string, unknown>): void
 }): ReactNode {
   const initial = useMemo(
-    () => ({ ...defaultsOf(props.schema), ...props.value }),
-    // 配置从服务端加载完成后才成为 value 的稳定来源；只在它换对象时重置草稿
+    () => mergeInitial(defaultsOf(props.schema), props.value),
+    // 配置从服务端加载完成后才成为 value 的稳定来源
     [props.schema, props.value],
   )
+  // 内容键只随配置内容变化：父组件重渲染但内容不变时不重置草稿
+  const initialKey = useMemo(() => contentKey(initial), [initial])
+  const initialRef = useRef(initial)
+
   const [draft, setDraft] = useState<Record<string, unknown>>(initial)
-  const dirty = useMemo(() => JSON.stringify(draft) !== JSON.stringify(initial), [draft, initial])
+  const appliedKey = useRef(initialKey)
+
+  // 先保存最新初始值，再在内容变化时重置草稿；用 ref 避免异步回调读到旧闭包
+  useEffect(() => {
+    initialRef.current = initial
+  }, [initial])
+
+  useEffect(() => {
+    if (!shouldResetDraft(appliedKey.current, initialKey)) return
+    appliedKey.current = initialKey
+    setDraft(initialRef.current)
+  }, [initialKey])
+
+  const dirty = useMemo(
+    () => contentKey(draft) !== initialKey,
+    [draft, initialKey],
+  )
 
   const fields = Object.entries(props.schema.dict ?? {}).filter(
     ([, node]) => !node.meta?.hidden,
@@ -81,7 +107,7 @@ export function SchemaForm(props: {
           type="button"
           className="button button-ghost"
           disabled={!dirty || props.disabled}
-          onClick={() => setDraft(initial)}
+          onClick={() => setDraft(initialRef.current)}
         >
           撤销
         </button>
@@ -225,28 +251,49 @@ function renderControl(props: {
         </div>
       )
 
-    default:
+    default: {
       // string 与未知类型都退化为文本框；role 决定更具体的控件
-      return node.meta?.role === 'color' ? (
-        <input
-          id={id}
-          type="color"
-          className="field-input field-color"
-          value={typeof props.value === 'string' ? props.value : '#000000'}
-          disabled={disabled}
-          onChange={(event) => props.onChange(event.target.value)}
-        />
-      ) : (
+      const role = resolveRole(node.meta?.role)
+      const text = typeof props.value === 'string' ? props.value : ''
+
+      if (role === 'textarea') {
+        return (
+          <textarea
+            id={id}
+            className="field-input"
+            rows={4}
+            value={text}
+            disabled={disabled}
+            onChange={(event) => props.onChange(event.target.value)}
+          />
+        )
+      }
+
+      if (role === 'color') {
+        return (
+          <input
+            id={id}
+            type="color"
+            className="field-input field-color"
+            value={typeof props.value === 'string' ? props.value : '#000000'}
+            disabled={disabled}
+            onChange={(event) => props.onChange(event.target.value)}
+          />
+        )
+      }
+
+      return (
         <input
           id={id}
           type="text"
           className="field-input"
-          value={typeof props.value === 'string' ? props.value : ''}
-          placeholder={node.meta?.role === 'path' ? '路径' : undefined}
+          value={text}
+          placeholder={role === 'path' ? '路径' : undefined}
           disabled={disabled}
           onChange={(event) => props.onChange(event.target.value)}
         />
       )
+    }
   }
 }
 

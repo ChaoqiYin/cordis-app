@@ -381,6 +381,49 @@ menus、settings 四个出口全部保留的写法。
 - `ui` 声明插件需要的 UI 出口；`capabilities` 声明安全能力，两者不混用。
 - `package.json` 必须把 `cordis-app` 写进 `peerDependencies`。
 
+### 插件设置表单
+
+插件用 `ctx.settings({ schema })` 注册设置分组时，宿主按 schemastery 结构自动生成
+表单。当前显式支持的 `meta.role`：
+
+| role | 控件 |
+| --- | --- |
+| `textarea` | 固定 4 行的多行文本输入，遵守 `disabled` |
+| `color` | 颜色选择器 |
+| `path` | 单行文本输入，带「路径」占位符 |
+| 其他或未声明 | 单行文本输入 |
+
+初始值由 schema 默认值与当前配置合成：对象递归合并，数组和标量由配置值直接替换。
+因此只提供部分嵌套字段的配置，缺失字段仍会取到默认值。表单保持两段式提交：控件
+只改本地草稿，点「保存」才写回；「撤销」恢复当前初始值。外部配置内容变化时草稿
+会重置；父组件重渲染但配置内容不变时，用户正在输入的内容会保留。
+
+最小示例（展示 `textarea` 与嵌套默认值）：
+
+```jsonc
+{
+  "type": "object",
+  "dict": {
+    "cookie": {
+      "type": "string",
+      "meta": { "role": "textarea", "description": "站点 Cookie" }
+    },
+    "display": {
+      "type": "object",
+      "dict": {
+        "theme": { "type": "string", "meta": { "default": "auto" } },
+        "accent": {
+          "type": "string",
+          "meta": { "role": "color", "default": "#4f8cff" }
+        }
+      }
+    }
+  }
+}
+```
+
+只配置 `display.accent` 时，`display.theme` 仍会取默认值 `auto`。
+
 `react`、`react-dom`、`cordis-app/client` 等共享模块由框架提供，整个应用只有一份；插件
 构建时保持 external，不得自带第二份 React。完整示例见
 [examples/hello-plugin](./examples/hello-plugin)。
