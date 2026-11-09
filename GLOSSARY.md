@@ -81,6 +81,11 @@ external。
 body 暴露给插件的 UI 扩展点：pages（`PluginPageOutlet`）、slots
 （`PluginSlot`）、menus（`PluginMenuTrigger`）、settings（`SettingsPanel`）。
 
+**菜单上下文**
+打开菜单时附带的调用上下文，随菜单状态保存，执行菜单项行为时原样传入。
+它是调用上下文（`unknown`），不是插件入口拿到的 `ClientContext`；快捷键调用
+行为时为空。所有参数可选，旧插件不传也能运行。
+
 **UI 能力（`UiCapabilities`）**
 `{ pages: boolean; slots: string[]; menus: string[]; settings: boolean }`。在
 `app.json.ui` 中表示 body **提供**什么；在 `plugin.json.ui` 中表示插件
