@@ -8,6 +8,7 @@ import type { ConfigStore, Kernel, KernelContext } from '@cordis-app/kernel'
 import type { ClientManifest, PluginFailure } from '@cordis-app/protocol'
 import { parseJson, readBody, sendError, sendJson } from '../builtin/http-utils.js'
 import { findPlugin, type PluginScan } from '../plugin/catalog.js'
+import { planPluginViews, type PluginStateStore } from '../plugin/plugin-state.js'
 import type { PluginInstaller } from '../plugin/installer.js'
 
 export interface ApiOptions {
@@ -25,6 +26,11 @@ export interface ApiOptions {
    * 新状态，且不需要 API 自己知道四个根在哪里。
    */
   scan(): PluginScan
+  /**
+   * 插件状态存储。列表每次请求重新读盘：即使状态文件被外部修改，API 也
+   * 立即反映磁盘事实，不依赖 worker 启动时的快照。
+   */
+  state: PluginStateStore
   failures: PluginFailure[]
   /** 由 worker 注入：请求优雅重启 */
   requestRestart?: () => void
@@ -33,24 +39,34 @@ export interface ApiOptions {
 export function installRoutes(ctx: KernelContext, options: ApiOptions): void {
   const { installer } = options
 
-  /** 插件列表：已安装的全集（含只贡献服务端能力的），设置页据此渲染。 */
+  /**
+   * 插件列表：完整扫描视图 + 已卸载记录 + 启用中的失败。
+   *
+   * `plugins` 含物理存在但被卸载的插件（`enabled: false`），设置页据此展示
+   * 两状态；`uninstalled` 只放扫描不到、但有卸载记录的插件，避免重复。
+   * `files` 来自前端清单，已卸载插件自然为空。
+   */
   ctx.router.get('/api/plugins', (_req, res) => {
     const manifest = options.getManifest()
-    const scan = options.scan()
+    const views = planPluginViews(options.scan(), options.state.read())
     sendJson(res, 200, {
-      plugins: scan.plugins.map((plugin) => {
-        const client = manifest.plugins[plugin.id]
-        return {
-          id: plugin.id,
-          // 两套身份都交给前端：展示与卸载各自需要不同的那个
-          packageName: plugin.packageName,
-          displayName: client?.displayName ?? plugin.manifest.displayName ?? plugin.id,
-          version: plugin.packageJson.version,
-          rootKind: plugin.rootKind,
-          files: client?.files ?? [],
-        }
-      }),
-      failures: mergeFailures(scan.failures, options.failures),
+      plugins: views.plugins.map((view) => ({
+        id: view.id,
+        // 两套身份都交给前端：展示与卸载各自需要不同的那个
+        packageName: view.packageName,
+        displayName: view.displayName,
+        ...(view.version ? { version: view.version } : {}),
+        rootKind: view.rootKind,
+        origin: view.origin,
+        enabled: view.enabled,
+        files: manifest.plugins[view.id]?.files ?? [],
+      })),
+      uninstalled: views.uninstalled,
+      // 已卸载插件不参与加载，它的失败也不该出现在启用视图里。
+      failures: mergeFailures(
+        views.failures,
+        options.failures.filter((failure) => !views.uninstalledIds.has(failure.id)),
+      ),
     })
   })
 
