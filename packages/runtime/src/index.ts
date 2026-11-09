@@ -98,6 +98,13 @@ export {
   type UninstalledPluginView,
 } from './plugin/plugin-state.js'
 export {
+  PluginLifecycle,
+  PluginLifecycleError,
+  type EnableResult,
+  type PluginLifecycleOptions,
+  type UninstallResult,
+} from './plugin/plugin-lifecycle.js'
+export {
   checkProjectFramework,
   checkProjectFrameworkFile,
   type ProjectFrameworkCheck,

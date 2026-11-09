@@ -18,13 +18,22 @@ import {
 } from '@cordis-app/protocol'
 import {
   PluginInstaller,
+  PluginLifecycle,
+  PluginLifecycleError,
+  PluginStateStore,
   StartAppError,
   Supervisor,
   findFreePort as defaultFindFreePort,
+  planPluginViews,
   readPluginId,
+  scanPluginRoots,
   startApp as defaultStartApp,
   type AppExitEvent,
   type AppHandle,
+  type EnableResult,
+  type PluginOrigin,
+  type PluginRoot,
+  type PluginRootKind,
   type StartAppOptions,
 } from '@cordis-app/runtime'
 import {
@@ -622,6 +631,54 @@ async function makeInstaller(workspace: Workspace, io: CommandIO): Promise<Plugi
   })
 }
 
+/**
+ * CLI 看到的插件根。与项目模式 worker 的启动扫描保持同一优先级：
+ * 内置（能找到 `resources/plugins` 时）> 项目本地 > 项目依赖。
+ * 用户插件根不由项目模式的 `run` 扫描，这里也不参与。
+ */
+function pluginRoots(workspace: Workspace, io: CommandIO): PluginRoot[] {
+  const resourcesDir = io.resourcesDir ?? findResourcesDir(workspace.projectRoot)
+  return [
+    ...(resourcesDir ? [{ kind: 'builtin' as const, dir: join(resourcesDir, 'plugins') }] : []),
+    { kind: 'local' as const, dir: workspace.layout.localPluginsDir },
+    { kind: 'dependency' as const, dir: workspace.nodeModulesDir },
+  ]
+}
+
+function makeState(workspace: Workspace): PluginStateStore {
+  return new PluginStateStore({
+    mode: 'project',
+    projectRoot: workspace.projectRoot,
+    appJsonPath: workspace.appJsonPath,
+  })
+}
+
+/**
+ * 与设置页（HTTP）同一套生命周期：扫描根、状态文件与安装器都由 CLI 现场
+ * 构造。CLI 不在 worker 进程里，因此不注入 `requestRestart`；命令结束后
+ * 提示用户执行 `restart`。
+ */
+function makeLifecycle(
+  workspace: Workspace,
+  io: CommandIO,
+  installer: PluginInstaller,
+  state: PluginStateStore,
+): PluginLifecycle {
+  const roots = pluginRoots(workspace, io)
+  return new PluginLifecycle({
+    mode: 'project',
+    installer,
+    state,
+    scan: () => scanPluginRoots(roots, { frameworkVersion: io.frameworkVersion }),
+  })
+}
+
+function runningHint(workspace: Workspace, io: CommandIO): void {
+  if (readRuntimeFile(workspace.runtimeJsonPath)) {
+    io.out('  项目正在运行，执行 cordis-app restart 让改动生效')
+  }
+}
+
 export async function commandAdd(args: ParsedArgs, io: CommandIO): Promise<number> {
   const spec = args.positionals[0]
   if (!spec) throw new UsageError('用法：cordis-app add <包名[@版本]>')
@@ -630,7 +687,20 @@ export async function commandAdd(args: ParsedArgs, io: CommandIO): Promise<numbe
   if (!requireApp(workspace, io)) return 1
 
   const installer = await makeInstaller(workspace, io)
-  const result = await installer.install(spec)
+  const state = makeState(workspace)
+  // 安装与「清除已卸载状态」必须一起成功或一起回滚：状态文件纳入事务快照。
+  const result = await installer.install(spec, {
+    snapshotPaths: [state.statePath],
+    commit: (installed) => {
+      state.setInstalled(installed.id, {
+        spec,
+        sourceKind: installer.sourceKind,
+        ...(installed.packageName ? { packageName: installed.packageName } : {}),
+        ...(installed.version ? { version: installed.version } : {}),
+        installedAt: new Date().toISOString(),
+      })
+    },
+  })
   io.out(`已安装 ${result.id}${result.version ? `@${result.version}` : ''}`)
   io.out(`  ${result.reason}`)
   // UI 能力缺失不阻断后端安装，但要让用户知道页面/插槽为什么没出现。
@@ -651,22 +721,92 @@ export async function commandAdd(args: ParsedArgs, io: CommandIO): Promise<numbe
 
 export async function commandRemove(args: ParsedArgs, io: CommandIO): Promise<number> {
   const spec = args.positionals[0]
-  if (!spec) throw new UsageError('用法：cordis-app remove <包名>')
+  if (!spec) throw new UsageError('用法：cordis-app remove <id|包名>')
 
   const workspace = openWorkspace(args.projectDir)
   if (!requireApp(workspace, io)) return 1
 
   const installer = await makeInstaller(workspace, io)
-  const result = await installer.remove(spec)
+  const state = makeState(workspace)
+  const lifecycle = makeLifecycle(workspace, io, installer, state)
+
+  let result: { id: string; reason: string }
+  try {
+    // 先按插件解析：id 与包名都接受，走与设置页相同的按 rootKind 分流。
+    result = await lifecycle.uninstall(spec)
+  } catch (error) {
+    if (error instanceof PluginLifecycleError && error.code === 'not_found') {
+      // 解析不到插件时保持原有行为：把它当作普通依赖交给包管理器卸载。
+      result = await installer.remove(spec)
+    } else {
+      throw error
+    }
+  }
+
   io.out(`已卸载 ${result.id}`)
   io.out(`  ${result.reason}`)
-  if (readRuntimeFile(workspace.runtimeJsonPath)) {
-    io.out('  项目正在运行，执行 cordis-app restart 让改动生效')
+  runningHint(workspace, io)
+  return 0
+}
+
+export async function commandEnable(args: ParsedArgs, io: CommandIO): Promise<number> {
+  const id = args.positionals[0]
+  if (!id) throw new UsageError('用法：cordis-app enable <插件 id>')
+
+  const workspace = openWorkspace(args.projectDir)
+  if (!requireApp(workspace, io)) return 1
+
+  const installer = await makeInstaller(workspace, io)
+  const state = makeState(workspace)
+  const lifecycle = makeLifecycle(workspace, io, installer, state)
+
+  let result: EnableResult
+  try {
+    result = await lifecycle.enable(id)
+  } catch (error) {
+    // 404（未知 id）与 409（缺少重装 spec）都是可预期的用户错误：给一句话，
+    // 以非零退出码结束，而不是把栈丢给用户。
+    if (error instanceof PluginLifecycleError) {
+      io.err(error.message)
+      return 1
+    }
+    throw error
   }
+
+  io.out(`已启用 ${result.id}${result.version ? `@${result.version}` : ''}`)
+  io.out(`  ${result.reason}`)
+  runningHint(workspace, io)
   return 0
 }
 
 // ---------------------------------------------------------------- list
+
+const ORIGIN_LABEL: Record<PluginOrigin, string> = {
+  builtin: '随包',
+  local: '项目本地',
+  external: '外部',
+}
+
+type ListStatus = 'enabled' | 'uninstalled' | 'missing'
+
+const STATUS_LABEL: Record<ListStatus, string> = {
+  enabled: '已启用',
+  uninstalled: '已卸载',
+  missing: '未安装',
+}
+
+/** list 的统一行：扫描结果、卸载记录与「声明了但没装」的依赖合并到这里。 */
+interface ListRow {
+  packageName: string
+  displayName: string
+  id: string | null
+  version: string
+  rootKind: PluginRootKind | null
+  origin: PluginOrigin
+  enabled: boolean
+  status: ListStatus
+  reinstallable?: boolean
+}
 
 export async function commandList(args: ParsedArgs, io: CommandIO): Promise<number> {
   const workspace = openWorkspace(args.projectDir)
@@ -682,21 +822,70 @@ export async function commandList(args: ParsedArgs, io: CommandIO): Promise<numb
     return 1
   }
 
-  // package.json 是依赖的事实源；app.json 不再维护第二份版本清单。
-  // 框架与 React 是项目的运行底座，不是可安装/卸载的插件，列表里不展示。
-  const rows = Object.entries(pkg.dependencies ?? {})
-    .filter(([name]) => !FRAMEWORK_DEPENDENCIES.has(name))
-    .map(([name, range]) => {
+  // 扫描 + 状态合并：已卸载插件要么以 enabled:false 留在扫描结果里（物理存在），
+  // 要么以卸载记录出现在 uninstalled 里（物理不存在）。
+  const state = makeState(workspace)
+  const roots = pluginRoots(workspace, io)
+  const scan = scanPluginRoots(roots, { frameworkVersion: io.frameworkVersion })
+  const views = planPluginViews(scan, state.read())
+
+  const rows: ListRow[] = []
+  const seenIds = new Set<string>()
+  const seenPackages = new Set<string>()
+  const addRow = (row: ListRow): void => {
+    if (row.id !== null) {
+      if (seenIds.has(row.id)) return
+      seenIds.add(row.id)
+    }
+    if (seenPackages.has(row.packageName)) return
+    seenPackages.add(row.packageName)
+    rows.push(row)
+  }
+
+  for (const view of views.plugins) {
+    addRow({
+      packageName: view.packageName,
+      displayName: view.displayName,
+      id: view.id,
+      version: view.version ?? '（未知）',
+      rootKind: view.rootKind,
+      origin: view.origin,
+      enabled: view.enabled,
+      status: view.enabled ? 'enabled' : 'uninstalled',
+      ...(view.enabled ? {} : { reinstallable: view.reinstallable }),
+    })
+  }
+  for (const view of views.uninstalled) {
+    addRow({
+      packageName: view.packageName ?? view.id,
+      displayName: view.displayName ?? view.id,
+      id: view.id,
+      version: view.version ?? '（未知）',
+      rootKind: view.rootKind,
+      origin: view.origin,
+      enabled: false,
+      status: 'uninstalled',
+      reinstallable: view.reinstallable,
+    })
+  }
+  // 兼容旧列表：声明在 package.json 里、但扫描不到（也没被卸载）的依赖仍展示，
+  // 只是状态为「未安装」，不伪造成已启用。
+  for (const name of Object.keys(pkg.dependencies ?? {})) {
+    if (FRAMEWORK_DEPENDENCIES.has(name)) continue
+    if (seenPackages.has(name)) continue
     const installed = readInstalledPackage(workspace.nodeModulesDir, name)
     const id = readPluginId(workspace.nodeModulesDir, name) ?? null
-    return {
-      name,
-      range,
-      version: installed?.version ?? '（未安装）',
+    addRow({
+      packageName: name,
+      displayName: id ?? name,
       id,
-      enabled: installed !== undefined && id !== null,
-    }
-  })
+      version: installed?.version ?? '（未安装）',
+      rootKind: null,
+      origin: 'external',
+      enabled: false,
+      status: 'missing',
+    })
+  }
 
   if (args.json) {
     io.out(
@@ -704,7 +893,29 @@ export async function commandList(args: ParsedArgs, io: CommandIO): Promise<numb
         {
           name: manifest.name,
           version: manifest.version,
-          plugins: rows.map(({ name, version, id, enabled }) => ({ name, version, id, enabled })),
+          plugins: rows.map(
+            ({
+              packageName,
+              displayName,
+              id,
+              version,
+              rootKind,
+              origin,
+              enabled,
+              status,
+              reinstallable,
+            }) => ({
+              name: packageName,
+              id,
+              displayName,
+              version,
+              rootKind,
+              origin,
+              enabled,
+              status,
+              ...(reinstallable !== undefined ? { reinstallable } : {}),
+            }),
+          ),
         },
         null,
         2,
@@ -719,13 +930,16 @@ export async function commandList(args: ParsedArgs, io: CommandIO): Promise<numb
     return 0
   }
 
-  const nameWidth = Math.max(...rows.map((row) => row.name.length), 4)
+  const nameWidth = Math.max(...rows.map((row) => row.packageName.length), 4)
   const versionWidth = Math.max(...rows.map((row) => row.version.length), 4)
   const idWidth = Math.max(...rows.map((row) => (row.id ?? '-').length), 2)
-  io.out(`  ${'包名'.padEnd(nameWidth)}  ${'版本'.padEnd(versionWidth)}  ${'插件 id'.padEnd(idWidth)}  状态`)
+  const originWidth = Math.max(...rows.map((row) => ORIGIN_LABEL[row.origin].length), 4)
+  io.out(
+    `  ${'包名'.padEnd(nameWidth)}  ${'版本'.padEnd(versionWidth)}  ${'插件 id'.padEnd(idWidth)}  ${'来源'.padEnd(originWidth)}  状态`,
+  )
   for (const row of rows) {
     io.out(
-      `  ${row.name.padEnd(nameWidth)}  ${row.version.padEnd(versionWidth)}  ${(row.id ?? '-').padEnd(idWidth)}  ${row.enabled ? '已启用' : '未启用'}`,
+      `  ${row.packageName.padEnd(nameWidth)}  ${row.version.padEnd(versionWidth)}  ${(row.id ?? '-').padEnd(idWidth)}  ${ORIGIN_LABEL[row.origin].padEnd(originWidth)}  ${STATUS_LABEL[row.status]}`,
     )
   }
   return 0
@@ -817,6 +1031,7 @@ export const COMMAND_HANDLERS = {
   new: commandNew,
   add: commandAdd,
   remove: commandRemove,
+  enable: commandEnable,
   run: commandRun,
   dev: commandDev,
   build: commandBuild,
