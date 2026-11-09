@@ -81,8 +81,10 @@ export function ContextMenu(): ReactNode {
               className="menu-item"
               disabled={item.disabled}
               onClick={() => {
+                // 关闭会清空菜单状态，必须先取出上下文再执行行为
+                const context = state.context
                 close()
-                run(item.id)
+                run(item.id, context)
               }}
             >
               <Icon name={item.icon} className="menu-item-icon" />

@@ -348,7 +348,7 @@ body 决定布局，框架只固定宿主职责和四个出口。`cordis-app/ui`
 | `DefaultBody` | 框架附带的参考布局，可直接使用 |
 | `PluginPageOutlet` | 渲染当前路径对应的插件页面 |
 | `PluginSlot` | 渲染具名插槽（`header.right`、`activity.bottom` 等） |
-| `PluginMenuTrigger` | 把子元素的右键菜单绑定到某个菜单 id |
+| `PluginMenuTrigger` | 把子元素的右键菜单绑定到某个菜单 id，可附带调用上下文 |
 | `SettingsPanel` | 插件管理与插件设置面板 |
 | `SETTINGS_PATH`、`usePath`、`navigate` | body 自己的导航 |
 | `warnUiCompatibility`、`warnUiContractVersion` | UI 能力与契约版本告警 |
@@ -357,6 +357,33 @@ body 必须保留自己声明过的出口；项目页面优先于插件页面，
 `PluginPageOutlet`。可以直接用 `DefaultBody` 起步，也可以参考
 [examples/full-body](./examples/full-body) 自定义布局——它演示了 pages、slots、
 menus、settings 四个出口全部保留的写法。
+
+### 菜单与调用上下文
+
+插件注册菜单项与行为，body 用 `useMenu` 或 `PluginMenuTrigger` 打开菜单。
+打开菜单时可以附带一个调用上下文，执行行为时会原样传回：
+
+```tsx
+// 插件前端入口：注册菜单与行为
+ctx.menu('video', [{ id: '.run', label: '运行' }])
+ctx.action('.run', {
+  // context 是打开菜单时附带的调用上下文，类型为 unknown
+  action: async (context) => {
+    const { id } = context as { id: number }
+    await ctx.http.post(`/api/videos/${id}/run`)
+  },
+})
+
+// 列表行：每行打开菜单时带上自己的记录信息
+const openMenu = useMenu('video')
+<button onContextMenu={(event) => openMenu(event, { id: row.id })}>运行</button>
+```
+
+- 上下文只在菜单打开到行为执行之间有效，关闭菜单即清空。
+- 快捷键调用行为时上下文为空，行为可据此判断调用来源。
+- 所有参数都是可选的，旧插件不改也能运行。
+- body 也可以用 `<PluginMenuTrigger menuId="video" context={{ id: 1 }}>` 携带上下文。
+- 这里的 `context` 是调用上下文，不是插件入口拿到的 `ClientContext`。
 
 ## 插件契约
 
