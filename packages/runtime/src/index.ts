@@ -21,6 +21,15 @@ export {
   type RecoveryResult,
 } from './plugin/installer.js'
 export { NpmInstallSource, NPM_LOCKFILE_NAMES, type NpmSourceOptions } from './plugin/npm-source.js'
+export {
+  detectPackageManager,
+  packageManagerByName,
+  PackageManagerDetectionError,
+  LOCKFILE_MANAGERS,
+  type DetectedPackageManager,
+  type DetectPackageManagerOptions,
+  type PackageManagerName,
+} from './plugin/package-manager.js'
 export { BundleInstallSource, type BundleSourceOptions } from './plugin/bundle-source.js'
 export {
   loadProjectPluginSource,

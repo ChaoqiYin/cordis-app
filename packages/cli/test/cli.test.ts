@@ -206,9 +206,11 @@ test('add 与 remove 在项目根更新依赖与启用列表', async () => {
 
   // 包管理器由测试模拟：add 写包、写依赖；remove 删包、删依赖。
   const calls: string[][] = []
+  const commands: string[] = []
   const fake = fakeIO({
-    async packageManager(_command, args, cwd) {
+    async packageManager(command, args, cwd) {
       assert.equal(cwd, root, '包管理器必须在项目根执行')
+      commands.push(command)
       calls.push(args)
       const name = args[1]!
       if (args[0] === 'add') {
@@ -225,6 +227,7 @@ test('add 与 remove 在项目根更新依赖与启用列表', async () => {
 
   assert.equal(await commandAdd(parseArgs(['add', 'theme-picker', '--project', root]), fake.io), 0)
   assert.deepEqual(calls[0], ['add', 'theme-picker'])
+  assert.deepEqual(commands, ['npm'], '没有任何信号时回退 npm')
 
   const appAfterAdd = readJson(join(root, 'app.json'))
   assert.deepEqual(appAfterAdd.plugins, ['theme-id'], 'app.json 记 plugin.json 的 id，而不是包名')
@@ -233,6 +236,27 @@ test('add 与 remove 在项目根更新依赖与启用列表', async () => {
   assert.equal(await commandRemove(parseArgs(['remove', 'theme-picker', '--project', root]), fake.io), 0)
   assert.deepEqual(readJson(join(root, 'app.json')).plugins, [])
   assert.equal(readJson(join(root, 'package.json')).dependencies['theme-picker'], undefined)
+})
+
+test('add 按项目 lockfile 选择 pnpm，而不是固定 npm', async () => {
+  const root = join(tempDir(), 'demo')
+  await commandNew(parseArgs(['new', 'demo', '--project', root]), fakeIO().io)
+  writeFileSync(join(root, 'pnpm-lock.yaml'), 'lockfileVersion: initial\n')
+
+  const commands: string[] = []
+  const fake = fakeIO({
+    async packageManager(command, args) {
+      commands.push(command)
+      if (args[0] === 'add') {
+        writeInstalledPlugin(root, args[1]!, 'theme-id', '2.1.3')
+        writeDependency(root, args[1]!, '^2.1.3')
+      }
+    },
+  })
+
+  assert.equal(await commandAdd(parseArgs(['add', 'theme-picker', '--project', root]), fake.io), 0)
+  assert.deepEqual(commands, ['pnpm'])
+  assert.equal(existsSync(join(root, 'package-lock.json')), false, 'CLI 也不能写出第二种 lockfile')
 })
 
 // ---------------------------------------------------------------- list
