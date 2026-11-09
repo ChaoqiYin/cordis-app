@@ -53,6 +53,7 @@ import { BundleInstallSource } from '../plugin/bundle-source.js'
 import { loadProjectPluginSource, resolvePluginSourcePath } from '../plugin/project-source.js'
 import { loadPlugins } from '../plugin/loader.js'
 import { scanPluginRoots, type PluginRoot } from '../plugin/catalog.js'
+import { PluginStateStore, planPluginViews } from '../plugin/plugin-state.js'
 import { checkProjectFrameworkFile } from '../plugin/doctor.js'
 import { sendJson } from '../builtin/http-utils.js'
 import { installRoutes } from './api.js'
@@ -284,6 +285,17 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
   ]
   const scan = scanPluginRoots(pluginRoots, { frameworkVersion })
 
+  // 两状态模型：完整扫描视图供 API 展示，启用视图供 loader、前端清单与静态
+  // 资源使用。状态每次启动从磁盘读取；安装/卸载后由 supervisor 重启 worker，
+  // 因此这里不需要在内存里维护第二份真相。
+  const pluginState = new PluginStateStore({
+    mode: packaged ? 'packaged' : 'project',
+    projectRoot: layout.projectRoot,
+    appJsonPath,
+    ...(packaged && userDataDir ? { userDataDir } : {}),
+  })
+  const views = planPluginViews(scan, pluginState.read())
+
   const config = new ConfigStore({ filePath: layout.config })
   const kernel = createKernel({ logger: logger('kernel') })
   const ctx = kernel.context as KernelContext
@@ -316,7 +328,8 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
   kernel.plugin(builtin.static, {
     uiDir: options.resourcesDir ? join(options.resourcesDir, 'ui') : undefined,
     sharedDir: options.resourcesDir ? join(options.resourcesDir, 'shared') : undefined,
-    pluginRoots: scan.roots,
+    // 静态资源只认启用视图：已卸载插件的 id 不在映射里，自然 404。
+    pluginRoots: views.enabledRoots,
   })
   kernel.plugin(builtin.ws, {})
   kernel.plugin(builtin.storage, { root: layout.dataDir })
@@ -342,7 +355,8 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
     : undefined
   const loaded = await loadPlugins({
     kernel,
-    scan,
+    // loader 只接收启用视图：已卸载插件既不挂载服务端路由，也不进前端清单。
+    scan: views.enabledScan,
     version: manifest.version,
     ...(options.dev ? { dev: true } : {}),
     ...(app?.ui ? { ui: app.ui } : {}),
@@ -387,6 +401,7 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
     getManifest: () => manifest,
     setManifest: (next) => (manifest = next),
     scan: () => scanPluginRoots(pluginRoots, { frameworkVersion }),
+    state: pluginState,
     failures,
     requestRestart: () => setTimeout(() => void restart(), 50),
   })
