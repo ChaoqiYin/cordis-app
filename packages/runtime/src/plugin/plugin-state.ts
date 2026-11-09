@@ -265,7 +265,7 @@ export interface UninstalledPluginView {
   uninstalledAt?: string
 }
 
-/** 视图规划的完整输出。后续 ticket 从 `enabled` / `uninstalledIds` 派生 loader 视图。 */
+/** 视图规划的完整输出：`enabledScan` 给 loader，`plugins` / `uninstalled` / `failures` 组装 API。 */
 export interface PluginViews {
   /** 完整扫描视图，含 enabled / origin / reinstallable 标注。 */
   plugins: PluginView[]
@@ -321,6 +321,8 @@ export function planPluginViews(scan: PluginScan, state: PluginState): PluginVie
       id,
       displayName: record?.displayName ?? id,
       ...(record?.version ? { version: record.version } : {}),
+      // 既扫描不到、又没有明细记录时无法得知真实来源；按外部依赖展示，
+      // 且没有 spec 可供重装，用户只能重新提供插件包。
       rootKind: record?.rootKind ?? 'dependency',
       origin: originOf(record?.rootKind ?? 'dependency'),
       ...(record?.sourceKind ? { sourceKind: record.sourceKind } : {}),
