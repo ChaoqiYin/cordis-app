@@ -1,5 +1,7 @@
 /** runtime 的公共导出。 */
 
+export type { PluginEntry, PluginInventory, PluginOrigin, UninstalledPluginEntry } from '@cordis-app/protocol'
+
 export {
   startApp,
   StartAppError,
@@ -21,6 +23,15 @@ export {
   type RecoveryResult,
 } from './plugin/installer.js'
 export { NpmInstallSource, NPM_LOCKFILE_NAMES, type NpmSourceOptions } from './plugin/npm-source.js'
+export {
+  detectPackageManager,
+  packageManagerByName,
+  PackageManagerDetectionError,
+  LOCKFILE_MANAGERS,
+  type DetectedPackageManager,
+  type DetectPackageManagerOptions,
+  type PackageManagerName,
+} from './plugin/package-manager.js'
 export { BundleInstallSource, type BundleSourceOptions } from './plugin/bundle-source.js'
 export {
   loadProjectPluginSource,
@@ -68,6 +79,7 @@ export {
   pluginFileUrl,
   validatePeer,
   isValidPluginId,
+  pluginVersion,
   type InstalledPlugin,
   type PluginScan,
   type PluginRoot,
@@ -75,6 +87,25 @@ export {
   type PackageJsonLike,
   type ScanOptions,
 } from './plugin/catalog.js'
+export {
+  PluginStateStore,
+  buildInstalledPluginRecord,
+  planPluginViews,
+  resolvePluginStatePath,
+  type InstalledPluginRecord,
+  type PluginState,
+  type PluginStateStoreOptions,
+  type PluginView,
+  type PluginViews,
+  type UninstalledPluginRecord,
+} from './plugin/plugin-state.js'
+export {
+  PluginLifecycle,
+  PluginLifecycleError,
+  type EnableResult,
+  type PluginLifecycleOptions,
+  type UninstallResult,
+} from './plugin/plugin-lifecycle.js'
 export {
   checkProjectFramework,
   checkProjectFrameworkFile,

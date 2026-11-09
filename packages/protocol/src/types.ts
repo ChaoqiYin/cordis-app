@@ -87,6 +87,14 @@ export interface AppManifest {
    * 缺省或为空表示「发现即启用」；未列出的已发现插件默认仍然启用。
    */
   plugins?: string[]
+  /**
+   * 已卸载的插件 id 集合。
+   *
+   * 缺省表示没有显式卸载任何插件。`plugins` 仍然只表示启用顺序，不是白名单：
+   * 已卸载的 id 会从加载、前端清单与静态资源中剔除。项目模式下这份 id 集合
+   * 是卸载状态的唯一真源，明细记录在 `data/plugins-state.json`。
+   */
+  uninstalledPlugins?: string[]
   /** 项目 body 提供的 UI 能力；由 #5 的宿主契约消费 */
   ui?: UiCapabilities
   /**

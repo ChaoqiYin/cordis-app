@@ -42,8 +42,20 @@ interface InstallJournal {
   startedAt: string
   /** 事务前的文件原文；null 表示那时不存在 */
   files: Record<string, string | null>
-  /** 来源自己的事务前状态 */
-  data: unknown
+  /** 来源自己的事务前状态；逻辑动作没有物理副作用时省略 */
+  data?: unknown
+}
+
+/**
+ * 生命周期动作附加到事务上的钩子。
+ *
+ * `snapshotPaths` 把状态文件这类「不属于某个安装来源、但必须与物理动作
+ * 一起回滚」的文件纳入快照。`commit` 在物理动作成功之后、事务提交之前执行；
+ * 它抛错与物理动作抛错走同一条回滚路径。
+ */
+export interface InstallerTransactionHooks {
+  snapshotPaths?: string[]
+  commit?: (result: SourceInstallResult) => void | Promise<void>
 }
 
 /**
@@ -120,28 +132,64 @@ export class PluginInstaller {
     return this.defaultSource.kind
   }
 
-  async install(spec: string): Promise<InstallResult> {
+  async install(spec: string, hooks: InstallerTransactionHooks = {}): Promise<InstallResult> {
     // 上一次事务若没走完（进程被杀、机器断电），先还原再叠加新的改动。
     await this.recover()
-    return this.run('install', spec, () => this.defaultSource.install(spec, this.context))
+    return this.physical('install', spec, () => this.defaultSource.install(spec, this.context), hooks)
   }
 
-  async remove(spec: string): Promise<InstallResult> {
+  async remove(spec: string, hooks: InstallerTransactionHooks = {}): Promise<InstallResult> {
     await this.recover()
-    return this.run('remove', spec, () => this.defaultSource.remove(spec, this.context))
+    return this.physical('remove', spec, () => this.defaultSource.remove(spec, this.context), hooks)
   }
 
   /**
-   * 执行一次带日志的事务。
+   * 只改状态的「逻辑」生命周期动作（例如卸载随包插件）。
    *
-   * 日志必须在来源动手之前落盘，且包含来源的声明式快照。来源不写日志，
-   * 事务也不理解任何来源的内部细节。
+   * 它不调用任何安装来源，但仍走同一条事务路径：状态文件与 app.json 的
+   * 写入必须和一次真实安装/卸载一样可回滚。
    */
-  private async run(
+  async logical(
+    action: 'install' | 'remove',
+    spec: string,
+    result: SourceInstallResult,
+    hooks: InstallerTransactionHooks = {},
+  ): Promise<InstallResult> {
+    await this.recover()
+    const journal = this.beginJournal(action, spec, hooks, false)
+    return this.commit(journal, result, hooks)
+  }
+
+  /**
+   * 物理事务入口：由安装来源执行真实的磁盘动作。`apply` 必填，来源状态在
+   * 来源动手之前捕获进日志。
+   */
+  private async physical(
     action: 'install' | 'remove',
     spec: string,
     apply: () => Promise<SourceInstallResult>,
+    hooks: InstallerTransactionHooks,
   ): Promise<InstallResult> {
+    const journal = this.beginJournal(action, spec, hooks, true)
+    let result: SourceInstallResult
+    try {
+      result = await apply()
+    } catch (error) {
+      throw await this.rollbackError(journal, error)
+    }
+    return this.commit(journal, result, hooks)
+  }
+
+  /**
+   * 事务开始：日志必须在来源动手之前落盘，且包含来源的声明式快照。
+   * 来源不写日志，事务也不理解任何来源的内部细节。
+   */
+  private beginJournal(
+    action: 'install' | 'remove',
+    spec: string,
+    hooks: InstallerTransactionHooks,
+    captureSource: boolean,
+  ): InstallJournal {
     const source = this.defaultSource
     const journal: InstallJournal = {
       version: 3,
@@ -149,22 +197,35 @@ export class PluginInstaller {
       action,
       spec,
       startedAt: new Date().toISOString(),
-      files: captureFiles(source.snapshotPaths()),
-      data: source.capture(),
+      files: captureFiles([...source.snapshotPaths(), ...(hooks.snapshotPaths ?? [])]),
+      ...(captureSource ? { data: source.capture() } : {}),
     }
     this.writeJournal(journal)
+    return journal
+  }
 
+  /** 物理动作成功后提交：先跑 hooks.commit，再删除日志；任一步失败都回滚。 */
+  private async commit(
+    journal: InstallJournal,
+    result: SourceInstallResult,
+    hooks: InstallerTransactionHooks,
+  ): Promise<InstallResult> {
     try {
-      const result = await apply()
+      await hooks.commit?.(result)
       this.clearJournal()
       return toInstallResult(result)
     } catch (error) {
-      const note = await this.rollback(journal)
-      if (note) {
-        throw new Error(`${(error as Error).message}；${note}`)
-      }
-      throw error
+      throw await this.rollbackError(journal, error)
     }
+  }
+
+  /** 回滚并把回滚失败的信息附到原始错误后面。 */
+  private async rollbackError(journal: InstallJournal, error: unknown): Promise<Error> {
+    const note = await this.rollback(journal)
+    if (note) {
+      return new Error(`${(error as Error).message}；${note}`)
+    }
+    return error as Error
   }
 
   /**

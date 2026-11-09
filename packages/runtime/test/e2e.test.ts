@@ -12,7 +12,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { startWorker, readWorkerOptions } from '../lib/worker/worker.js'
 import { findFreePort, generateToken, buildWorkerEnv } from '../lib/supervisor/supervisor.js'
 import { NpmInstallSource } from '../lib/plugin/npm-source.js'
@@ -39,6 +39,8 @@ interface Fixture {
 interface FixtureOptions {
   /** 写进 app.json.plugins 的启用顺序 */
   enabled?: string[]
+  /** 写进 app.json.uninstalledPlugins 的已卸载 id */
+  uninstalled?: string[]
   /** node_modules 下要生成的插件 id；默认只有 demo */
   plugins?: string[]
   /** 项目 package.json 的 dependencies；默认不写 cordis-app（只产生 warning） */
@@ -91,6 +93,7 @@ function createFixture(options: FixtureOptions = {}): Fixture {
         name: 'test',
         version: '1.0.0',
         plugins: options.enabled ?? pluginIds,
+        ...(options.uninstalled ? { uninstalledPlugins: options.uninstalled } : {}),
         ...(options.ui ? { ui: options.ui } : {}),
       },
       null,
@@ -161,6 +164,16 @@ ${id === 'demo' ? "export const data = { accent: '#4f7cff' }\n" : ''}`,
   writeFileSync(join(pluginDir, 'client.js'), options.client ?? 'export default () => {}')
 }
 
+/** 直接写插件状态文件，模拟生命周期卸载留下的明细记录。 */
+function writePluginState(
+  projectRoot: string,
+  uninstalled: Record<string, unknown>,
+  statePath = join(projectRoot, 'data', 'plugins-state.json'),
+): void {
+  mkdirSync(dirname(statePath), { recursive: true })
+  writeFileSync(statePath, JSON.stringify({ version: 1, installed: {}, uninstalled }, null, 2) + '\n')
+}
+
 async function withWorker(
   fn: (ctx: {
     port: number
@@ -218,6 +231,76 @@ test('运行形态决定安装来源：项目模式 npm，打包模式 bundle', 
   })
   try {
     assert.equal(handle.sourceKind, 'bundle')
+  } finally {
+    await handle.close()
+  }
+})
+
+test('pnpm 项目卸载插件只调用 pnpm remove，不生成 package-lock.json', async () => {
+  const fixture = createFixture()
+  writeFileSync(join(fixture.projectRoot, 'pnpm-lock.yaml'), 'lockfileVersion: initial\n')
+  const calls: Array<{ command: string; args: string[]; cwd: string }> = []
+  const port = await findFreePort()
+  const token = generateToken()
+  const handle = await startWorker({
+    port,
+    token,
+    projectRoot: fixture.projectRoot,
+    resourcesDir: fixture.resourcesDir,
+    async packageManager(command, args, cwd) {
+      calls.push({ command, args, cwd })
+    },
+    requestRestart: () => {},
+  })
+
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/api/plugins/demo`, {
+      method: 'DELETE',
+      headers: { authorization: `Bearer ${token}` },
+    })
+    assert.equal(res.status, 200)
+
+    assert.deepEqual(calls, [
+      { command: 'pnpm', args: ['remove', 'demo'], cwd: fixture.projectRoot },
+    ])
+    assert.equal(
+      existsSync(join(fixture.projectRoot, 'package-lock.json')),
+      false,
+      'pnpm 项目不能被悄悄写出 package-lock.json',
+    )
+  } finally {
+    await handle.close()
+  }
+})
+
+test('package.json#packageManager 在 e2e 中优先于 lockfile', async () => {
+  const fixture = createFixture()
+  writeFileSync(join(fixture.projectRoot, 'package-lock.json'), '{}')
+  const pkg = JSON.parse(readFileSync(join(fixture.projectRoot, 'package.json'), 'utf8'))
+  pkg.packageManager = 'yarn@4.5.0'
+  writeFileSync(join(fixture.projectRoot, 'package.json'), JSON.stringify(pkg, null, 2))
+
+  const calls: string[] = []
+  const port = await findFreePort()
+  const token = generateToken()
+  const handle = await startWorker({
+    port,
+    token,
+    projectRoot: fixture.projectRoot,
+    resourcesDir: fixture.resourcesDir,
+    async packageManager(command) {
+      calls.push(command)
+    },
+    requestRestart: () => {},
+  })
+
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/api/plugins/demo`, {
+      method: 'DELETE',
+      headers: { authorization: `Bearer ${token}` },
+    })
+    assert.equal(res.status, 200)
+    assert.deepEqual(calls, ['yarn'])
   } finally {
     await handle.close()
   }
@@ -774,4 +857,686 @@ test('项目依赖 doctor 覆盖手工安装（未走 CLI）的插件', async ()
   await withWorker(async ({ handle }) => {
     assert.deepEqual(Object.keys(handle.manifest.plugins), ['manual'])
   }, fixture)
+})
+
+test('已卸载插件在启动时被过滤：loader、前端清单、静态资源与 API', async () => {
+  const fixture = createFixture({ plugins: ['demo'], uninstalled: ['demo'] })
+
+  await withWorker(async ({ base, token, handle }) => {
+    assert.deepEqual(
+      Object.keys(handle.manifest.plugins),
+      [],
+      '已卸载插件不能进入前端清单',
+    )
+    assert.deepEqual(handle.failures, [])
+
+    const route = await fetch(`${base}/api/demo`, {
+      headers: { authorization: `Bearer ${token}` },
+    })
+    assert.equal(route.status, 404, '已卸载插件的服务端路由不能被挂载')
+
+    const asset = await fetch(`${base}/__plugins/demo/client.js`)
+    assert.equal(asset.status, 404, '已卸载插件的静态资源必须 404')
+
+    const list = await (
+      await fetch(`${base}/api/plugins`, { headers: { authorization: `Bearer ${token}` } })
+    ).json()
+    assert.deepEqual(list.plugins, [
+      {
+        id: 'demo',
+        packageName: 'demo',
+        displayName: '插件 demo',
+        version: '1.0.0',
+        rootKind: 'dependency',
+        origin: 'external',
+        enabled: false,
+        reinstallable: false,
+        files: [],
+      },
+    ])
+    assert.deepEqual(list.uninstalled, [], '物理存在的插件留在 plugins 里，不重复进 uninstalled')
+    assert.deepEqual(list.failures, [])
+  }, fixture)
+})
+
+test('已卸载但物理不存在的插件进入 uninstalled 列表，并带重装记录', async () => {
+  const fixture = createFixture({ plugins: [], uninstalled: ['gone'] })
+  const record = {
+    id: 'gone',
+    displayName: '已卸载插件',
+    rootKind: 'dependency',
+    sourceKind: 'npm',
+    packageName: 'pkg-gone',
+    version: '1.2.3',
+    spec: 'pkg-gone@1.2.3',
+    uninstalledAt: '2026-11-09T12:00:00.000Z',
+  }
+  writePluginState(fixture.projectRoot, { gone: record })
+
+  await withWorker(async ({ base, token, handle }) => {
+    assert.deepEqual(Object.keys(handle.manifest.plugins), [])
+
+    const list = await (
+      await fetch(`${base}/api/plugins`, { headers: { authorization: `Bearer ${token}` } })
+    ).json()
+    assert.deepEqual(list.plugins, [])
+    assert.deepEqual(list.uninstalled, [
+      {
+        id: 'gone',
+        displayName: '已卸载插件',
+        version: '1.2.3',
+        rootKind: 'dependency',
+        origin: 'external',
+        sourceKind: 'npm',
+        packageName: 'pkg-gone',
+        spec: 'pkg-gone@1.2.3',
+        reinstallable: true,
+        uninstalledAt: '2026-11-09T12:00:00.000Z',
+      },
+    ])
+    assert.deepEqual(list.failures, [])
+  }, fixture)
+})
+
+test('已卸载插件的扫描失败不出现在 failures', async () => {
+  const fixture = createFixture({ plugins: ['demo'], uninstalled: ['broken'] })
+  writePluginAt(join(fixture.projectRoot, 'node_modules', 'broken'), 'broken', {
+    peer: { 'cordis-app': '^0.9.0' },
+  })
+
+  await withWorker(async ({ base, token, handle }) => {
+    assert.deepEqual(handle.failures, [], '已卸载插件的扫描失败不进入启动失败列表')
+    assert.deepEqual(Object.keys(handle.manifest.plugins), ['demo'])
+
+    const list = await (
+      await fetch(`${base}/api/plugins`, { headers: { authorization: `Bearer ${token}` } })
+    ).json()
+    assert.deepEqual(list.failures, [], 'API 的 failures 只含启用中插件')
+  }, fixture)
+})
+
+test('API 返回完整扫描视图：enabled / origin / rootKind / version / files', async () => {
+  const fixture = createFixture({ plugins: [], uninstalled: ['dep-off'] })
+  writePluginAt(join(fixture.resourcesDir, 'plugins', 'builtin-one'), 'builtin-one')
+  writePluginAt(join(fixture.projectRoot, 'plugins', 'local-one'), 'local-one')
+  writePluginAt(join(fixture.projectRoot, 'node_modules', 'dep-on'), 'dep-on')
+  writePluginAt(join(fixture.projectRoot, 'node_modules', 'dep-off'), 'dep-off')
+  writePluginAt(join(fixture.userPluginsDir, 'user-one'), 'user-one')
+
+  await withWorker(async ({ base, token, handle }) => {
+    assert.deepEqual(
+      Object.keys(handle.manifest.plugins).sort(),
+      ['builtin-one', 'dep-on', 'local-one', 'user-one'],
+      '前端清单只包含启用中的插件',
+    )
+
+    const list = await (
+      await fetch(`${base}/api/plugins`, { headers: { authorization: `Bearer ${token}` } })
+    ).json()
+    const byId = new Map(
+      list.plugins.map((plugin: { id: string }) => [plugin.id, plugin]),
+    ) as Map<string, Record<string, unknown>>
+
+    assert.deepEqual([...byId.keys()].sort(), [
+      'builtin-one',
+      'dep-off',
+      'dep-on',
+      'local-one',
+      'user-one',
+    ])
+
+    assert.equal(byId.get('builtin-one')!.origin, 'builtin')
+    assert.equal(byId.get('local-one')!.origin, 'local')
+    assert.equal(byId.get('dep-on')!.origin, 'external')
+    assert.equal(byId.get('dep-off')!.origin, 'external')
+    assert.equal(byId.get('user-one')!.origin, 'external')
+
+    assert.equal(byId.get('builtin-one')!.rootKind, 'builtin')
+    assert.equal(byId.get('local-one')!.rootKind, 'local')
+    assert.equal(byId.get('dep-on')!.rootKind, 'dependency')
+    assert.equal(byId.get('dep-off')!.rootKind, 'dependency')
+    assert.equal(byId.get('user-one')!.rootKind, 'user')
+
+    assert.equal(byId.get('dep-off')!.enabled, false)
+    assert.equal(
+      byId.get('dep-off')!.reinstallable,
+      false,
+      '物理存在但没有卸载记录的插件不提供一键启用',
+    )
+    assert.equal((byId.get('dep-off')!.files as string[]).length, 0, '已卸载插件没有前端文件')
+    for (const id of ['builtin-one', 'local-one', 'dep-on', 'user-one']) {
+      assert.equal(byId.get(id)!.enabled, true)
+      assert.equal(byId.get(id)!.version, '1.0.0')
+      assert.equal((byId.get(id)!.files as string[]).length, 1)
+    }
+
+    const blocked = await fetch(`${base}/__plugins/dep-off/client.js`)
+    assert.equal(blocked.status, 404)
+    const allowed = await fetch(`${base}/__plugins/dep-on/client.js`)
+    assert.equal(allowed.status, 200)
+  }, fixture)
+})
+
+test('打包模式从用户数据目录读取已卸载状态', async () => {
+  const fixture = createFixture({ plugins: [] })
+  writePluginAt(join(fixture.userPluginsDir, 'user-gone'), 'user-gone')
+  // 打包模式的可写数据根是用户插件根的父目录。
+  writePluginState(
+    fixture.projectRoot,
+    {
+      'user-gone': {
+        id: 'user-gone',
+        displayName: '用户插件',
+        rootKind: 'user',
+        sourceKind: 'bundle',
+        packageName: 'user-gone',
+        version: '1.0.0',
+        spec: '/tmp/user-gone.bundle',
+        uninstalledAt: '2026-11-09T12:00:00.000Z',
+      },
+    },
+    join(fixture.projectRoot, 'plugins-state.json'),
+  )
+
+  const port = await findFreePort()
+  const token = generateToken()
+  const handle = await startWorker({
+    port,
+    token,
+    projectRoot: fixture.projectRoot,
+    resourcesDir: fixture.resourcesDir,
+    userPluginsDir: fixture.userPluginsDir,
+    mode: 'packaged',
+  })
+  try {
+    assert.deepEqual(Object.keys(handle.manifest.plugins), [])
+    assert.equal((await fetch(`http://127.0.0.1:${port}/__plugins/user-gone/client.js`)).status, 404)
+
+    const list = await (
+      await fetch(`http://127.0.0.1:${port}/api/plugins`, {
+        headers: { authorization: `Bearer ${token}` },
+      })
+    ).json()
+    assert.deepEqual(
+      list.plugins.map((plugin: { id: string; enabled: boolean }) => [plugin.id, plugin.enabled]),
+      [['user-gone', false]],
+    )
+  } finally {
+    await handle.close()
+  }
+})
+
+// ---------------------------------------------------------------- 卸载与启用
+
+function authHeaders(token: string): Record<string, string> {
+  return { authorization: `Bearer ${token}` }
+}
+
+async function readJsonResponse(res: Response): Promise<{ status: number; body: any }> {
+  return { status: res.status, body: await res.json() }
+}
+
+/** 读项目/打包模式的状态文件；不存在时返回空状态。 */
+function readPluginStateFile(path: string): {
+  installed: Record<string, any>
+  uninstalled: Record<string, any>
+} {
+  if (!existsSync(path)) return { installed: {}, uninstalled: {} }
+  const raw = JSON.parse(readFileSync(path, 'utf8'))
+  return { installed: raw.installed ?? {}, uninstalled: raw.uninstalled ?? {} }
+}
+
+function packageNameOfSpec(spec: string): string {
+  const at = spec.indexOf('@', spec.startsWith('@') ? 1 : 0)
+  return at > 0 ? spec.slice(0, at) : spec
+}
+
+/** 启动一个注入假包管理器与假重启钩子的 worker，供生命周期测试共用。 */
+async function startLifecycleWorker(
+  fixture: Fixture,
+  options: {
+    mode?: 'project' | 'packaged'
+    packageManager?: (command: string, args: string[], cwd: string) => Promise<void>
+  } = {},
+) {
+  const port = await findFreePort()
+  const token = generateToken()
+  const restarts: number[] = []
+  const calls: Array<{ command: string; args: string[]; cwd: string }> = []
+  const handle = await startWorker({
+    port,
+    token,
+    projectRoot: fixture.projectRoot,
+    resourcesDir: fixture.resourcesDir,
+    userPluginsDir: fixture.userPluginsDir,
+    ...(options.mode ? { mode: options.mode } : {}),
+    async packageManager(command, args, cwd) {
+      calls.push({ command, args, cwd })
+      await options.packageManager?.(command, args, cwd)
+    },
+    requestRestart: () => {
+      restarts.push(Date.now())
+    },
+  })
+  return {
+    handle,
+    calls,
+    restarts,
+    base: `http://127.0.0.1:${port}`,
+    token,
+  }
+}
+
+test('DELETE 未知插件 id 返回 404', async () => {
+  const fixture = createFixture()
+  const worker = await startLifecycleWorker(fixture)
+  try {
+    const res = await fetch(`${worker.base}/api/plugins/not-there`, {
+      method: 'DELETE',
+      headers: authHeaders(worker.token),
+    })
+    assert.equal(res.status, 404)
+  } finally {
+    await worker.handle.close()
+  }
+})
+
+test('卸载随包、项目本地与项目模式 user 插件：只写状态、不跑包管理器、不删文件、保留配置', async () => {
+  const fixture = createFixture({ plugins: [] })
+  writePluginAt(join(fixture.resourcesDir, 'plugins', 'builtin-one'), 'builtin-one')
+  writePluginAt(join(fixture.projectRoot, 'plugins', 'local-one'), 'local-one')
+  writePluginAt(join(fixture.userPluginsDir, 'user-one'), 'user-one')
+  const worker = await startLifecycleWorker(fixture)
+
+  try {
+    const put = await fetch(`${worker.base}/api/config/builtin-one`, {
+      method: 'PUT',
+      headers: { ...authHeaders(worker.token), 'content-type': 'application/json' },
+      body: JSON.stringify({ value: { accent: '#123' } }),
+    })
+    assert.equal(put.status, 200)
+
+    for (const id of ['builtin-one', 'local-one', 'user-one']) {
+      const res = await readJsonResponse(
+        await fetch(`${worker.base}/api/plugins/${id}`, {
+          method: 'DELETE',
+          headers: authHeaders(worker.token),
+        }),
+      )
+      assert.equal(res.status, 200)
+      assert.equal(res.body.id, id)
+      assert.equal(res.body.enabled, false)
+      assert.equal(res.body.restarted, true)
+      assert.equal(typeof res.body.reason, 'string')
+    }
+
+    assert.deepEqual(worker.calls, [], '逻辑卸载不能调用包管理器')
+    assert.equal(existsSync(join(fixture.resourcesDir, 'plugins', 'builtin-one', 'plugin.json')), true)
+    assert.equal(existsSync(join(fixture.projectRoot, 'plugins', 'local-one', 'plugin.json')), true)
+    assert.equal(existsSync(join(fixture.userPluginsDir, 'user-one', 'plugin.json')), true)
+    assert.equal(worker.restarts.length, 3, '每次实际卸载都请求重启')
+
+    // 配置保留：卸载不删除插件配置。
+    const config = await (
+      await fetch(`${worker.base}/api/config`, { headers: authHeaders(worker.token) })
+    ).json()
+    assert.deepEqual(config['builtin-one'], { accent: '#123' })
+
+    const state = readPluginStateFile(join(fixture.projectRoot, 'data', 'plugins-state.json'))
+    assert.equal(state.uninstalled['builtin-one'].rootKind, 'builtin')
+    assert.equal(state.uninstalled['local-one'].rootKind, 'local')
+    assert.equal(state.uninstalled['user-one'].rootKind, 'user')
+    assert.equal(state.uninstalled['user-one'].spec, undefined, '项目模式 user 插件不记录重装 spec')
+    assert.deepEqual(JSON.parse(readFileSync(join(fixture.projectRoot, 'app.json'), 'utf8')).plugins, [])
+
+    // 重复卸载幂等：不再请求重启。
+    const again = await readJsonResponse(
+      await fetch(`${worker.base}/api/plugins/builtin-one`, {
+        method: 'DELETE',
+        headers: authHeaders(worker.token),
+      }),
+    )
+    assert.equal(again.status, 200)
+    assert.equal(again.body.enabled, false)
+    assert.equal(again.body.restarted, false)
+    assert.equal(worker.restarts.length, 3)
+
+    const list = await (
+      await fetch(`${worker.base}/api/plugins`, { headers: authHeaders(worker.token) })
+    ).json()
+    const byId = new Map(list.plugins.map((plugin: { id: string }) => [plugin.id, plugin])) as Map<
+      string,
+      { enabled: boolean; reinstallable: boolean }
+    >
+    assert.equal(byId.get('builtin-one')!.enabled, false)
+    assert.equal(byId.get('local-one')!.enabled, false)
+    assert.equal(byId.get('user-one')!.enabled, false)
+    // 物理存在且有卸载记录：plugins 条目本身就要带出 reinstallable。
+    assert.equal(byId.get('builtin-one')!.reinstallable, true)
+    assert.equal(byId.get('local-one')!.reinstallable, true)
+    assert.equal(byId.get('user-one')!.reinstallable, true)
+  } finally {
+    await worker.handle.close()
+  }
+})
+
+test('卸载项目依赖插件：调用包管理器、写卸载记录、保留配置', async () => {
+  const fixture = createFixture({ plugins: ['demo'] })
+  writeFileSync(join(fixture.projectRoot, 'pnpm-lock.yaml'), 'lockfileVersion: initial\n')
+  const worker = await startLifecycleWorker(fixture, {
+    async packageManager(_command, args) {
+      if (args[0] === 'remove') {
+        rmSync(join(fixture.projectRoot, 'node_modules', args[1]!), { recursive: true, force: true })
+      }
+    },
+  })
+
+  try {
+    await fetch(`${worker.base}/api/config/demo`, {
+      method: 'PUT',
+      headers: { ...authHeaders(worker.token), 'content-type': 'application/json' },
+      body: JSON.stringify({ value: { accent: '#000' } }),
+    })
+
+    const res = await readJsonResponse(
+      await fetch(`${worker.base}/api/plugins/demo`, {
+        method: 'DELETE',
+        headers: authHeaders(worker.token),
+      }),
+    )
+    assert.equal(res.status, 200)
+    assert.equal(res.body.id, 'demo')
+    assert.equal(res.body.enabled, false)
+    assert.equal(res.body.restarted, true)
+
+    assert.deepEqual(worker.calls, [
+      { command: 'pnpm', args: ['remove', 'demo'], cwd: fixture.projectRoot },
+    ])
+
+    const state = readPluginStateFile(join(fixture.projectRoot, 'data', 'plugins-state.json'))
+    assert.deepEqual(state.uninstalled.demo, {
+      id: 'demo',
+      displayName: '插件 demo',
+      rootKind: 'dependency',
+      sourceKind: 'npm',
+      packageName: 'demo',
+      version: '1.0.0',
+      spec: 'demo@1.0.0',
+      uninstalledAt: state.uninstalled.demo.uninstalledAt,
+    })
+    assert.match(state.uninstalled.demo.uninstalledAt, /^\d{4}-\d{2}-\d{2}T/)
+    assert.equal(state.installed.demo, undefined)
+
+    const list = await (
+      await fetch(`${worker.base}/api/plugins`, { headers: authHeaders(worker.token) })
+    ).json()
+    assert.deepEqual(
+      list.uninstalled.map((entry: { id: string; reinstallable: boolean }) => [
+        entry.id,
+        entry.reinstallable,
+      ]),
+      [['demo', true]],
+    )
+
+    const config = await (
+      await fetch(`${worker.base}/api/config`, { headers: authHeaders(worker.token) })
+    ).json()
+    assert.deepEqual(config.demo, { accent: '#000' }, '卸载保留插件配置')
+  } finally {
+    await worker.handle.close()
+  }
+})
+
+test('打包模式 user 插件卸载由 bundle 来源物理移除目录并写记录', async () => {
+  const fixture = createFixture({ plugins: [] })
+  // 打包模式的用户插件根固定为 <userData>/plugins：bundle 来源按这个布局
+  // 定位目录，worker 的 userPluginsDir 必须与它一致。
+  fixture.userPluginsDir = join(fixture.projectRoot, 'plugins')
+  writePluginAt(join(fixture.userPluginsDir, 'user-one'), 'user-one')
+  writePluginState(
+    fixture.projectRoot,
+    {},
+    join(fixture.projectRoot, 'plugins-state.json'),
+  )
+  const statePath = join(fixture.projectRoot, 'plugins-state.json')
+  const seeded = JSON.parse(readFileSync(statePath, 'utf8'))
+  seeded.installed['user-one'] = {
+    spec: '/tmp/user-one.bundle',
+    sourceKind: 'bundle',
+    packageName: 'user-one',
+    version: '1.0.0',
+    installedAt: '2026-11-09T11:00:00.000Z',
+  }
+  writeFileSync(statePath, JSON.stringify(seeded, null, 2) + '\n')
+
+  const worker = await startLifecycleWorker(fixture, { mode: 'packaged' })
+  try {
+    const res = await readJsonResponse(
+      await fetch(`${worker.base}/api/plugins/user-one`, {
+        method: 'DELETE',
+        headers: authHeaders(worker.token),
+      }),
+    )
+    assert.equal(res.status, 200)
+    assert.equal(res.body.enabled, false)
+
+    assert.equal(existsSync(join(fixture.userPluginsDir, 'user-one')), false, '用户插件目录被物理移除')
+    const installed = JSON.parse(
+      readFileSync(join(fixture.projectRoot, 'installed.json'), 'utf8'),
+    ) as { plugins: Record<string, unknown> }
+    assert.equal(installed.plugins['user-one'], undefined)
+
+    const state = readPluginStateFile(statePath)
+    assert.equal(state.uninstalled['user-one'].rootKind, 'user')
+    assert.equal(state.uninstalled['user-one'].sourceKind, 'bundle')
+    assert.equal(state.uninstalled['user-one'].spec, '/tmp/user-one.bundle')
+    assert.equal(state.installed['user-one'], undefined)
+  } finally {
+    await worker.handle.close()
+  }
+})
+
+test('启用依赖插件按卸载记录重装，成功后清除记录并保留配置', async () => {
+  const fixture = createFixture({ plugins: [], uninstalled: ['demo'] })
+  writePluginState(fixture.projectRoot, {
+    demo: {
+      id: 'demo',
+      displayName: '插件 demo',
+      rootKind: 'dependency',
+      sourceKind: 'npm',
+      packageName: 'demo',
+      version: '1.0.0',
+      spec: 'demo@1.0.0',
+      uninstalledAt: '2026-11-09T12:00:00.000Z',
+    },
+  })
+  writeFileSync(join(fixture.projectRoot, 'pnpm-lock.yaml'), 'lockfileVersion: initial\n')
+  const worker = await startLifecycleWorker(fixture, {
+    async packageManager(_command, args) {
+      if (args[0] === 'add') {
+        writePlugin(fixture.projectRoot, packageNameOfSpec(args[1]!))
+      }
+    },
+  })
+
+  try {
+    await fetch(`${worker.base}/api/config/demo`, {
+      method: 'PUT',
+      headers: { ...authHeaders(worker.token), 'content-type': 'application/json' },
+      body: JSON.stringify({ value: { accent: '#abc' } }),
+    })
+
+    const res = await readJsonResponse(
+      await fetch(`${worker.base}/api/plugins/demo/enable`, {
+        method: 'POST',
+        headers: authHeaders(worker.token),
+      }),
+    )
+    assert.equal(res.status, 200)
+    assert.equal(res.body.id, 'demo')
+    assert.equal(res.body.enabled, true)
+    assert.equal(res.body.version, '1.0.0')
+    assert.equal(res.body.restarted, true)
+    assert.deepEqual(worker.calls, [
+      { command: 'pnpm', args: ['add', 'demo@1.0.0'], cwd: fixture.projectRoot },
+    ])
+
+    const state = readPluginStateFile(join(fixture.projectRoot, 'data', 'plugins-state.json'))
+    assert.deepEqual(state.uninstalled, {}, '重装成功后清除卸载记录')
+    assert.equal(state.installed.demo.spec, 'demo@1.0.0')
+    assert.equal(state.installed.demo.sourceKind, 'npm')
+    assert.equal(state.installed.demo.packageName, 'demo')
+    assert.equal(state.installed.demo.version, '1.0.0')
+    assert.match(state.installed.demo.installedAt, /^\d{4}-\d{2}-\d{2}T/)
+
+    const app = JSON.parse(readFileSync(join(fixture.projectRoot, 'app.json'), 'utf8'))
+    assert.deepEqual(app.uninstalledPlugins, [])
+    assert.deepEqual(app.plugins, ['demo'])
+
+    const config = await (
+      await fetch(`${worker.base}/api/config`, { headers: authHeaders(worker.token) })
+    ).json()
+    assert.deepEqual(config.demo, { accent: '#abc' }, '重新启用后配置仍在')
+  } finally {
+    await worker.handle.close()
+  }
+})
+
+test('启用物理存在的随包插件只清状态，不跑包管理器', async () => {
+  const fixture = createFixture({ plugins: [], uninstalled: ['builtin-one'] })
+  writePluginAt(join(fixture.resourcesDir, 'plugins', 'builtin-one'), 'builtin-one')
+  writePluginState(fixture.projectRoot, {
+    'builtin-one': {
+      id: 'builtin-one',
+      displayName: '插件 builtin-one',
+      rootKind: 'builtin',
+      uninstalledAt: '2026-11-09T12:00:00.000Z',
+    },
+  })
+  const worker = await startLifecycleWorker(fixture)
+  try {
+    const res = await readJsonResponse(
+      await fetch(`${worker.base}/api/plugins/builtin-one/enable`, {
+        method: 'POST',
+        headers: authHeaders(worker.token),
+      }),
+    )
+    assert.equal(res.status, 200)
+    assert.equal(res.body.enabled, true)
+    assert.equal(res.body.restarted, true)
+    assert.deepEqual(worker.calls, [], '物理存在时只清状态')
+    assert.equal(existsSync(join(fixture.resourcesDir, 'plugins', 'builtin-one', 'plugin.json')), true)
+
+    const state = readPluginStateFile(join(fixture.projectRoot, 'data', 'plugins-state.json'))
+    assert.deepEqual(state.uninstalled, {})
+    const app = JSON.parse(readFileSync(join(fixture.projectRoot, 'app.json'), 'utf8'))
+    assert.deepEqual(app.uninstalledPlugins, [])
+    assert.deepEqual(app.plugins, ['builtin-one'], '重新启用追加到启用列表末尾')
+
+    // 已启用时再次启用幂等，且不再请求重启。
+    const again = await readJsonResponse(
+      await fetch(`${worker.base}/api/plugins/builtin-one/enable`, {
+        method: 'POST',
+        headers: authHeaders(worker.token),
+      }),
+    )
+    assert.equal(again.status, 200)
+    assert.equal(again.body.enabled, true)
+    assert.equal(again.body.restarted, false)
+    assert.equal(worker.restarts.length, 1)
+  } finally {
+    await worker.handle.close()
+  }
+})
+
+test('启用物理不存在且没有重装 spec 的插件返回 409 not_reinstallable', async () => {
+  const fixture = createFixture({ plugins: [], uninstalled: ['gone'] })
+  const worker = await startLifecycleWorker(fixture)
+  try {
+    const res = await readJsonResponse(
+      await fetch(`${worker.base}/api/plugins/gone/enable`, {
+        method: 'POST',
+        headers: authHeaders(worker.token),
+      }),
+    )
+    assert.equal(res.status, 409)
+    assert.equal(res.body.code, 'not_reinstallable')
+    assert.match(res.body.message, /安装表单|重新安装/)
+    assert.deepEqual(worker.calls, [])
+  } finally {
+    await worker.handle.close()
+  }
+})
+
+test('卸载失败时状态文件与清单一起回滚', async () => {
+  const fixture = createFixture({ plugins: ['demo'] })
+  writeFileSync(join(fixture.projectRoot, 'pnpm-lock.yaml'), 'lockfileVersion: initial\n')
+  const worker = await startLifecycleWorker(fixture, {
+    async packageManager() {
+      throw new Error('pnpm 不可用')
+    },
+  })
+  try {
+    const res = await readJsonResponse(
+      await fetch(`${worker.base}/api/plugins/demo`, {
+        method: 'DELETE',
+        headers: authHeaders(worker.token),
+      }),
+    )
+    assert.equal(res.status, 400)
+    assert.match(res.body.message, /pnpm 不可用/)
+
+    const state = readPluginStateFile(join(fixture.projectRoot, 'data', 'plugins-state.json'))
+    assert.deepEqual(state.uninstalled, {}, '失败不能留下已卸载记录')
+    const app = JSON.parse(readFileSync(join(fixture.projectRoot, 'app.json'), 'utf8'))
+    assert.deepEqual(app.plugins, ['demo'], '失败不能改变启用顺序')
+    assert.deepEqual(app.uninstalledPlugins ?? [], [])
+
+    const list = await (
+      await fetch(`${worker.base}/api/plugins`, { headers: authHeaders(worker.token) })
+    ).json()
+    assert.equal(list.plugins.find((plugin: { id: string }) => plugin.id === 'demo').enabled, true)
+    assert.equal(worker.restarts.length, 0)
+  } finally {
+    await worker.handle.close()
+  }
+})
+
+test('安装已卸载的插件会清除已卸载状态并写入 installed 元数据', async () => {
+  const fixture = createFixture({ plugins: [], uninstalled: ['demo'] })
+  writePluginState(fixture.projectRoot, {
+    demo: {
+      id: 'demo',
+      rootKind: 'dependency',
+      packageName: 'demo',
+      version: '1.0.0',
+      spec: 'demo@1.0.0',
+      uninstalledAt: '2026-11-09T12:00:00.000Z',
+    },
+  })
+  writeFileSync(join(fixture.projectRoot, 'pnpm-lock.yaml'), 'lockfileVersion: initial\n')
+  const worker = await startLifecycleWorker(fixture, {
+    async packageManager(_command, args) {
+      if (args[0] === 'add') writePlugin(fixture.projectRoot, packageNameOfSpec(args[1]!))
+    },
+  })
+  try {
+    const res = await readJsonResponse(
+      await fetch(`${worker.base}/api/plugins`, {
+        method: 'POST',
+        headers: { ...authHeaders(worker.token), 'content-type': 'application/json' },
+        body: JSON.stringify({ spec: 'demo@1.0.0' }),
+      }),
+    )
+    assert.equal(res.status, 200)
+
+    const state = readPluginStateFile(join(fixture.projectRoot, 'data', 'plugins-state.json'))
+    assert.deepEqual(state.uninstalled, {})
+    assert.equal(state.installed.demo.spec, 'demo@1.0.0')
+    assert.equal(state.installed.demo.sourceKind, 'npm')
+    const app = JSON.parse(readFileSync(join(fixture.projectRoot, 'app.json'), 'utf8'))
+    assert.deepEqual(app.uninstalledPlugins, [])
+  } finally {
+    await worker.handle.close()
+  }
 })

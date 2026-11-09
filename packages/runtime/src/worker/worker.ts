@@ -53,6 +53,7 @@ import { BundleInstallSource } from '../plugin/bundle-source.js'
 import { loadProjectPluginSource, resolvePluginSourcePath } from '../plugin/project-source.js'
 import { loadPlugins } from '../plugin/loader.js'
 import { scanPluginRoots, type PluginRoot } from '../plugin/catalog.js'
+import { PluginStateStore, planPluginViews } from '../plugin/plugin-state.js'
 import { checkProjectFrameworkFile } from '../plugin/doctor.js'
 import { sendJson } from '../builtin/http-utils.js'
 import { installRoutes } from './api.js'
@@ -106,6 +107,16 @@ export interface WorkerOptions {
   mode?: RuntimeMode
   /** bundle 安装配置 */
   bundle?: WorkerBundleOptions
+  /**
+   * 覆盖项目模式下的包管理器执行器。只由进程配置注入，供测试与嵌入方使用；
+   * HTTP 请求不能设置它，否则调用方就能指定任意命令。
+   */
+  packageManager?: (command: string, args: string[], cwd: string) => Promise<void>
+  /**
+   * 覆盖重启请求。只由进程配置注入，供测试使用，避免测试进程被 `exit(75)`
+   * 终止；HTTP 请求不能设置它。
+   */
+  requestRestart?: () => void
   /**
    * 原生传输端点。supervisor 从环境变量读取后注入；直接调用 `startWorker`
    * 时可由测试或嵌入方提供。缺省时 `ctx.native.available` 为 false。
@@ -235,6 +246,7 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
     projectRoot: layout.projectRoot,
     frameworkVersion,
     ...(bundleSource ? { source: bundleSource } : {}),
+    ...(options.packageManager ? { run: options.packageManager } : {}),
     // 项目模式的事务日志属于项目 `.cordis/`；打包模式的项目根可能只读，
     // 日志必须和 bundle 的事实文件一起放在用户数据目录。
     ...(packaged && userDataDir
@@ -284,6 +296,17 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
   ]
   const scan = scanPluginRoots(pluginRoots, { frameworkVersion })
 
+  // 两状态模型：完整扫描视图供 API 展示，启用视图供 loader、前端清单与静态
+  // 资源使用。状态每次启动从磁盘读取；安装/卸载后由 supervisor 重启 worker，
+  // 因此这里不需要在内存里维护第二份真相。
+  const pluginState = new PluginStateStore({
+    mode: packaged ? 'packaged' : 'project',
+    projectRoot: layout.projectRoot,
+    appJsonPath,
+    ...(packaged && userDataDir ? { userDataDir } : {}),
+  })
+  const views = planPluginViews(scan, pluginState.read())
+
   const config = new ConfigStore({ filePath: layout.config })
   const kernel = createKernel({ logger: logger('kernel') })
   const ctx = kernel.context as KernelContext
@@ -316,7 +339,8 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
   kernel.plugin(builtin.static, {
     uiDir: options.resourcesDir ? join(options.resourcesDir, 'ui') : undefined,
     sharedDir: options.resourcesDir ? join(options.resourcesDir, 'shared') : undefined,
-    pluginRoots: scan.roots,
+    // 静态资源只认启用视图：已卸载插件的 id 不在映射里，自然 404。
+    pluginRoots: views.enabledScan.roots,
   })
   kernel.plugin(builtin.ws, {})
   kernel.plugin(builtin.storage, { root: layout.dataDir })
@@ -342,7 +366,8 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
     : undefined
   const loaded = await loadPlugins({
     kernel,
-    scan,
+    // loader 只接收启用视图：已卸载插件既不挂载服务端路由，也不进前端清单。
+    scan: views.enabledScan,
     version: manifest.version,
     ...(options.dev ? { dev: true } : {}),
     ...(app?.ui ? { ui: app.ui } : {}),
@@ -380,6 +405,7 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
 
   installRoutes(ctx, {
     kernel,
+    mode: packaged ? 'packaged' : 'project',
     projectRoot: layout.projectRoot,
     dataDir: layout.dataDir,
     installer,
@@ -387,8 +413,9 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
     getManifest: () => manifest,
     setManifest: (next) => (manifest = next),
     scan: () => scanPluginRoots(pluginRoots, { frameworkVersion }),
+    state: pluginState,
     failures,
-    requestRestart: () => setTimeout(() => void restart(), 50),
+    requestRestart: options.requestRestart ?? (() => setTimeout(() => void restart(), 50)),
   })
 
   // 完整就绪：HTTP 已监听且全部插件加载完成，才标记 healthy。

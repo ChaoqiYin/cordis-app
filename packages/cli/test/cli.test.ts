@@ -14,7 +14,15 @@ import { join } from 'node:path'
 import { FRAMEWORK_VERSION } from '@cordis-app/protocol'
 import { findFreePort, generateToken, startWorker } from '@cordis-app/runtime'
 import { parseArgs, UsageError, main } from '../lib/index.js'
-import { commandAdd, commandList, commandNew, commandRemove, defaultIO, type CommandIO } from '../lib/index.js'
+import {
+  commandAdd,
+  commandEnable,
+  commandList,
+  commandNew,
+  commandRemove,
+  defaultIO,
+  type CommandIO,
+} from '../lib/index.js'
 
 interface Fake {
   out: string[]
@@ -48,6 +56,17 @@ function readJson(path: string): any {
 /** 往项目 node_modules 里放一个插件包。 */
 function writeInstalledPlugin(root: string, packageName: string, id: string, version = '1.2.3'): void {
   const dir = join(root, 'node_modules', packageName)
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(
+    join(dir, 'package.json'),
+    JSON.stringify({ name: packageName, version, peerDependencies: { 'cordis-app': '^1.0.0' } }),
+  )
+  writeFileSync(join(dir, 'plugin.json'), JSON.stringify({ id, server: './index.js' }))
+  writeFileSync(join(dir, 'index.js'), 'export const apply = () => {}')
+}
+
+/** 往任意插件根里放一个插件包（随包、项目本地、依赖根共用）。 */
+function writePluginDir(dir: string, packageName: string, id: string, version = '1.2.3'): void {
   mkdirSync(dir, { recursive: true })
   writeFileSync(
     join(dir, 'package.json'),
@@ -206,9 +225,11 @@ test('add 与 remove 在项目根更新依赖与启用列表', async () => {
 
   // 包管理器由测试模拟：add 写包、写依赖；remove 删包、删依赖。
   const calls: string[][] = []
+  const commands: string[] = []
   const fake = fakeIO({
-    async packageManager(_command, args, cwd) {
+    async packageManager(command, args, cwd) {
       assert.equal(cwd, root, '包管理器必须在项目根执行')
+      commands.push(command)
       calls.push(args)
       const name = args[1]!
       if (args[0] === 'add') {
@@ -225,6 +246,7 @@ test('add 与 remove 在项目根更新依赖与启用列表', async () => {
 
   assert.equal(await commandAdd(parseArgs(['add', 'theme-picker', '--project', root]), fake.io), 0)
   assert.deepEqual(calls[0], ['add', 'theme-picker'])
+  assert.deepEqual(commands, ['npm'], '没有任何信号时回退 npm')
 
   const appAfterAdd = readJson(join(root, 'app.json'))
   assert.deepEqual(appAfterAdd.plugins, ['theme-id'], 'app.json 记 plugin.json 的 id，而不是包名')
@@ -233,6 +255,69 @@ test('add 与 remove 在项目根更新依赖与启用列表', async () => {
   assert.equal(await commandRemove(parseArgs(['remove', 'theme-picker', '--project', root]), fake.io), 0)
   assert.deepEqual(readJson(join(root, 'app.json')).plugins, [])
   assert.equal(readJson(join(root, 'package.json')).dependencies['theme-picker'], undefined)
+})
+
+test('add 按项目 lockfile 选择 pnpm，而不是固定 npm', async () => {
+  const root = join(tempDir(), 'demo')
+  await commandNew(parseArgs(['new', 'demo', '--project', root]), fakeIO().io)
+  writeFileSync(join(root, 'pnpm-lock.yaml'), 'lockfileVersion: initial\n')
+
+  const commands: string[] = []
+  const fake = fakeIO({
+    async packageManager(command, args) {
+      commands.push(command)
+      if (args[0] === 'add') {
+        writeInstalledPlugin(root, args[1]!, 'theme-id', '2.1.3')
+        writeDependency(root, args[1]!, '^2.1.3')
+      }
+    },
+  })
+
+  assert.equal(await commandAdd(parseArgs(['add', 'theme-picker', '--project', root]), fake.io), 0)
+  assert.deepEqual(commands, ['pnpm'])
+  assert.equal(existsSync(join(root, 'package-lock.json')), false, 'CLI 也不能写出第二种 lockfile')
+})
+
+test('add 安装成功后清除已卸载状态', async () => {
+  const root = join(tempDir(), 'demo')
+  await commandNew(parseArgs(['new', 'demo', '--project', root]), fakeIO().io)
+
+  // 先留下一次卸载记录：安装同一个插件后，两处状态都应被清除。
+  const app = readJson(join(root, 'app.json'))
+  app.uninstalledPlugins = ['theme-id']
+  writeFileSync(join(root, 'app.json'), JSON.stringify(app, null, 2) + '\n')
+  mkdirSync(join(root, 'data'), { recursive: true })
+  writeFileSync(
+    join(root, 'data', 'plugins-state.json'),
+    JSON.stringify({
+      version: 1,
+      installed: {},
+      uninstalled: {
+        'theme-id': {
+          id: 'theme-id',
+          displayName: '主题',
+          rootKind: 'dependency',
+          packageName: 'theme-picker',
+          version: '2.1.3',
+          spec: 'theme-picker@2.1.3',
+          uninstalledAt: '2026-11-01T00:00:00.000Z',
+        },
+      },
+    }),
+  )
+
+  const fake = fakeIO({
+    async packageManager(_command, args) {
+      writeInstalledPlugin(root, args[1]!, 'theme-id', '2.1.3')
+      writeDependency(root, args[1]!, '^2.1.3')
+    },
+  })
+
+  assert.equal(await commandAdd(parseArgs(['add', 'theme-picker', '--project', root]), fake.io), 0)
+  assert.deepEqual(readJson(join(root, 'app.json')).uninstalledPlugins, [])
+  const state = readJson(join(root, 'data', 'plugins-state.json'))
+  assert.equal(state.uninstalled['theme-id'], undefined)
+  assert.equal(state.installed['theme-id'].spec, 'theme-picker')
 })
 
 // ---------------------------------------------------------------- list
@@ -252,9 +337,13 @@ test('list 以项目 package.json 依赖为事实源', async () => {
   assert.equal(parsed.plugins.length, 1)
   assert.deepEqual(parsed.plugins[0], {
     name: 'hello-package',
-    version: '2.0.0',
     id: 'hello-id',
+    displayName: 'hello-id',
+    version: '2.0.0',
+    rootKind: 'dependency',
+    origin: 'external',
     enabled: true,
+    status: 'enabled',
   })
 })
 
@@ -286,6 +375,269 @@ test('list 在缺少 app.json 时返回非零', async () => {
   const code = await commandList(parseArgs(['list', '--project', tempDir()]), fake.io)
   assert.equal(code, 1)
   assert.ok(fake.err.some((line) => line.includes('找不到应用定义')))
+})
+
+test('list 合并扫描结果、随包插件与已卸载状态，显示来源', async () => {
+  const root = join(tempDir(), 'demo')
+  await commandNew(parseArgs(['new', 'demo', '--project', root]), fakeIO().io)
+  const resources = join(tempDir(), 'resources')
+  writePluginDir(join(resources, 'plugins', 'builtin-pkg'), 'builtin-pkg', 'builtin-id')
+  writePluginDir(join(root, 'plugins', 'local-pkg'), 'local-pkg', 'local-id')
+  writePluginDir(join(root, 'node_modules', 'dep-pkg'), 'dep-pkg', 'dep-id')
+  writeDependency(root, 'dep-pkg')
+
+  // 本地插件卸载只写状态，文件仍在；list 应同时看到已启用与已卸载。
+  const remove = fakeIO({ resourcesDir: resources })
+  assert.equal(
+    await commandRemove(parseArgs(['remove', 'local-id', '--project', root]), remove.io),
+    0,
+  )
+
+  const fake = fakeIO({ resourcesDir: resources })
+  assert.equal(await commandList(parseArgs(['list', '--project', root, '--json']), fake.io), 0)
+  const parsed = JSON.parse(fake.out.join('\n'))
+  const byId = Object.fromEntries(parsed.plugins.map((row: any) => [row.id, row]))
+  assert.equal(byId['builtin-id'].origin, 'builtin')
+  assert.equal(byId['builtin-id'].status, 'enabled')
+  assert.equal(byId['local-id'].origin, 'local')
+  assert.equal(byId['local-id'].status, 'uninstalled')
+  assert.equal(byId['local-id'].enabled, false)
+  assert.equal(byId['dep-id'].origin, 'external')
+  assert.equal(byId['dep-id'].status, 'enabled')
+
+  const text = fakeIO({ resourcesDir: resources })
+  assert.equal(await commandList(parseArgs(['list', '--project', root]), text.io), 0)
+  const output = text.out.join('\n')
+  assert.match(output, /随包/)
+  assert.match(output, /项目本地/)
+  assert.match(output, /外部/)
+  assert.match(output, /已卸载/)
+  assert.match(output, /已启用/)
+})
+
+test('list 与 remove 纳入项目模式配置的用户插件根', async () => {
+  const root = join(tempDir(), 'demo')
+  await commandNew(parseArgs(['new', 'demo', '--project', root]), fakeIO().io)
+  const userPlugins = join(tempDir(), 'user-plugins')
+  writePluginDir(join(userPlugins, 'user-pkg'), 'user-pkg', 'user-id')
+
+  const list = fakeIO({ userPluginsDir: userPlugins })
+  assert.equal(await commandList(parseArgs(['list', '--project', root, '--json']), list.io), 0)
+  const row = JSON.parse(list.out.join('\n')).plugins.find((entry: any) => entry.id === 'user-id')
+  assert.equal(row.rootKind, 'user')
+  assert.equal(row.origin, 'external')
+  assert.equal(row.status, 'enabled')
+
+  // 项目模式的 user 插件与随包/本地插件一样只写状态，不跑包管理器。
+  const calls: string[][] = []
+  const remove = fakeIO({
+    userPluginsDir: userPlugins,
+    async packageManager(_command, args) {
+      calls.push(args)
+    },
+  })
+  assert.equal(await commandRemove(parseArgs(['remove', 'user-id', '--project', root]), remove.io), 0)
+  assert.deepEqual(calls, [])
+  assert.equal(existsSync(join(userPlugins, 'user-pkg', 'plugin.json')), true)
+  assert.equal(readJson(join(root, 'app.json')).uninstalledPlugins.includes('user-id'), true)
+})
+
+test('list 展示已卸载但物理不存在的插件及其重装信息', async () => {
+  const root = join(tempDir(), 'demo')
+  await commandNew(parseArgs(['new', 'demo', '--project', root]), fakeIO().io)
+  const app = readJson(join(root, 'app.json'))
+  app.uninstalledPlugins = ['gone-id']
+  writeFileSync(join(root, 'app.json'), JSON.stringify(app, null, 2) + '\n')
+  mkdirSync(join(root, 'data'), { recursive: true })
+  writeFileSync(
+    join(root, 'data', 'plugins-state.json'),
+    JSON.stringify({
+      version: 1,
+      installed: {},
+      uninstalled: {
+        'gone-id': {
+          id: 'gone-id',
+          displayName: '已卸载的插件',
+          rootKind: 'dependency',
+          packageName: 'gone-pkg',
+          version: '3.0.0',
+          spec: 'gone-pkg@3.0.0',
+          uninstalledAt: '2026-11-01T00:00:00.000Z',
+        },
+      },
+    }),
+  )
+
+  const fake = fakeIO()
+  assert.equal(await commandList(parseArgs(['list', '--project', root, '--json']), fake.io), 0)
+  const parsed = JSON.parse(fake.out.join('\n'))
+  const row = parsed.plugins.find((entry: any) => entry.id === 'gone-id')
+  assert.equal(row.status, 'uninstalled')
+  assert.equal(row.origin, 'external')
+  assert.equal(row.name, 'gone-pkg')
+  assert.equal(row.reinstallable, true)
+})
+
+// ---------------------------------------------------------------- remove
+
+test('remove 按 rootKind 分流：随包与本地只写状态，依赖走检测到的包管理器', async () => {
+  const root = join(tempDir(), 'demo')
+  await commandNew(parseArgs(['new', 'demo', '--project', root]), fakeIO().io)
+  writeFileSync(join(root, 'pnpm-lock.yaml'), 'lockfileVersion: initial\n')
+  const resources = join(tempDir(), 'resources')
+  writePluginDir(join(resources, 'plugins', 'builtin-pkg'), 'builtin-pkg', 'builtin-id')
+  writePluginDir(join(root, 'plugins', 'local-pkg'), 'local-pkg', 'local-id')
+  writePluginDir(join(root, 'node_modules', 'dep-pkg'), 'dep-pkg', 'dep-id')
+  writeDependency(root, 'dep-pkg')
+
+  const calls: Array<{ command: string; args: string[] }> = []
+  const fake = fakeIO({
+    resourcesDir: resources,
+    async packageManager(command, args) {
+      calls.push({ command, args })
+      rmSync(join(root, 'node_modules', 'dep-pkg'), { recursive: true, force: true })
+      const pkg = readJson(join(root, 'package.json'))
+      delete pkg.dependencies['dep-pkg']
+      writeFileSync(join(root, 'package.json'), JSON.stringify(pkg, null, 2) + '\n')
+    },
+  })
+
+  assert.equal(
+    await commandRemove(parseArgs(['remove', 'builtin-id', '--project', root]), fake.io),
+    0,
+  )
+  assert.equal(existsSync(join(resources, 'plugins', 'builtin-pkg', 'plugin.json')), true)
+  assert.equal(calls.length, 0, '随包插件卸载不得跑包管理器')
+
+  assert.equal(
+    await commandRemove(parseArgs(['remove', 'local-id', '--project', root]), fake.io),
+    0,
+  )
+  assert.equal(existsSync(join(root, 'plugins', 'local-pkg', 'plugin.json')), true)
+  assert.equal(calls.length, 0, '项目本地插件卸载不得跑包管理器')
+
+  assert.equal(
+    await commandRemove(parseArgs(['remove', 'dep-pkg', '--project', root]), fake.io),
+    0,
+  )
+  assert.deepEqual(calls, [{ command: 'pnpm', args: ['remove', 'dep-pkg'] }])
+  assert.equal(existsSync(join(root, 'node_modules', 'dep-pkg')), false)
+
+  const app = readJson(join(root, 'app.json'))
+  assert.deepEqual(
+    new Set(app.uninstalledPlugins),
+    new Set(['builtin-id', 'local-id', 'dep-id']),
+  )
+  const state = readJson(join(root, 'data', 'plugins-state.json'))
+  assert.equal(state.uninstalled['dep-id'].rootKind, 'dependency')
+  assert.equal(state.uninstalled['dep-id'].spec, 'dep-pkg@1.2.3')
+  assert.equal(state.uninstalled['builtin-id'].rootKind, 'builtin')
+  assert.equal(state.uninstalled['builtin-id'].spec, undefined)
+
+  // 幂等：再次卸载不报错，也不会再跑一次包管理器。
+  assert.equal(
+    await commandRemove(parseArgs(['remove', 'dep-id', '--project', root]), fake.io),
+    0,
+  )
+  assert.equal(calls.length, 1)
+})
+
+test('enable 恢复随包与本地插件，只清状态不跑包管理器', async () => {
+  const root = join(tempDir(), 'demo')
+  await commandNew(parseArgs(['new', 'demo', '--project', root]), fakeIO().io)
+  const resources = join(tempDir(), 'resources')
+  writePluginDir(join(resources, 'plugins', 'builtin-pkg'), 'builtin-pkg', 'builtin-id')
+  writePluginDir(join(root, 'plugins', 'local-pkg'), 'local-pkg', 'local-id')
+
+  let packageManagerCalls = 0
+  const fake = fakeIO({
+    resourcesDir: resources,
+    async packageManager() {
+      packageManagerCalls++
+    },
+  })
+
+  assert.equal(
+    await commandRemove(parseArgs(['remove', 'local-id', '--project', root]), fake.io),
+    0,
+  )
+  assert.equal(
+    await commandRemove(parseArgs(['remove', 'builtin-id', '--project', root]), fake.io),
+    0,
+  )
+
+  assert.equal(await commandEnable(parseArgs(['enable', 'local-id', '--project', root]), fake.io), 0)
+  assert.equal(
+    await commandEnable(parseArgs(['enable', 'builtin-id', '--project', root]), fake.io),
+    0,
+  )
+  assert.equal(packageManagerCalls, 0, '恢复随包/本地插件不得跑包管理器')
+
+  const app = readJson(join(root, 'app.json'))
+  assert.deepEqual(app.plugins, ['local-id', 'builtin-id'], '启用的插件追加到启用顺序末尾')
+  assert.deepEqual(app.uninstalledPlugins, [])
+  assert.equal(existsSync(join(root, 'plugins', 'local-pkg', 'plugin.json')), true)
+
+  // 幂等：已启用插件再次启用不报错，也不重复追加。
+  assert.equal(await commandEnable(parseArgs(['enable', 'local-id', '--project', root]), fake.io), 0)
+  assert.deepEqual(readJson(join(root, 'app.json')).plugins, ['local-id', 'builtin-id'])
+})
+
+test('enable 按卸载记录重装外部插件', async () => {
+  const root = join(tempDir(), 'demo')
+  await commandNew(parseArgs(['new', 'demo', '--project', root]), fakeIO().io)
+  writeFileSync(join(root, 'pnpm-lock.yaml'), 'lockfileVersion: initial\n')
+  writePluginDir(join(root, 'node_modules', 'dep-pkg'), 'dep-pkg', 'dep-id')
+  writeDependency(root, 'dep-pkg')
+
+  const calls: Array<{ command: string; args: string[] }> = []
+  const fake = fakeIO({
+    async packageManager(command, args) {
+      calls.push({ command, args })
+      if (args[0] === 'remove') {
+        rmSync(join(root, 'node_modules', 'dep-pkg'), { recursive: true, force: true })
+        const pkg = readJson(join(root, 'package.json'))
+        delete pkg.dependencies['dep-pkg']
+        writeFileSync(join(root, 'package.json'), JSON.stringify(pkg, null, 2) + '\n')
+      } else {
+        writePluginDir(join(root, 'node_modules', 'dep-pkg'), 'dep-pkg', 'dep-id')
+        writeDependency(root, 'dep-pkg')
+      }
+    },
+  })
+
+  assert.equal(
+    await commandRemove(parseArgs(['remove', 'dep-id', '--project', root]), fake.io),
+    0,
+  )
+  assert.deepEqual(calls, [{ command: 'pnpm', args: ['remove', 'dep-pkg'] }])
+
+  assert.equal(await commandEnable(parseArgs(['enable', 'dep-id', '--project', root]), fake.io), 0)
+  assert.deepEqual(calls[1], {
+    command: 'pnpm',
+    args: ['add', 'dep-pkg@1.2.3'],
+  }, '重装必须使用卸载记录里的 spec')
+
+  const app = readJson(join(root, 'app.json'))
+  assert.deepEqual(app.uninstalledPlugins, [])
+  assert.deepEqual(app.plugins, ['dep-id'])
+  const state = readJson(join(root, 'data', 'plugins-state.json'))
+  assert.equal(state.uninstalled['dep-id'], undefined)
+  assert.equal(state.installed['dep-id'].spec, 'dep-pkg@1.2.3')
+  assert.equal(existsSync(join(root, 'node_modules', 'dep-pkg', 'plugin.json')), true)
+})
+
+test('enable 缺少重装 spec 时报错并以非零退出码结束', async () => {
+  const root = join(tempDir(), 'demo')
+  await commandNew(parseArgs(['new', 'demo', '--project', root]), fakeIO().io)
+  const app = readJson(join(root, 'app.json'))
+  app.uninstalledPlugins = ['ghost']
+  writeFileSync(join(root, 'app.json'), JSON.stringify(app, null, 2) + '\n')
+
+  const fake = fakeIO()
+  const code = await commandEnable(parseArgs(['enable', 'ghost', '--project', root]), fake.io)
+  assert.equal(code, 1)
+  assert.ok(fake.err.some((line) => line.includes('无法一键装回')))
 })
 
 // ---------------------------------------------------------------- remove

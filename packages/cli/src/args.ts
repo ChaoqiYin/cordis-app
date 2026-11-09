@@ -10,6 +10,7 @@ export type CommandName =
   | 'new'
   | 'add'
   | 'remove'
+  | 'enable'
   | 'run'
   | 'dev'
   | 'build'
@@ -42,6 +43,7 @@ const COMMANDS: readonly CommandName[] = [
   'new',
   'add',
   'remove',
+  'enable',
   'run',
   'dev',
   'build',
@@ -145,13 +147,14 @@ export const HELP_TEXT = `cordis-app —— 应用与插件的命令行
 用法：
   cordis-app new <名字>                     创建一个新项目
   cordis-app add <包名[@版本]>              安装插件
-  cordis-app remove <包名>                  卸载插件
+  cordis-app remove <id|包名>               卸载插件（随包/本地只写状态，依赖走包管理器）
+  cordis-app enable <插件 id>               重新启用已卸载的插件
   cordis-app run                            以源码形态启动项目并打印访问地址
   cordis-app dev [--shell]                  开发模式：Vite HMR + worker 自动重启
   cordis-app build                          构建可发布的 dist/ 布局
   cordis-app start                          运行 dist/ 构建产物
   cordis-app restart                        重启正在运行的项目
-  cordis-app list [--json]                  列出项目依赖中的插件
+  cordis-app list [--json]                  列出已启用与已卸载的插件及其来源
 
 通用选项：
   --project <目录>     项目根（默认当前目录，可用 CORDIS_APP_PROJECT 覆盖）
