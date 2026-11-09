@@ -714,6 +714,27 @@ test('恢复使用事务日志里的包管理器，而不是当前检测结果',
   assert.deepEqual(fixture.runs.at(-1), { command: 'pnpm', args: ['add', 'keep@1.2.0'] })
 })
 
+test('两次动作之间 lockfile 变化时重新检测包管理器', async () => {
+  const fixture = createFixture()
+  installTask(fixture, 'first')
+  await fixture.installer.install('first')
+
+  // 项目从 pnpm 迁移到 yarn：下一次动作必须使用新的管理器，不能复用上一次的缓存。
+  rmSync(join(fixture.projectRoot, 'pnpm-lock.yaml'))
+  writeFileSync(join(fixture.projectRoot, 'yarn.lock'), '')
+  fixture.queue.push(() => {
+    writePlugin(fixture, 'second')
+    addDependency(fixture, 'second', '^1.0.0')
+  })
+
+  await fixture.installer.install('second')
+
+  assert.deepEqual(
+    fixture.runs.map((run) => run.command),
+    ['pnpm', 'yarn'],
+  )
+})
+
 test('旧事务日志没有 packageManager 字段时回退 npm', async () => {
   const fixture = createFixture()
   const keepDir = join(fixture.nodeModules, 'keep')

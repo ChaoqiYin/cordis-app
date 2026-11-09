@@ -14,15 +14,17 @@
 import type { RuntimeMode } from '@cordis-app/protocol'
 import {
   findPlugin,
+  pluginVersion,
   type InstalledPlugin,
   type PluginRootKind,
   type PluginScan,
 } from './catalog.js'
 import type { PluginInstaller } from './installer.js'
-import type {
-  PluginState,
-  PluginStateStore,
-  UninstalledPluginRecord,
+import {
+  buildInstalledPluginRecord,
+  type PluginState,
+  type PluginStateStore,
+  type UninstalledPluginRecord,
 } from './plugin-state.js'
 import type { SourceInstallResult } from './install-source.js'
 
@@ -164,13 +166,15 @@ export class PluginLifecycle {
       commit: (result) => {
         // 重装即启用：先让 id 回到启用顺序，再写入新的安装元数据。
         this.options.state.markEnabled(id)
-        this.options.state.setInstalled(id, {
-          spec,
-          sourceKind: this.options.installer.sourceKind,
-          ...(result.packageName ? { packageName: result.packageName } : {}),
-          ...(result.version ? { version: result.version } : {}),
-          installedAt: this.now().toISOString(),
-        })
+        this.options.state.setInstalled(
+          id,
+          buildInstalledPluginRecord(
+            spec,
+            this.options.installer.sourceKind,
+            result,
+            this.now().toISOString(),
+          ),
+        )
       },
     })
     this.options.requestRestart?.()
@@ -198,7 +202,7 @@ export class PluginLifecycle {
    */
   private buildRecord(plugin: InstalledPlugin, state: PluginState): UninstalledPluginRecord {
     const installed = state.installed[plugin.id]
-    const version = plugin.manifest.version ?? plugin.packageJson.version
+    const version = pluginVersion(plugin)
     const base: UninstalledPluginRecord = {
       id: plugin.id,
       displayName: plugin.manifest.displayName ?? plugin.id,
@@ -239,6 +243,6 @@ function versionField(source: { version?: string } | undefined): { version?: str
 
 /** 扫描结果里的插件版本优先取 plugin.json，其次取 package.json。 */
 function installedPluginVersion(plugin: InstalledPlugin | undefined): { version?: string } {
-  const version = plugin?.manifest.version ?? plugin?.packageJson.version
+  const version = plugin ? pluginVersion(plugin) : undefined
   return version ? { version } : {}
 }

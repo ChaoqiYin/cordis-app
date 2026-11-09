@@ -12,9 +12,13 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { spawn } from 'node:child_process'
 import {
+  ENV_USER_PLUGINS,
   FRAMEWORK_VERSION,
+  PLUGIN_ORIGIN_LABEL,
   waitForReady,
   type PluginFailure,
+  type PluginOrigin,
+  type PluginRootKind,
 } from '@cordis-app/protocol'
 import {
   PluginInstaller,
@@ -23,6 +27,7 @@ import {
   PluginStateStore,
   StartAppError,
   Supervisor,
+  buildInstalledPluginRecord,
   findFreePort as defaultFindFreePort,
   planPluginViews,
   readPluginId,
@@ -31,9 +36,7 @@ import {
   type AppExitEvent,
   type AppHandle,
   type EnableResult,
-  type PluginOrigin,
   type PluginRoot,
-  type PluginRootKind,
   type StartAppOptions,
 } from '@cordis-app/runtime'
 import {
@@ -84,6 +87,11 @@ export interface CommandIO {
   openBrowser?(url: string): void
   /** 覆盖 UI 产物目录探测 */
   resourcesDir?: string
+  /**
+   * 项目模式的可写用户插件根。与 worker 一致：缺省读 `CORDIS_APP_USER_PLUGINS`，
+   * 没有配置时不产生 user 根。测试与嵌入方可以直接注入。
+   */
+  userPluginsDir?: string
   /** 执行包管理器，测试时替换；默认按项目检测结果执行 npm / pnpm / yarn / bun */
   packageManager?(command: string, args: string[], cwd: string): Promise<void>
   /** 构建实现；测试时替换，避免真的跑 Vite */
@@ -633,15 +641,18 @@ async function makeInstaller(workspace: Workspace, io: CommandIO): Promise<Plugi
 
 /**
  * CLI 看到的插件根。与项目模式 worker 的启动扫描保持同一优先级：
- * 内置（能找到 `resources/plugins` 时）> 项目本地 > 项目依赖。
- * 用户插件根不由项目模式的 `run` 扫描，这里也不参与。
+ * 内置（能找到 `resources/plugins` 时）> 项目本地 > 项目依赖 > 用户插件。
+ * 用户插件根只在显式配置（`CORDIS_APP_USER_PLUGINS` 或注入值）时参与，
+ * 与 worker 的 `userPluginsDir` 判定一致。
  */
 function pluginRoots(workspace: Workspace, io: CommandIO): PluginRoot[] {
   const resourcesDir = io.resourcesDir ?? findResourcesDir(workspace.projectRoot)
+  const userPluginsDir = io.userPluginsDir ?? process.env[ENV_USER_PLUGINS]
   return [
     ...(resourcesDir ? [{ kind: 'builtin' as const, dir: join(resourcesDir, 'plugins') }] : []),
     { kind: 'local' as const, dir: workspace.layout.localPluginsDir },
     { kind: 'dependency' as const, dir: workspace.nodeModulesDir },
+    ...(userPluginsDir ? [{ kind: 'user' as const, dir: userPluginsDir }] : []),
   ]
 }
 
@@ -692,13 +703,10 @@ export async function commandAdd(args: ParsedArgs, io: CommandIO): Promise<numbe
   const result = await installer.install(spec, {
     snapshotPaths: [state.statePath],
     commit: (installed) => {
-      state.setInstalled(installed.id, {
-        spec,
-        sourceKind: installer.sourceKind,
-        ...(installed.packageName ? { packageName: installed.packageName } : {}),
-        ...(installed.version ? { version: installed.version } : {}),
-        installedAt: new Date().toISOString(),
-      })
+      state.setInstalled(
+        installed.id,
+        buildInstalledPluginRecord(spec, installer.sourceKind, installed, new Date().toISOString()),
+      )
     },
   })
   io.out(`已安装 ${result.id}${result.version ? `@${result.version}` : ''}`)
@@ -781,12 +789,6 @@ export async function commandEnable(args: ParsedArgs, io: CommandIO): Promise<nu
 
 // ---------------------------------------------------------------- list
 
-const ORIGIN_LABEL: Record<PluginOrigin, string> = {
-  builtin: '随包',
-  local: '项目本地',
-  external: '外部',
-}
-
 type ListStatus = 'enabled' | 'uninstalled' | 'missing'
 
 const STATUS_LABEL: Record<ListStatus, string> = {
@@ -795,7 +797,12 @@ const STATUS_LABEL: Record<ListStatus, string> = {
   missing: '未安装',
 }
 
-/** list 的统一行：扫描结果、卸载记录与「声明了但没装」的依赖合并到这里。 */
+/**
+ * list 的统一行：扫描结果、卸载记录与「声明了但没装」的依赖合并到这里。
+ *
+ * `status` 是唯一真源；`enabled` 只在 JSON 输出时由它派生，避免两个字段
+ * 各写一份后互相矛盾。
+ */
 interface ListRow {
   packageName: string
   displayName: string
@@ -803,7 +810,6 @@ interface ListRow {
   version: string
   rootKind: PluginRootKind | null
   origin: PluginOrigin
-  enabled: boolean
   status: ListStatus
   reinstallable?: boolean
 }
@@ -850,7 +856,6 @@ export async function commandList(args: ParsedArgs, io: CommandIO): Promise<numb
       version: view.version ?? '（未知）',
       rootKind: view.rootKind,
       origin: view.origin,
-      enabled: view.enabled,
       status: view.enabled ? 'enabled' : 'uninstalled',
       ...(view.enabled ? {} : { reinstallable: view.reinstallable }),
     })
@@ -863,7 +868,6 @@ export async function commandList(args: ParsedArgs, io: CommandIO): Promise<numb
       version: view.version ?? '（未知）',
       rootKind: view.rootKind,
       origin: view.origin,
-      enabled: false,
       status: 'uninstalled',
       reinstallable: view.reinstallable,
     })
@@ -882,7 +886,6 @@ export async function commandList(args: ParsedArgs, io: CommandIO): Promise<numb
       version: installed?.version ?? '（未安装）',
       rootKind: null,
       origin: 'external',
-      enabled: false,
       status: 'missing',
     })
   }
@@ -901,7 +904,6 @@ export async function commandList(args: ParsedArgs, io: CommandIO): Promise<numb
               version,
               rootKind,
               origin,
-              enabled,
               status,
               reinstallable,
             }) => ({
@@ -911,7 +913,7 @@ export async function commandList(args: ParsedArgs, io: CommandIO): Promise<numb
               version,
               rootKind,
               origin,
-              enabled,
+              enabled: status === 'enabled',
               status,
               ...(reinstallable !== undefined ? { reinstallable } : {}),
             }),
@@ -933,13 +935,13 @@ export async function commandList(args: ParsedArgs, io: CommandIO): Promise<numb
   const nameWidth = Math.max(...rows.map((row) => row.packageName.length), 4)
   const versionWidth = Math.max(...rows.map((row) => row.version.length), 4)
   const idWidth = Math.max(...rows.map((row) => (row.id ?? '-').length), 2)
-  const originWidth = Math.max(...rows.map((row) => ORIGIN_LABEL[row.origin].length), 4)
+  const originWidth = Math.max(...rows.map((row) => PLUGIN_ORIGIN_LABEL[row.origin].length), 4)
   io.out(
     `  ${'包名'.padEnd(nameWidth)}  ${'版本'.padEnd(versionWidth)}  ${'插件 id'.padEnd(idWidth)}  ${'来源'.padEnd(originWidth)}  状态`,
   )
   for (const row of rows) {
     io.out(
-      `  ${row.packageName.padEnd(nameWidth)}  ${row.version.padEnd(versionWidth)}  ${(row.id ?? '-').padEnd(idWidth)}  ${ORIGIN_LABEL[row.origin].padEnd(originWidth)}  ${STATUS_LABEL[row.status]}`,
+      `  ${row.packageName.padEnd(nameWidth)}  ${row.version.padEnd(versionWidth)}  ${(row.id ?? '-').padEnd(idWidth)}  ${PLUGIN_ORIGIN_LABEL[row.origin].padEnd(originWidth)}  ${STATUS_LABEL[row.status]}`,
     )
   }
   return 0

@@ -84,7 +84,6 @@ test('项目模式状态文件在 data/ 下，缺失时读取为空状态', () =
   assert.deepEqual(state.uninstalledIds, [])
   assert.deepEqual(state.installed, {})
   assert.deepEqual(state.uninstalled, {})
-  assert.deepEqual(state.staleUninstalledIds, [])
 })
 
 test('项目模式写入同时更新 app.json 的已卸载 id 与状态文件明细，重启后可读', () => {
@@ -104,7 +103,6 @@ test('项目模式写入同时更新 app.json 的已卸载 id 与状态文件明
     },
     uninstalled: { gone: uninstalledRecord('gone') },
     uninstalledIds: ['gone'],
-    staleUninstalledIds: [],
   })
 
   const app = readJson(appJson)
@@ -167,26 +165,6 @@ test('markUninstalled 把 installed 明细移到 uninstalled，并写入 app.jso
   assert.deepEqual(readJson(appJson).plugins, ['keep'])
 })
 
-test('clearUninstalled 只清状态，不动 app.json.plugins 的启用顺序', () => {
-  const root = tempDir()
-  const appJson = writeAppJson(root, {
-    name: 'demo',
-    version: '1.0.0',
-    plugins: ['a', 'b'],
-    uninstalledPlugins: ['a'],
-  })
-  seedStateFile(root, { a: uninstalledRecord('a') })
-  const store = projectStore(root)
-
-  store.clearUninstalled('a')
-
-  const state = store.read()
-  assert.deepEqual(state.uninstalledIds, [])
-  assert.deepEqual(state.uninstalled, {})
-  assert.deepEqual(readJson(appJson).plugins, ['a', 'b'])
-  assert.deepEqual(readJson(appJson).uninstalledPlugins, [])
-})
-
 test('markEnabled 清除已卸载状态并把 id 追加到启用列表末尾', () => {
   const root = tempDir()
   const appJson = writeAppJson(root, { name: 'demo', version: '1.0.0', plugins: ['a', 'b'] })
@@ -228,7 +206,6 @@ test('打包模式 markEnabled 只写状态文件，不碰只读 app.json', () =
     installed: {},
     uninstalled: { a: uninstalledRecord('a') },
     uninstalledIds: ['a'],
-    staleUninstalledIds: [],
   })
 
   store.markEnabled('a')
@@ -294,7 +271,6 @@ test('状态文件有、app.json 没有的记录视为过期：不展示，下�
   const state = store.read()
   assert.deepEqual(state.uninstalledIds, ['live'])
   assert.deepEqual(Object.keys(state.uninstalled), ['live'])
-  assert.deepEqual(state.staleUninstalledIds, ['stale'])
 
   // 写回同一份读取结果后，过期记录从磁盘上消失。
   store.write(state)
@@ -312,7 +288,6 @@ test('app.json 缺失时以状态文件为已卸载 id 真源', () => {
       b: uninstalledRecord('b', { rootKind: 'local', sourceKind: undefined, spec: undefined }),
     },
     uninstalledIds: ['a', 'b'],
-    staleUninstalledIds: [],
   })
 
   const state = store.read()
@@ -329,7 +304,6 @@ test('app.json 存在但没有 uninstalledPlugins 字段表示没有显式卸载
   const state = projectStore(root).read()
   assert.deepEqual(state.uninstalledIds, [])
   assert.deepEqual(state.uninstalled, {})
-  assert.deepEqual(state.staleUninstalledIds, ['a'])
 })
 
 test('打包模式只写 <userData>/plugins-state.json，不碰只读 app.json', () => {
@@ -362,7 +336,6 @@ test('打包模式以状态文件为真源，忽略 app.json 的 uninstalledPlug
     installed: {},
     uninstalled: { 'from-state': uninstalledRecord('from-state') },
     uninstalledIds: ['from-state'],
-    staleUninstalledIds: [],
   })
 
   const state = store.read()
@@ -393,7 +366,6 @@ test('视图规划：启用视图剔除已卸载 id，origin 按来源映射', (
     installed: {},
     uninstalled: {},
     uninstalledIds: ['dep-id'],
-    staleUninstalledIds: [],
   })
 
   assert.deepEqual(
@@ -405,8 +377,8 @@ test('视图规划：启用视图剔除已卸载 id，origin 按来源映射', (
     ['builtin-id', 'local-id', 'user-id'],
   )
   assert.equal(views.uninstalledIds.has('dep-id'), true)
-  assert.equal(views.enabledRoots.has('dep-id'), false)
-  assert.equal(views.enabledRoots.get('builtin-id'), join(builtin, 'builtin-pkg'))
+  assert.equal(views.enabledScan.roots.has('dep-id'), false)
+  assert.equal(views.enabledScan.roots.get('builtin-id'), join(builtin, 'builtin-pkg'))
 
   const byId = new Map(views.plugins.map((plugin) => [plugin.id, plugin]))
   assert.equal(byId.get('builtin-id')!.origin, 'builtin')
@@ -426,7 +398,6 @@ test('视图规划：物理存在且有卸载记录的插件可一键启用', ()
     installed: {},
     uninstalled: { 'dep-id': uninstalledRecord('dep-id') },
     uninstalledIds: ['dep-id'],
-    staleUninstalledIds: [],
   })
 
   assert.equal(views.plugins[0]!.enabled, false)
@@ -450,7 +421,6 @@ test('视图规划：已卸载列表只放扫描不到但有记录的插件，re
       'missing-record': undefined as never,
     },
     uninstalledIds: ['with-spec', 'without-spec', 'missing-record'],
-    staleUninstalledIds: [],
   })
 
   assert.deepEqual(
@@ -482,7 +452,6 @@ test('视图规划：enabledScan 可直接交给 loader，只含启用插件与�
     installed: {},
     uninstalled: { 'dep-id': uninstalledRecord('dep-id') },
     uninstalledIds: ['dep-id'],
-    staleUninstalledIds: [],
   })
 
   assert.deepEqual(
@@ -520,7 +489,6 @@ test('视图规划：已卸载插件的加载失败不进入启用视图的失�
     installed: {},
     uninstalled: {},
     uninstalledIds: ['dep-id'],
-    staleUninstalledIds: [],
   })
 
   assert.deepEqual(views.failures, [{ id: 'other-id', reason: '另一个失败' }])

@@ -72,9 +72,6 @@ interface NpmJournalData {
 export class NpmInstallSource implements InstallSource {
   readonly kind = 'npm' as const
 
-  /** 检测结果按来源实例缓存：同一次事务的安装与回滚必须用同一个管理器。 */
-  private detected?: DetectedPackageManager
-
   constructor(private readonly options: NpmSourceOptions) {}
 
   get journalPath(): string {
@@ -343,14 +340,16 @@ export class NpmInstallSource implements InstallSource {
 
   /**
    * 检测一次项目包管理器。检测只读文件，不执行命令；冲突时抛错而不是回退 npm。
-   * 结果按来源实例缓存，保证一次事务里安装与回滚使用同一个管理器。
+   *
+   * 不按来源实例缓存：同一个 CLI / worker 进程可能连续执行多次安装或卸载，
+   * 两次动作之间用户完全可能切换 lockfile。每次动作重新读盘才能与项目现状
+   * 一致。恢复事务时不走这里，而是用日志里记录的管理器。
    */
   private packageManager(): DetectedPackageManager {
-    this.detected ??= detectPackageManager({
+    return detectPackageManager({
       projectRoot: this.options.projectRoot,
       ...(this.options.yarnPath !== undefined ? { yarnPath: this.options.yarnPath } : {}),
     })
-    return this.detected
   }
 
   /**

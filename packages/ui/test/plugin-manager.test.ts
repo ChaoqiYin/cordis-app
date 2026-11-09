@@ -25,6 +25,7 @@ const plugins: PluginInfo[] = [
     rootKind: 'builtin',
     origin: 'builtin',
     enabled: true,
+    reinstallable: false,
     files: [],
   },
   {
@@ -34,6 +35,7 @@ const plugins: PluginInfo[] = [
     rootKind: 'local',
     origin: 'local',
     enabled: true,
+    reinstallable: false,
     files: [],
   },
   {
@@ -43,6 +45,7 @@ const plugins: PluginInfo[] = [
     rootKind: 'dependency',
     origin: 'external',
     enabled: true,
+    reinstallable: false,
     files: [],
   },
   {
@@ -52,6 +55,7 @@ const plugins: PluginInfo[] = [
     rootKind: 'builtin',
     origin: 'builtin',
     enabled: false,
+    reinstallable: true,
     files: [],
   },
 ]
@@ -223,12 +227,13 @@ test('reinstallable: false 时禁用启用按钮并说明原因', () => {
   assert.equal((allowedButton.props as { disabled?: boolean }).disabled, false)
 })
 
-test('失败列表只显示启用中的插件', () => {
+test('失败列表显示 API 返回的全部失败', () => {
   const html = render(baseProps())
 
   assert.match(html, /以下插件加载失败/)
+  // API 已经排除已卸载插件；前端不再二次过滤，否则会把 API 认为有效的失败藏起来。
   assert.match(html, /入口加载失败/)
-  assert.doesNotMatch(html, /已卸载插件的历史失败/)
+  assert.match(html, /已卸载插件的历史失败/)
 })
 
 test('界面不出现「停用」按钮或文案', () => {

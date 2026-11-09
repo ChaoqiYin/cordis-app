@@ -14,46 +14,25 @@
  */
 
 import { createElement, useCallback, useEffect, useState, type ReactNode } from 'react'
+import {
+  PLUGIN_ORIGIN_LABEL,
+  type PluginEntry,
+  type PluginFailure,
+  type PluginOrigin,
+  type UninstalledPluginEntry,
+} from '@cordis-app/protocol/plugins'
 import type { SchemaNode } from './schema-form.js'
 import { SchemaForm } from './schema-form.js'
 import { Icon } from './icons.js'
 import { HttpError, useRuntime, useSettings } from 'cordis-app/client'
 
-/** 插件来源对用户展示的三分类。 */
-export type PluginOrigin = 'builtin' | 'local' | 'external'
-
 /** `GET /api/plugins` 完整扫描视图里的一个插件。 */
-export interface PluginInfo {
-  id: string
-  packageName?: string
-  displayName?: string
-  version?: string
-  rootKind: 'builtin' | 'local' | 'dependency' | 'user'
-  origin: PluginOrigin
-  enabled: boolean
-  files: string[]
-  /** 物理存在的已卸载插件能否直接启用；缺省视为可以。 */
-  reinstallable?: boolean
-}
+export type PluginInfo = PluginEntry
 
 /** `GET /api/plugins` 里扫描不到、但有卸载记录的插件。 */
-export interface UninstalledPluginInfo {
-  id: string
-  displayName?: string
-  version?: string
-  rootKind: 'builtin' | 'local' | 'dependency' | 'user'
-  origin: PluginOrigin
-  sourceKind?: 'npm' | 'bundle'
-  packageName?: string
-  spec?: string
-  reinstallable: boolean
-  uninstalledAt?: string
-}
+export type UninstalledPluginInfo = UninstalledPluginEntry
 
-export interface PluginFailure {
-  id: string
-  reason: string
-}
+export type { PluginFailure, PluginOrigin }
 
 export interface PluginManagerProps {
   plugins: PluginInfo[]
@@ -200,12 +179,6 @@ function defaultOf(schema: unknown): Record<string, unknown> {
   return (node?.meta?.default as Record<string, unknown> | undefined) ?? {}
 }
 
-const ORIGIN_LABEL: Record<PluginOrigin, string> = {
-  builtin: '随包',
-  local: '项目本地',
-  external: '外部',
-}
-
 interface UninstalledRow {
   id: string
   displayName: string
@@ -235,7 +208,7 @@ function mergeUninstalled(
       displayName: plugin.displayName ?? plugin.id,
       ...(plugin.version ? { version: plugin.version } : {}),
       origin: plugin.origin,
-      reinstallable: plugin.reinstallable !== false,
+      reinstallable: plugin.reinstallable,
     })
   }
 
@@ -264,9 +237,9 @@ export function PluginManager(props: PluginManagerProps): ReactNode {
   const busy = props.busy ?? null
   const enabled = props.plugins.filter((plugin) => plugin.enabled)
   const uninstalled = mergeUninstalled(props.plugins, props.uninstalled)
-  const enabledIds = new Set(enabled.map((plugin) => plugin.id))
-  // 失败列表只反映真正启用中的插件；已卸载插件不参与加载。
-  const failures = props.failures.filter((failure) => enabledIds.has(failure.id))
+  // API 返回的 failures 已经排除已卸载插件；这里直接渲染，避免二次过滤把
+  // API 认为有效的失败藏起来。
+  const failures = props.failures
 
   return (
     <div className="plugin-manager">
@@ -374,7 +347,7 @@ export function PluginManager(props: PluginManagerProps): ReactNode {
 function OriginBadge(props: { origin: PluginOrigin }): ReactNode {
   return (
     <span className={`plugin-origin plugin-origin-${props.origin}`}>
-      {ORIGIN_LABEL[props.origin]}
+      {PLUGIN_ORIGIN_LABEL[props.origin]}
     </span>
   )
 }

@@ -340,7 +340,7 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
     uiDir: options.resourcesDir ? join(options.resourcesDir, 'ui') : undefined,
     sharedDir: options.resourcesDir ? join(options.resourcesDir, 'shared') : undefined,
     // 静态资源只认启用视图：已卸载插件的 id 不在映射里，自然 404。
-    pluginRoots: views.enabledRoots,
+    pluginRoots: views.enabledScan.roots,
   })
   kernel.plugin(builtin.ws, {})
   kernel.plugin(builtin.storage, { root: layout.dataDir })

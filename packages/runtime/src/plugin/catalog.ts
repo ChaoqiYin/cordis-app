@@ -25,6 +25,7 @@ import {
   SHARED_PEER_RANGES,
   type PluginFailure,
   type PluginManifest,
+  type PluginRootKind,
 } from '@cordis-app/protocol'
 import { pluginEntryProblem } from './entry.js'
 
@@ -37,7 +38,7 @@ export interface PackageJsonLike {
   peerDependencies?: Record<string, string>
 }
 
-export type PluginRootKind = 'builtin' | 'local' | 'dependency' | 'user'
+export type { PluginRootKind }
 
 /** 一个插件根。`dir` 不存在时扫描会安静跳过。 */
 export interface PluginRoot {
@@ -57,6 +58,16 @@ export interface InstalledPlugin {
   rootKind: PluginRootKind
   manifest: PluginManifest
   packageJson: PackageJsonLike
+}
+
+/**
+ * 插件版本：`plugin.json` 优先，其次包的 `package.json`。
+ *
+ * 扫描视图与生命周期动作必须给出同一个版本，否则「列表里的版本」和
+ * 「卸载记录里的版本」会对不上。
+ */
+export function pluginVersion(plugin: InstalledPlugin): string | undefined {
+  return plugin.manifest.version ?? plugin.packageJson.version
 }
 
 export interface PluginScan {

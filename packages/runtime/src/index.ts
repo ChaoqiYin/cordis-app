@@ -1,5 +1,7 @@
 /** runtime 的公共导出。 */
 
+export type { PluginEntry, PluginInventory, PluginOrigin, UninstalledPluginEntry } from '@cordis-app/protocol'
+
 export {
   startApp,
   StartAppError,
@@ -77,6 +79,7 @@ export {
   pluginFileUrl,
   validatePeer,
   isValidPluginId,
+  pluginVersion,
   type InstalledPlugin,
   type PluginScan,
   type PluginRoot,
@@ -86,16 +89,15 @@ export {
 } from './plugin/catalog.js'
 export {
   PluginStateStore,
+  buildInstalledPluginRecord,
   planPluginViews,
   resolvePluginStatePath,
   type InstalledPluginRecord,
-  type PluginOrigin,
   type PluginState,
   type PluginStateStoreOptions,
   type PluginView,
   type PluginViews,
   type UninstalledPluginRecord,
-  type UninstalledPluginView,
 } from './plugin/plugin-state.js'
 export {
   PluginLifecycle,
