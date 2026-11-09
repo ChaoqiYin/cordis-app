@@ -101,12 +101,12 @@ export type PluginEntryExtension = (typeof PLUGIN_ENTRY_EXTENSIONS)[number]
 /**
  * 入口路径是否以运行时接受的 JS 扩展名结尾。
  *
- * 大小写不敏感，只做后缀比较，不访问文件系统；协议包同时被浏览器侧使用，
- * 因此这里不引入 `node:path`。
+ * 大小写敏感：只接受清单中列出的小写 `.js` / `.mjs` / `.cjs`。只做后缀
+ * 比较，不访问文件系统；协议包同时被浏览器侧使用，因此这里不引入
+ * `node:path`。
  */
 export function hasPluginEntryExtension(path: string): boolean {
-  const lower = path.toLowerCase()
-  return PLUGIN_ENTRY_EXTENSIONS.some((extension) => lower.endsWith(extension))
+  return PLUGIN_ENTRY_EXTENSIONS.some((extension) => path.endsWith(extension))
 }
 
 /** 免 token 的健康检查端点 */

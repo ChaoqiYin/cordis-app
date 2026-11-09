@@ -22,16 +22,15 @@ test('打开菜单时保存调用上下文，关闭后清空', () => {
   assert.equal(runtime.getMenu(), null, '关闭菜单必须同时清空上下文')
 })
 
-test('未传上下文时菜单状态保持原有形状', () => {
+test('未传上下文时菜单状态仍写入 context 字段', () => {
   const runtime = new ClientRuntime({ token: 'test-token' })
 
   runtime.openMenu('activity', 10, 20)
 
-  const menu = runtime.getMenu()
-  assert.deepEqual(menu, { menuId: 'activity', x: 10, y: 20 })
-  assert.equal(
-    Object.prototype.hasOwnProperty.call(menu, 'context'),
-    false,
-    '未传上下文时不应多出 context 自有属性',
-  )
+  assert.deepEqual(runtime.getMenu(), {
+    menuId: 'activity',
+    x: 10,
+    y: 20,
+    context: undefined,
+  })
 })

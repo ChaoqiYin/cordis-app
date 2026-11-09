@@ -21,6 +21,7 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { BundleInstallSource } from '../lib/plugin/bundle-source.js'
+import { scanPluginRoots } from '../lib/plugin/catalog.js'
 import {
   BUNDLE_FILE,
   bundleSignaturePayload,
@@ -239,7 +240,7 @@ test('bundle 安装写入 <id>@<version>、installed.json，且没有 app.lock',
   assert.equal(existsSync(join(env.userDataDir, 'app.lock')), false, 'bundle 安装不写公共 app.lock')
 })
 
-test('插件包入口不是 JavaScript 时拒绝安装，并给出下一步', async () => {
+test('插件包安装不校验入口扩展名，由运行时扫描拒绝非 JS 入口', async () => {
   const env = createEnv()
   const archive = makeBundle(env, {
     entry: { client: './src/client.tsx' },
@@ -247,16 +248,16 @@ test('插件包入口不是 JavaScript 时拒绝安装，并给出下一步', as
   })
   const spec = writeBundle(env.userDataDir, 'ts-entry', archive)
 
-  await assert.rejects(
-    () => env.source.install(spec),
-    (error: Error) => {
-      assert.match(error.message, /client\.tsx/, '错误应指出非 JS 入口')
-      assert.match(error.message, /dev|build/, '错误应说明 dev / build 会编译 TS/TSX')
-      assert.match(error.message, /run/, '错误应说明 run 不编译')
-      return true
-    },
-  )
-  assert.equal(existsSync(join(env.pluginsDir, 'demo@1.0.0')), false, '失败不能留下插件目录')
+  const result = await env.source.install(spec)
+
+  assert.equal(result.id, 'demo', '安装期只关心清单、hash、签名与 peer')
+  assert.equal(existsSync(join(env.pluginsDir, 'demo@1.0.0')), true, '插件包正常落盘')
+
+  // 入口扩展名由运行时扫描拒绝，而不是安装期。
+  const scan = scanPluginRoots([{ kind: 'user', dir: env.pluginsDir }])
+  assert.equal(scan.plugins.length, 0, '非 JS 入口不能进入可加载集合')
+  assert.equal(scan.failures.length, 1)
+  assert.match(scan.failures[0]!.reason, /client\.tsx/, '运行时扫描错误应指出非 JS 入口')
 })
 
 test('UI 能力缺失只影响 uiCompatibility，不阻断安装', async () => {

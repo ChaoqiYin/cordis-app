@@ -16,7 +16,7 @@ import {
   type ReactNode,
 } from 'react'
 import type { ClientRuntime, MenuState } from './runtime.js'
-import { invokeAction } from './actions.js'
+import { invokeAction, runAction } from './actions.js'
 import { shortcutFromEvent } from './registry.js'
 import type {
   MenuTrigger,
@@ -180,11 +180,10 @@ export function useShortcuts(): void {
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable) return
     }
     const action = runtime.registry.findActionByShortcut(shortcutFromEvent(event))
-    if (!action || action.disabled) return
+    if (!action) return
+    // 只有行为真的可执行时才阻止浏览器默认行为。
+    if (!runAction(action)) return
     event.preventDefault()
-    void Promise.resolve(action.action()).catch((error) =>
-      console.error(`[cordis-app] 快捷键 ${action.shortcut} 执行失败:`, error),
-    )
   }
 
   useEffect(() => {

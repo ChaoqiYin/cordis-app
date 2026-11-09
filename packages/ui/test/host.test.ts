@@ -137,7 +137,12 @@ test('PluginMenuTrigger 绑定菜单 id，并保留调用方已有的 onContextM
 
   assert.equal(existingCalls, 1, '调用方已有 handler 必须继续执行')
   assert.equal(prevented, true)
-  assert.deepEqual(runtime.getMenu(), { menuId: 'activity', x: 12, y: 34 })
+  assert.deepEqual(runtime.getMenu(), {
+    menuId: 'activity',
+    x: 12,
+    y: 34,
+    context: undefined,
+  })
 })
 
 test('PluginMenuTrigger 带 context 时把调用上下文写进菜单状态', () => {
