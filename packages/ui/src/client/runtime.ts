@@ -73,6 +73,12 @@ export interface MenuState {
   menuId: string
   x: number
   y: number
+  /**
+   * 打开菜单时附带的调用上下文，由菜单渲染器在执行行为时原样传入。
+   *
+   * 它是调用上下文，不是 `ClientContext`；快捷键调用行为时为空。
+   */
+  context?: unknown
 }
 
 export interface ClientRuntimeOptions {
@@ -114,8 +120,8 @@ export class ClientRuntime {
 
   // ---- 菜单状态：命令式 API 与 Hooks 的唯一交汇点 ----
 
-  openMenu(menuId: string, x: number, y: number): void {
-    this.menu = { menuId, x, y }
+  openMenu(menuId: string, x: number, y: number, context?: unknown): void {
+    this.menu = { menuId, x, y, context }
     this.emitMenu()
   }
 

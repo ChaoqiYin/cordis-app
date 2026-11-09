@@ -6,18 +6,14 @@
  */
 
 import { Children, cloneElement, type ReactElement, type ReactNode } from 'react'
-import { useMenu } from 'cordis-app/client'
-
-interface MenuEvent {
-  preventDefault(): void
-  clientX: number
-  clientY: number
-}
+import { useMenu, type MenuEvent } from 'cordis-app/client'
 
 type TriggerChild = ReactElement<{ onContextMenu?: (event: MenuEvent) => void }>
 
 export function PluginMenuTrigger(props: {
   menuId: string
+  /** 调用上下文；执行菜单项行为时原样传入。 */
+  context?: unknown
   children?: TriggerChild
 }): ReactNode {
   const trigger = useMenu(props.menuId)
@@ -28,7 +24,7 @@ export function PluginMenuTrigger(props: {
   return cloneElement(child, {
     onContextMenu: (event: MenuEvent) => {
       existing?.(event)
-      trigger(event)
+      trigger(event, props.context)
     },
   })
 }

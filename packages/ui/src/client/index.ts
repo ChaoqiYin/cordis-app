@@ -44,6 +44,7 @@ export type {
   ClientContext,
   ExtensionComponent,
   HttpClient,
+  MenuEvent,
   MenuItem,
   MenuTrigger,
   PageOptions,

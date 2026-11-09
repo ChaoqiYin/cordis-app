@@ -211,6 +211,59 @@ test('启动期 doctor：共享模块 peer 范围必须与框架提供范围有�
   assert.match(scan.failures[0]!.reason, /react/)
 })
 
+test('非 JS 入口让插件失败，不影响其他插件，并给出下一步', () => {
+  const dir = nodeModules()
+  const peer = { 'cordis-app': '^1.0.0' }
+  writePlugin(
+    join(dir, 'tsx-client'),
+    { id: 'tsx-client', client: 'src/client.tsx' },
+    { name: 'tsx-client', peerDependencies: peer },
+  )
+  writePlugin(
+    join(dir, 'ts-server'),
+    { id: 'ts-server', server: 'src/server.ts' },
+    { name: 'ts-server', peerDependencies: peer },
+  )
+  writePlugin(
+    join(dir, 'ok'),
+    { id: 'ok', client: 'dist/client.js' },
+    { name: 'ok', peerDependencies: peer },
+  )
+
+  const scan = scanPlugins(dir)
+
+  assert.deepEqual(scan.plugins.map((plugin) => plugin.id), ['ok'], '只有 JS 入口的插件可加载')
+  assert.equal(scan.failures.length, 2, '非 JS 入口只让对应插件失败')
+  for (const failure of scan.failures) {
+    assert.match(failure.reason, /\.js|\.mjs|\.cjs/, '错误应列出可接受的 JS 扩展名')
+    assert.match(failure.reason, /dev|build/, '错误应说明 dev / build 会编译 TS/TSX')
+    assert.match(failure.reason, /run/, '错误应说明 run 不编译')
+  }
+  assert.match(
+    scan.failures.find((failure) => failure.id === 'tsx-client')!.reason,
+    /client\.tsx/,
+  )
+  assert.match(
+    scan.failures.find((failure) => failure.id === 'ts-server')!.reason,
+    /server\.ts/,
+  )
+})
+
+test('入口扩展名大小写敏感：.JS 不被接受', () => {
+  const dir = nodeModules()
+  writePlugin(
+    join(dir, 'upper-entry'),
+    { id: 'upper-entry', client: 'client.JS' },
+    { name: 'upper-entry', peerDependencies: { 'cordis-app': '^1.0.0' } },
+  )
+
+  const scan = scanPlugins(dir)
+
+  assert.equal(scan.plugins.length, 0, '.JS 不能进入可加载集合')
+  assert.equal(scan.failures.length, 1)
+  assert.match(scan.failures[0]!.reason, /client\.JS/, '错误应指出大写扩展名入口')
+})
+
 test('启动期 doctor：共享模块 peer 范围兼容时插件可加载', () => {
   const dir = nodeModules()
   writePlugin(

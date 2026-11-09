@@ -349,7 +349,12 @@ export class NpmInstallSource implements InstallSource {
     return manifest
   }
 
-  /** ① + ②：清单校验与 peer 比对。 */
+  /**
+   * ① + ②：清单校验与 peer 比对。
+   *
+   * 入口扩展名不在这里校验：安装只记录启用意图，运行时扫描/加载时才拒绝
+   * 非 JS 入口。
+   */
   private validateManifest(manifest: PluginManifest): void {
     if (!manifest.server && !manifest.client) {
       throw new Error('plugin.json 既没有 server 也没有 client 入口')

@@ -279,6 +279,8 @@ export class BundleInstallSource implements InstallSource {
     const reason = validatePeer(pkg, this.options.frameworkVersion)
     if (reason) throw new Error(`插件包 peer 校验失败：${reason}`)
 
+    // 入口扩展名不在这里校验：安装只负责落盘，运行时扫描/加载时才拒绝非
+    // JS 入口。路径安全、存在性与符号链接逃逸仍然在这里守住。
     for (const entry of [manifest.server, manifest.client]) {
       if (!entry) continue
       const target = safeJoinWithin(root, entry)

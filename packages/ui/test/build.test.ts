@@ -519,9 +519,113 @@ test('客户端值导入 @cordis-app 内部包时构建失败，import type 通�
   )
   const result = await buildProject({ projectRoot: typeRoot })
   assert.ok(
-    existsSync(join(result.resourcesDir, 'plugins', 'demo', 'client.ts')),
+    existsSync(join(result.resourcesDir, 'plugins', 'demo', 'client.js')),
     'import type 在转译前被擦除，不应触发客户端内部包边界',
   )
+})
+
+test('TSX 入口产出 .js，产物清单改写，源清单与其他字段不变', async () => {
+  const root = createProject()
+  const pluginRoot = join(root, 'plugins', 'demo')
+  mkdirSync(join(pluginRoot, 'src'), { recursive: true })
+  const sourceManifest = {
+    id: 'demo',
+    displayName: 'Demo',
+    version: '2.0.0',
+    client: 'src/client.tsx',
+    server: 'src/server.tsx',
+    ui: { pages: true },
+    capabilities: ['storage'],
+    extra: { keep: true },
+  }
+  writeFileSync(
+    join(pluginRoot, 'plugin.json'),
+    JSON.stringify(sourceManifest, null, 2) + '\n',
+  )
+  writeFileSync(
+    join(pluginRoot, 'src', 'client.tsx'),
+    'export default function activate() { return "TSX_CLIENT" }\n',
+  )
+  writeFileSync(
+    join(pluginRoot, 'src', 'server.tsx'),
+    'export default function apply() { return "TSX_SERVER" }\n',
+  )
+
+  const result = await buildProject({ projectRoot: root })
+  const pluginOut = join(result.resourcesDir, 'plugins', 'demo')
+
+  for (const file of ['client.js', 'server.js', 'client.js.map', 'server.js.map']) {
+    assert.ok(existsSync(join(pluginOut, 'src', file)), `应产出 src/${file}`)
+  }
+  assert.equal(existsSync(join(pluginOut, 'src', 'client.tsx')), false, '不保留源扩展名产物')
+  assert.equal(existsSync(join(pluginOut, 'src', 'server.tsx')), false)
+
+  const builtManifest = JSON.parse(readFileSync(join(pluginOut, 'plugin.json'), 'utf8'))
+  assert.equal(builtManifest.client, 'src/client.js', '产物清单必须指向 .js 入口')
+  assert.equal(builtManifest.server, 'src/server.js')
+  assert.equal(builtManifest.displayName, 'Demo', '其他字段原样保留')
+  assert.equal(builtManifest.version, '2.0.0')
+  assert.deepEqual(builtManifest.ui, { pages: true })
+  assert.deepEqual(builtManifest.capabilities, ['storage'])
+  assert.deepEqual(builtManifest.extra, { keep: true })
+
+  assert.deepEqual(
+    JSON.parse(readFileSync(join(pluginRoot, 'plugin.json'), 'utf8')),
+    sourceManifest,
+    '源目录的 plugin.json 不能被构建改写',
+  )
+
+  const builtPlugin = result.plugins.find((plugin) => plugin.id === 'demo')!
+  assert.deepEqual(builtPlugin.files.sort(), [
+    'src/client.js',
+    'src/client.js.map',
+    'src/server.js',
+    'src/server.js.map',
+  ])
+})
+
+test('入口归一化后的产物路径冲突时构建失败，且不产出 dist', async () => {
+  const root = createProject()
+  const pluginRoot = join(root, 'plugins', 'demo')
+  mkdirSync(join(pluginRoot, 'src'), { recursive: true })
+  writeFileSync(
+    join(pluginRoot, 'plugin.json'),
+    JSON.stringify({ id: 'demo', client: 'src/index.tsx', server: 'src/index.ts' }),
+  )
+  writeFileSync(join(pluginRoot, 'src', 'index.tsx'), 'export default function activate() {}\n')
+  writeFileSync(join(pluginRoot, 'src', 'index.ts'), 'export default function apply() {}\n')
+
+  await assert.rejects(
+    () => buildProject({ projectRoot: root }),
+    (error: Error) => {
+      assert.match(error.message, /demo/, '错误应指出插件 id')
+      assert.match(error.message, /前端 src\/index\.tsx/, '错误应指出前端入口')
+      assert.match(error.message, /服务端 src\/index\.ts/, '错误应指出服务端入口')
+      assert.match(error.message, /src\/index\.js/, '错误应指出冲突的产物路径')
+      return true
+    },
+  )
+  assert.equal(existsSync(join(root, 'dist')), false, '冲突时不能产出 dist')
+})
+
+test('插件入口扩展名不受支持时构建失败，且不产出 dist', async () => {
+  const root = createProject()
+  writeFileSync(
+    join(root, 'plugins', 'demo', 'plugin.json'),
+    JSON.stringify({ id: 'demo', client: 'client.vue' }),
+  )
+  writeFileSync(join(root, 'plugins', 'demo', 'client.vue'), '<template />\n')
+
+  await assert.rejects(
+    () => buildProject({ projectRoot: root }),
+    (error: Error) => {
+      assert.match(error.message, /client\.vue/, '错误应指出不支持的入口')
+      assert.match(error.message, /\.tsx/, '错误应列出可接受的 TS/TSX 扩展名')
+      assert.match(error.message, /\.js/, '错误应列出可接受的 JS 扩展名')
+      return true
+    },
+  )
+  assert.equal(existsSync(join(root, 'dist')), false)
 })
 
 test('CJS 依赖里的动态 require 在 ESM 产物中可用', async () => {

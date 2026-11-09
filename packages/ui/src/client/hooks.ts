@@ -16,8 +16,15 @@ import {
   type ReactNode,
 } from 'react'
 import type { ClientRuntime, MenuState } from './runtime.js'
+import { invokeAction, runAction } from './actions.js'
 import { shortcutFromEvent } from './registry.js'
-import type { RegisteredMenuItem, RegisteredPage, RegisteredSettings, RegisteredSlot } from './types.js'
+import type {
+  MenuTrigger,
+  RegisteredMenuItem,
+  RegisteredPage,
+  RegisteredSettings,
+  RegisteredSlot,
+} from './types.js'
 
 /** 运行时由宿主注入；插件拿不到这个 Context，只能通过下面的 Hooks。 */
 export const RuntimeContext = createContext<ClientRuntime | null>(null)
@@ -63,16 +70,12 @@ export function useSlots(type: string): RegisteredSlot[] {
 }
 
 /** 绑定一个菜单 id，返回在 `contextmenu` 事件上直接调用的触发器。 */
-export function useMenu(menuId: string): (event: {
-  preventDefault(): void
-  clientX: number
-  clientY: number
-}) => void {
+export function useMenu(menuId: string): MenuTrigger {
   const runtime = useRuntime()
   return useCallback(
-    (event) => {
+    (event, context) => {
       event.preventDefault()
-      runtime.openMenu(menuId, event.clientX, event.clientY)
+      runtime.openMenu(menuId, event.clientX, event.clientY, context)
     },
     [runtime, menuId],
   )
@@ -97,17 +100,11 @@ export function useMenuItems(menuId: string | null): RegisteredMenuItem[] {
   return useSyncExternalStore(subscribe, read, read)
 }
 
-/** 执行菜单项对应的行为。行为按完整 id 配对。 */
-export function useMenuAction(): (id: string) => void {
+/** 执行菜单项对应的行为。行为按完整 id 配对，调用上下文原样透传。 */
+export function useMenuAction(): (id: string, context?: unknown) => void {
   const runtime = useRuntime()
   return useCallback(
-    (id: string) => {
-      const action = runtime.registry.findAction(id)
-      if (!action || action.disabled) return
-      void Promise.resolve()
-        .then(() => action.action())
-        .catch((error) => console.error(`[cordis-app] 菜单项 ${id} 执行失败:`, error))
-    },
+    (id: string, context?: unknown) => invokeAction(runtime, id, context),
     [runtime],
   )
 }
@@ -183,11 +180,10 @@ export function useShortcuts(): void {
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable) return
     }
     const action = runtime.registry.findActionByShortcut(shortcutFromEvent(event))
-    if (!action || action.disabled) return
+    if (!action) return
+    // 只有行为真的可执行时才阻止浏览器默认行为。
+    if (!runAction(action)) return
     event.preventDefault()
-    void Promise.resolve(action.action()).catch((error) =>
-      console.error(`[cordis-app] 快捷键 ${action.shortcut} 执行失败:`, error),
-    )
   }
 
   useEffect(() => {

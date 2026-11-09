@@ -21,6 +21,7 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { BundleInstallSource } from '../lib/plugin/bundle-source.js'
+import { scanPluginRoots } from '../lib/plugin/catalog.js'
 import {
   BUNDLE_FILE,
   bundleSignaturePayload,
@@ -47,6 +48,8 @@ interface BundleSpec {
   signWith?: KeyObject
   omitBundle?: boolean
   extraFiles?: Record<string, string>
+  /** 覆盖 plugin.json 的入口，用来构造非 JS 入口 */
+  entry?: { server?: string; client?: string }
 }
 
 interface Env {
@@ -95,8 +98,8 @@ function makeBundle(env: Env, options: BundleSpec = {}): Buffer {
         id,
         version,
         displayName: id,
-        server: './server.js',
-        client: './client.js',
+        server: options.entry?.server ?? './server.js',
+        client: options.entry?.client ?? './client.js',
         ...(options.pluginUi ? { ui: options.pluginUi } : {}),
       }),
     ),
@@ -235,6 +238,26 @@ test('bundle 安装写入 <id>@<version>、installed.json，且没有 app.lock',
   })
   assert.match(readInstalled(env).plugins.demo.hash, /^sha256:[0-9a-f]{64}$/)
   assert.equal(existsSync(join(env.userDataDir, 'app.lock')), false, 'bundle 安装不写公共 app.lock')
+})
+
+test('插件包安装不校验入口扩展名，由运行时扫描拒绝非 JS 入口', async () => {
+  const env = createEnv()
+  const archive = makeBundle(env, {
+    entry: { client: './src/client.tsx' },
+    extraFiles: { 'src/client.tsx': 'export default function activate() {}\n' },
+  })
+  const spec = writeBundle(env.userDataDir, 'ts-entry', archive)
+
+  const result = await env.source.install(spec)
+
+  assert.equal(result.id, 'demo', '安装期只关心清单、hash、签名与 peer')
+  assert.equal(existsSync(join(env.pluginsDir, 'demo@1.0.0')), true, '插件包正常落盘')
+
+  // 入口扩展名由运行时扫描拒绝，而不是安装期。
+  const scan = scanPluginRoots([{ kind: 'user', dir: env.pluginsDir }])
+  assert.equal(scan.plugins.length, 0, '非 JS 入口不能进入可加载集合')
+  assert.equal(scan.failures.length, 1)
+  assert.match(scan.failures[0]!.reason, /client\.tsx/, '运行时扫描错误应指出非 JS 入口')
 })
 
 test('UI 能力缺失只影响 uiCompatibility，不阻断安装', async () => {

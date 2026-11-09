@@ -13,6 +13,7 @@ import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { scanPluginRoots } from '../lib/plugin/catalog.js'
 import { PluginInstaller } from '../lib/plugin/installer.js'
 import { NpmInstallSource } from '../lib/plugin/npm-source.js'
 
@@ -349,6 +350,42 @@ test('升级失败时按事务前记录的版本装回旧版本', async () => {
   const pkg = JSON.parse(readFileSync(join(fixture.nodeModules, 'upgradable', 'package.json'), 'utf8'))
   assert.equal(pkg.version, '1.0.0', '失败升级应当回到事务前的版本')
   assert.equal(readPackage(fixture).dependencies['upgradable'], '^1.0.0')
+})
+
+test('npm 安装不校验入口扩展名，由运行时扫描拒绝非 JS 入口', async () => {
+  const fixture = createFixture()
+  fixture.queue.push(() => {
+    const dir = join(fixture.nodeModules, 'ts-entry')
+    mkdirSync(join(dir, 'src'), { recursive: true })
+    writeFileSync(
+      join(dir, 'package.json'),
+      JSON.stringify({
+        name: 'ts-entry',
+        version: '1.0.0',
+        type: 'module',
+        peerDependencies: { 'cordis-app': '^1.0.0' },
+      }),
+    )
+    writeFileSync(
+      join(dir, 'plugin.json'),
+      JSON.stringify({ id: 'ts-entry', client: 'src/client.tsx' }),
+    )
+    writeFileSync(join(dir, 'src', 'client.tsx'), 'export default function activate() {}\n')
+    addDependency(fixture, 'ts-entry', '^1.0.0')
+    writeLock(fixture, `${INITIAL_LOCK}# added ts-entry@1.0.0\n`)
+  })
+
+  const result = await fixture.installer.install('ts-entry')
+
+  assert.equal(result.id, 'ts-entry', '安装期只关心清单与 peer，不校验入口扩展名')
+  assert.deepEqual(readApp(fixture).plugins, ['ts-entry'], '安装成功后记录启用意图')
+  assert.equal(existsSync(join(fixture.nodeModules, 'ts-entry')), true, '包保留在 node_modules')
+
+  // 入口扩展名由运行时扫描拒绝，而不是安装期。
+  const scan = scanPluginRoots([{ kind: 'dependency', dir: fixture.nodeModules }])
+  assert.equal(scan.plugins.length, 0, '非 JS 入口不能进入可加载集合')
+  assert.equal(scan.failures.length, 1)
+  assert.match(scan.failures[0]!.reason, /client\.tsx/, '运行时扫描错误应指出非 JS 入口')
 })
 
 test('缺少 plugin.json 的包被拒绝，且不写进 app.json', async () => {
