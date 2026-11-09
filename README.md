@@ -353,7 +353,7 @@ body 决定布局，框架只固定宿主职责和四个出口。`cordis-app/ui`
 | `DefaultBody` | 框架附带的参考布局，可直接使用 |
 | `PluginPageOutlet` | 渲染当前路径对应的插件页面 |
 | `PluginSlot` | 渲染具名插槽（`header.right`、`activity.bottom` 等） |
-| `PluginMenuTrigger` | 把子元素的右键菜单绑定到某个菜单 id |
+| `PluginMenuTrigger` | 把子元素的右键菜单绑定到某个菜单 id，可附带调用上下文 |
 | `SettingsPanel` | 插件管理与插件设置面板 |
 | `SETTINGS_PATH`、`usePath`、`navigate` | body 自己的导航 |
 | `warnUiCompatibility`、`warnUiContractVersion` | UI 能力与契约版本告警 |
@@ -362,6 +362,33 @@ body 必须保留自己声明过的出口；项目页面优先于插件页面，
 `PluginPageOutlet`。可以直接用 `DefaultBody` 起步，也可以参考
 [examples/full-body](./examples/full-body) 自定义布局——它演示了 pages、slots、
 menus、settings 四个出口全部保留的写法。
+
+### 菜单与调用上下文
+
+插件注册菜单项与行为，body 用 `useMenu` 或 `PluginMenuTrigger` 打开菜单。
+打开菜单时可以附带一个调用上下文，执行行为时会原样传回：
+
+```tsx
+// 插件前端入口：注册菜单与行为
+ctx.menu('video', [{ id: '.run', label: '运行' }])
+ctx.action('.run', {
+  // context 是打开菜单时附带的调用上下文，类型为 unknown
+  action: async (context) => {
+    const { id } = context as { id: number }
+    await ctx.http.post(`/api/videos/${id}/run`)
+  },
+})
+
+// 列表行：每行打开菜单时带上自己的记录信息
+const openMenu = useMenu('video')
+<button onContextMenu={(event) => openMenu(event, { id: row.id })}>运行</button>
+```
+
+- 上下文只在菜单打开到行为执行之间有效，关闭菜单即清空。
+- 快捷键调用行为时上下文为空，行为可据此判断调用来源。
+- 所有参数都是可选的，旧插件不改也能运行。
+- body 也可以用 `<PluginMenuTrigger menuId="video" context={{ id: 1 }}>` 携带上下文。
+- 这里的 `context` 是调用上下文，不是插件入口拿到的 `ClientContext`。
 
 ## 插件契约
 
@@ -389,6 +416,49 @@ menus、settings 四个出口全部保留的写法。
   `.js`/`.mjs`/`.cjs`。`run` 不编译，只运行已构建入口，源码 TS/TSX 请用
   `dev` 或 `build`。
 - `package.json` 必须把 `cordis-app` 写进 `peerDependencies`。
+
+### 插件设置表单
+
+插件用 `ctx.settings({ schema })` 注册设置分组时，宿主按 schemastery 结构自动生成
+表单。当前显式支持的 `meta.role`：
+
+| role | 控件 |
+| --- | --- |
+| `textarea` | 固定 4 行的多行文本输入，遵守 `disabled` |
+| `color` | 颜色选择器 |
+| `path` | 单行文本输入，带「路径」占位符 |
+| 其他或未声明 | 单行文本输入 |
+
+初始值由 schema 默认值与当前配置合成：对象递归合并，数组和标量由配置值直接替换。
+因此只提供部分嵌套字段的配置，缺失字段仍会取到默认值。表单保持两段式提交：控件
+只改本地草稿，点「保存」才写回；「撤销」恢复当前初始值。外部配置内容变化时草稿
+会重置；父组件重渲染但配置内容不变时，用户正在输入的内容会保留。
+
+最小示例（展示 `textarea` 与嵌套默认值）：
+
+```jsonc
+{
+  "type": "object",
+  "dict": {
+    "cookie": {
+      "type": "string",
+      "meta": { "role": "textarea", "description": "站点 Cookie" }
+    },
+    "display": {
+      "type": "object",
+      "dict": {
+        "theme": { "type": "string", "meta": { "default": "auto" } },
+        "accent": {
+          "type": "string",
+          "meta": { "role": "color", "default": "#4f8cff" }
+        }
+      }
+    }
+  }
+}
+```
+
+只配置 `display.accent` 时，`display.theme` 仍会取默认值 `auto`。
 
 `react`、`react-dom`、`cordis-app/client` 等共享模块由框架提供，整个应用只有一份；插件
 构建时保持 external，不得自带第二份 React。完整示例见

@@ -140,6 +140,31 @@ test('PluginMenuTrigger 绑定菜单 id，并保留调用方已有的 onContextM
   assert.deepEqual(runtime.getMenu(), { menuId: 'activity', x: 12, y: 34 })
 })
 
+test('PluginMenuTrigger 带 context 时把调用上下文写进菜单状态', () => {
+  const runtime = runtimeWithRuntimeContext()
+  const context = { recordId: 7 }
+  let bound: ((event: unknown) => void) | undefined
+
+  function TriggerProbe(props: { onContextMenu?: (event: unknown) => void }): ReactNode {
+    bound = props.onContextMenu
+    return createElement('span', null, '带上下文的菜单触发器')
+  }
+
+  render(
+    runtime,
+    createElement(
+      PluginMenuTrigger,
+      { menuId: 'activity', context },
+      createElement(TriggerProbe),
+    ),
+  )
+
+  assert.equal(typeof bound, 'function')
+  bound!({ preventDefault: () => {}, clientX: 12, clientY: 34 })
+
+  assert.equal(runtime.getMenu()?.context, context, '触发器必须把 context 原样交给运行时')
+})
+
 test('DefaultBody 提供 pages、slots、menus、settings 全部能力', () => {
   const runtime = runtimeWithRuntimeContext()
   runtime.registry.addPage('demo', {

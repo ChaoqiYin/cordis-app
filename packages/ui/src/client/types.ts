@@ -43,7 +43,11 @@ export interface MenuItem {
 }
 
 export interface ActionOptions {
-  action: () => void | Promise<void>
+  /**
+   * 菜单项行为。`context` 是打开菜单时附带的调用上下文；
+   * 快捷键调用时为空。
+   */
+  action: (context?: unknown) => void | Promise<void>
   shortcut?: string
   disabled?: boolean
 }
@@ -57,12 +61,19 @@ export interface SettingsOptions {
   order?: number
 }
 
-/** 菜单触发器。绑定菜单 id，返回在 DOM 事件上调用即可的函数。 */
-export type MenuTrigger = (event: {
-  preventDefault(): void
-  clientX: number
-  clientY: number
-}) => void
+/**
+ * 菜单触发器。绑定菜单 id，返回在 DOM 事件上调用即可的函数。
+ *
+ * 第二个参数是调用上下文，会随菜单状态保存，并在执行行为时原样传入。
+ */
+export type MenuTrigger = (
+  event: {
+    preventDefault(): void
+    clientX: number
+    clientY: number
+  },
+  context?: unknown,
+) => void
 
 /** 命令式 API：只在插件入口处调用一次，用于注册。 */
 export interface ClientContext {
