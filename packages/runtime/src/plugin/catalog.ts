@@ -26,6 +26,7 @@ import {
   type PluginFailure,
   type PluginManifest,
 } from '@cordis-app/protocol'
+import { pluginEntryProblem } from './entry.js'
 
 export interface PackageJsonLike {
   name?: string
@@ -171,6 +172,17 @@ function readPlugin(
   }
   if (!manifest.server && !manifest.client) {
     return { failure: { id, reason: 'plugin.json 既没有 server 也没有 client 入口' } }
+  }
+
+  // 运行时只加载 JavaScript。TS/TSX 入口必须由 dev / build 编译并改写清单；
+  // 这里拒绝的是「run 直接扫源码根」以及手写清单绕过构建的情况。
+  for (const [kind, entry] of [
+    ['server', manifest.server],
+    ['client', manifest.client],
+  ] as const) {
+    if (!entry) continue
+    const problem = pluginEntryProblem(kind, entry)
+    if (problem) return { failure: { id, reason: problem } }
   }
 
   let packageJson: PackageJsonLike

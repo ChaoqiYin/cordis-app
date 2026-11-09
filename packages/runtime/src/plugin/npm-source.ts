@@ -23,6 +23,7 @@ import {
   type PluginManifest,
 } from '@cordis-app/protocol'
 import { readPluginId } from './catalog.js'
+import { pluginEntryProblem } from './entry.js'
 import {
   uiCompatibilityFor,
   type InstallContext,
@@ -353,6 +354,14 @@ export class NpmInstallSource implements InstallSource {
   private validateManifest(manifest: PluginManifest): void {
     if (!manifest.server && !manifest.client) {
       throw new Error('plugin.json 既没有 server 也没有 client 入口')
+    }
+    for (const [kind, entry] of [
+      ['server', manifest.server],
+      ['client', manifest.client],
+    ] as const) {
+      if (!entry) continue
+      const problem = pluginEntryProblem(kind, entry)
+      if (problem) throw new Error(problem)
     }
   }
 

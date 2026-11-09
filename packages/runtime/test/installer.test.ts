@@ -351,6 +351,46 @@ test('升级失败时按事务前记录的版本装回旧版本', async () => {
   assert.equal(readPackage(fixture).dependencies['upgradable'], '^1.0.0')
 })
 
+test('npm 安装的插件入口不是 JavaScript 时拒绝安装，并给出下一步', async () => {
+  const fixture = createFixture()
+  fixture.queue.push(() => {
+    const dir = join(fixture.nodeModules, 'ts-entry')
+    mkdirSync(join(dir, 'src'), { recursive: true })
+    writeFileSync(
+      join(dir, 'package.json'),
+      JSON.stringify({
+        name: 'ts-entry',
+        version: '1.0.0',
+        type: 'module',
+        peerDependencies: { 'cordis-app': '^1.0.0' },
+      }),
+    )
+    writeFileSync(
+      join(dir, 'plugin.json'),
+      JSON.stringify({ id: 'ts-entry', client: 'src/client.tsx' }),
+    )
+    writeFileSync(join(dir, 'src', 'client.tsx'), 'export default function activate() {}\n')
+    addDependency(fixture, 'ts-entry', '^1.0.0')
+    writeLock(fixture, `${INITIAL_LOCK}# added ts-entry@1.0.0\n`)
+  })
+
+  await assert.rejects(
+    () => fixture.installer.install('ts-entry'),
+    (error: Error) => {
+      assert.match(error.message, /client\.tsx/, '错误应指出非 JS 入口')
+      assert.match(error.message, /dev|build/, '错误应说明 dev / build 会编译 TS/TSX')
+      assert.match(error.message, /run/, '错误应说明 run 不编译')
+      return true
+    },
+  )
+  assert.deepEqual(
+    JSON.parse(readFileSync(join(fixture.projectRoot, 'app.json'), 'utf8')).plugins,
+    [],
+    '失败的安装不能写进 app.json',
+  )
+  assert.equal(existsSync(join(fixture.nodeModules, 'ts-entry')), false, '失败后撤回新包')
+})
+
 test('缺少 plugin.json 的包被拒绝，且不写进 app.json', async () => {
   const fixture = createFixture()
   fixture.queue.push(() => {

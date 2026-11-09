@@ -21,6 +21,7 @@ import {
   type UiCapabilities,
 } from '@cordis-app/protocol'
 import { pluginFileUrl, type InstalledPlugin, type PluginScan } from './catalog.js'
+import { assertPluginEntry } from './entry.js'
 
 export type LoadResult = {
   mounted: Map<string, MountedPlugin>
@@ -58,6 +59,7 @@ export async function loadPlugins(options: {
     const id = plugin.id
     try {
       if (plugin.manifest.server) {
+        assertPluginEntry('server', plugin.manifest.server)
         const entry = resolveEntry(plugin, plugin.manifest.server)
         if (!entry) throw new Error(`服务端入口不存在: ${plugin.manifest.server}`)
         const mod = await import(pathToFileURL(entry).href)
@@ -79,6 +81,7 @@ export async function loadPlugins(options: {
       }
 
       if (plugin.manifest.client) {
+        assertPluginEntry('client', plugin.manifest.client)
         const clientFile = resolveEntry(plugin, plugin.manifest.client)
         if (!clientFile) throw new Error(`前端入口不存在: ${plugin.manifest.client}`)
         entries[id] = {

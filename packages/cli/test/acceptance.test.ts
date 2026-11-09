@@ -406,6 +406,112 @@ test('项目模式闭环：new → 安装签名插件包 → 启动 → 渲染 �
   }
 })
 
+test('构建把 TSX 插件入口规范化为 .js，worker 按 JS 类型提供', async () => {
+  const work = mkdtempSync(join(tmpdir(), 'cordis-entry-js-'))
+  const projectRoot = join(work, 'demo')
+  const userDataDir = join(work, 'userdata')
+
+  try {
+    const io = {
+      out: () => {},
+      err: () => {},
+      frameworkVersion: FRAMEWORK_VERSION,
+    }
+    assert.equal(
+      await commandNew(parseArgs(['new', 'demo', '--project', projectRoot]), io),
+      0,
+    )
+    mkdirSync(join(userDataDir, 'plugins'), { recursive: true })
+
+    const pluginRoot = join(projectRoot, 'plugins', 'tsx-demo')
+    mkdirSync(join(pluginRoot, 'src'), { recursive: true })
+    const sourceManifest = {
+      id: 'tsx-demo',
+      displayName: 'TSX Demo',
+      version: '1.0.0',
+      client: 'src/client.tsx',
+      server: 'src/server.ts',
+      ui: { pages: true },
+    }
+    writeFileSync(
+      join(pluginRoot, 'plugin.json'),
+      JSON.stringify(sourceManifest, null, 2) + '\n',
+    )
+    writeFileSync(
+      join(pluginRoot, 'package.json'),
+      JSON.stringify({
+        name: 'cordis-tsx-demo',
+        version: '1.0.0',
+        type: 'module',
+        peerDependencies: { 'cordis-app': `^${FRAMEWORK_VERSION}` },
+      }),
+    )
+    writeFileSync(
+      join(pluginRoot, 'src', 'client.tsx'),
+      'export default function activate() {}\n',
+    )
+    writeFileSync(
+      join(pluginRoot, 'src', 'server.ts'),
+      `export const inject = ['router']
+export function apply(ctx) {
+  ctx.router.get('/api/tsx-demo', (_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ from: 'tsx' }))
+  })
+}
+`,
+    )
+
+    const built = await buildProject({ projectRoot })
+
+    // 构建产物：入口与清单都指向 .js；源清单保持不变。
+    const builtPlugin = join(built.resourcesDir, 'plugins', 'tsx-demo')
+    assert.ok(existsSync(join(builtPlugin, 'src', 'client.js')), '前端入口应产出 .js')
+    assert.ok(existsSync(join(builtPlugin, 'src', 'server.js')), '服务端入口应产出 .js')
+    assert.equal(readJson(join(builtPlugin, 'plugin.json')).client, 'src/client.js')
+    assert.equal(readJson(join(builtPlugin, 'plugin.json')).server, 'src/server.js')
+    assert.deepEqual(
+      readJson(join(pluginRoot, 'plugin.json')),
+      sourceManifest,
+      '源目录的 plugin.json 不能被构建改写',
+    )
+
+    const { publicKey } = generateKeyPairSync('ed25519')
+    const worker = await startPackagedWorker(
+      projectRoot,
+      userDataDir,
+      publicKey.export({ type: 'spki', format: 'pem' }).toString(),
+      {
+        resourcesDir: built.resourcesDir,
+        serverEntry: built.serverEntry,
+        appJson: built.appJson,
+      },
+    )
+    try {
+      await waitForHealth(worker.base)
+      const headers = { authorization: `Bearer ${worker.token}` }
+
+      const api = await fetch(`${worker.base}/api/tsx-demo`, { headers })
+      assert.equal(api.status, 200, '改写后的服务端入口应被 worker 加载')
+      assert.deepEqual(await api.json(), { from: 'tsx' })
+
+      const entry = await fetch(`${worker.base}/__plugins/tsx-demo/src/client.js`)
+      assert.equal(entry.status, 200, '产物清单指向的 .js 入口应可被 HTTP 取到')
+      assert.equal(
+        entry.headers.get('content-type'),
+        'text/javascript; charset=utf-8',
+        '静态服务必须按 JS 类型分发构建产物',
+      )
+      assert.match(await entry.text(), /activate/)
+      assert.deepEqual(worker.handle.failures, [])
+    } finally {
+      await worker.handle.close()
+    }
+  } finally {
+    rmSync(work, { recursive: true, force: true })
+  }
+})
+
 test('打包形态删掉项目 node_modules 后，项目与本地插件路由仍可用', async () => {
   const work = mkdtempSync(join(tmpdir(), 'cordis-self-contained-'))
   const projectRoot = join(work, 'demo')
