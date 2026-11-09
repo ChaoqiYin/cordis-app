@@ -84,6 +84,31 @@ export const ENV_BUNDLE_PUBLIC_KEY = 'CORDIS_APP_BUNDLE_PUBLIC_KEY'
  */
 export const PLUGIN_SOURCE_BUILT_PATH = 'server/plugin-source.js'
 
+/** 构建产物统一使用的插件入口扩展名。 */
+export const PLUGIN_BUILT_ENTRY_EXTENSION = '.js'
+
+/**
+ * 运行时接受的插件 JS 入口扩展名。
+ *
+ * `dev` / `build` 会把源入口统一输出为 `.js`；npm 包与签名插件包也可以直接
+ * 提供已构建的 `.mjs` / `.cjs` 入口。扫描、加载、安装与构建共用这一份集合，
+ * 不在各处重复写扩展名列表。
+ */
+export const PLUGIN_ENTRY_EXTENSIONS = [PLUGIN_BUILT_ENTRY_EXTENSION, '.mjs', '.cjs'] as const
+
+export type PluginEntryExtension = (typeof PLUGIN_ENTRY_EXTENSIONS)[number]
+
+/**
+ * 入口路径是否以运行时接受的 JS 扩展名结尾。
+ *
+ * 大小写不敏感，只做后缀比较，不访问文件系统；协议包同时被浏览器侧使用，
+ * 因此这里不引入 `node:path`。
+ */
+export function hasPluginEntryExtension(path: string): boolean {
+  const lower = path.toLowerCase()
+  return PLUGIN_ENTRY_EXTENSIONS.some((extension) => lower.endsWith(extension))
+}
+
 /** 免 token 的健康检查端点 */
 export const HEALTH_PATH = '/__health'
 

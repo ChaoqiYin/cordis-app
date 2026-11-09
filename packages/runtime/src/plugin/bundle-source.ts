@@ -40,6 +40,7 @@ import {
   type PublicKeyInput,
 } from './bundle-format.js'
 import { isValidPluginId, validatePeer } from './catalog.js'
+import { pluginEntryProblem } from './entry.js'
 import { readObjectJson } from '../json.js'
 import {
   safeJoinWithin,
@@ -279,8 +280,13 @@ export class BundleInstallSource implements InstallSource {
     const reason = validatePeer(pkg, this.options.frameworkVersion)
     if (reason) throw new Error(`插件包 peer 校验失败：${reason}`)
 
-    for (const entry of [manifest.server, manifest.client]) {
+    for (const [kind, entry] of [
+      ['server', manifest.server],
+      ['client', manifest.client],
+    ] as const) {
       if (!entry) continue
+      const problem = pluginEntryProblem(kind, entry)
+      if (problem) throw new Error(`插件包${problem}`)
       const target = safeJoinWithin(root, entry)
       if (!target) throw new Error(`plugin.json 的入口路径不能逃出插件根：${entry}`)
       if (!existsSync(target) || !lstatSync(target).isFile()) {

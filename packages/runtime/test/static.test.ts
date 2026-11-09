@@ -10,6 +10,7 @@ import assert from 'node:assert/strict'
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { mimeType } from '../lib/builtin/http-utils.js'
 import { resolvePluginFile } from '../lib/builtin/static.js'
 
 function pluginRoot(): string {
@@ -36,6 +37,24 @@ test('id 段经过 URL 解码后查表，作用域目录不影响挂载', () => 
     resolvePluginFile('/__plugins/acme%2Ddemo/client.js', roots),
     join(root, 'client.js'),
   )
+})
+
+test('只有 JS 入口扩展名返回 JavaScript 类型', () => {
+  for (const file of ['client.js', 'client.mjs', 'client.cjs']) {
+    assert.equal(
+      mimeType(`plugins/p/src/${file}`),
+      'text/javascript; charset=utf-8',
+      `${file} 必须按 JS 分发`,
+    )
+  }
+  // 构建负责把源入口编译成 .js；MIME 表不把 TS/JSX 伪装成 JS。
+  for (const file of ['client.ts', 'client.tsx', 'client.jsx']) {
+    assert.equal(
+      mimeType(`plugins/p/src/${file}`),
+      'application/octet-stream',
+      `${file} 不能出现在静态服务的 JS 类型表里`,
+    )
+  }
 })
 
 test('插件资源路径穿越被拦截', () => {

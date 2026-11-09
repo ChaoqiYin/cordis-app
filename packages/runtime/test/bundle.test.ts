@@ -47,6 +47,8 @@ interface BundleSpec {
   signWith?: KeyObject
   omitBundle?: boolean
   extraFiles?: Record<string, string>
+  /** 覆盖 plugin.json 的入口，用来构造非 JS 入口 */
+  entry?: { server?: string; client?: string }
 }
 
 interface Env {
@@ -95,8 +97,8 @@ function makeBundle(env: Env, options: BundleSpec = {}): Buffer {
         id,
         version,
         displayName: id,
-        server: './server.js',
-        client: './client.js',
+        server: options.entry?.server ?? './server.js',
+        client: options.entry?.client ?? './client.js',
         ...(options.pluginUi ? { ui: options.pluginUi } : {}),
       }),
     ),
@@ -235,6 +237,26 @@ test('bundle 安装写入 <id>@<version>、installed.json，且没有 app.lock',
   })
   assert.match(readInstalled(env).plugins.demo.hash, /^sha256:[0-9a-f]{64}$/)
   assert.equal(existsSync(join(env.userDataDir, 'app.lock')), false, 'bundle 安装不写公共 app.lock')
+})
+
+test('插件包入口不是 JavaScript 时拒绝安装，并给出下一步', async () => {
+  const env = createEnv()
+  const archive = makeBundle(env, {
+    entry: { client: './src/client.tsx' },
+    extraFiles: { 'src/client.tsx': 'export default function activate() {}\n' },
+  })
+  const spec = writeBundle(env.userDataDir, 'ts-entry', archive)
+
+  await assert.rejects(
+    () => env.source.install(spec),
+    (error: Error) => {
+      assert.match(error.message, /client\.tsx/, '错误应指出非 JS 入口')
+      assert.match(error.message, /dev|build/, '错误应说明 dev / build 会编译 TS/TSX')
+      assert.match(error.message, /run/, '错误应说明 run 不编译')
+      return true
+    },
+  )
+  assert.equal(existsSync(join(env.pluginsDir, 'demo@1.0.0')), false, '失败不能留下插件目录')
 })
 
 test('UI 能力缺失只影响 uiCompatibility，不阻断安装', async () => {

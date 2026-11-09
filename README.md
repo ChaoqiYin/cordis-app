@@ -113,6 +113,11 @@ node packages/cli/lib/cli.js start --project /tmp/cordis-demo
 同一个 id 同时出现在两处时保留本地插件；依赖根中 id 重复，或清单声明的入口
 缺失时构建硬失败，不会留下半新半旧的 `dist/`。
 
+插件入口的扩展名在构建期规范化：源码可以写 `.ts`/`.tsx` 等 esbuild 支持的
+JS/TS 家族入口，`dev` 与 `build` 会把产物改成同目录同名的 `.js`（例如
+`src/client.tsx` → `src/client.js`），并改写产物里的 `plugin.json`；源码目录的
+清单保持不变。运行时只接受 `.js`、`.mjs`、`.cjs`。
+
 ## 在另一个项目中使用（本地联调）
 
 项目尚未发布到 npm。使用方项目不要依赖 npm registry 上的 `cordis-app`，而是把
@@ -379,6 +384,10 @@ menus、settings 四个出口全部保留的写法。
 - `client` 默认导出 `activate(ctx)`：入口处用命令式 API 注册扩展点，组件内只用
   Hooks。
 - `ui` 声明插件需要的 UI 出口；`capabilities` 声明安全能力，两者不混用。
+- `server`/`client` 在源码里可以是 `.ts`/`.tsx`，但 `plugin.json` 是运行时清单：
+  `dev`/`build` 编译后会把产物清单的入口改写为 `.js`；运行时只接受
+  `.js`/`.mjs`/`.cjs`。`run` 不编译，只运行已构建入口，源码 TS/TSX 请用
+  `dev` 或 `build`。
 - `package.json` 必须把 `cordis-app` 写进 `peerDependencies`。
 
 `react`、`react-dom`、`cordis-app/client` 等共享模块由框架提供，整个应用只有一份；插件
@@ -479,9 +488,9 @@ hash、Ed25519 签名与 peer 范围；安装时先比 hash、再验签名，任
 | `add <包名[@版本]>` | 安装插件，支持 npm 包名、tarball、`file:` 路径 |
 | `remove <包名>` | 卸载插件 |
 | `list [--json]` | 列出项目依赖中的插件与启用状态 |
-| `run` | 以源码形态启动项目（前台） |
-| `dev [--shell]` | 开发模式：Vite HMR、项目 server 与插件变化重启 worker；`--shell` 用桌面外壳开窗，开发时也能使用原生能力 |
-| `build` | 构建 `dist/` 可发布布局 |
+| `run` | 以源码形态启动项目（前台）；只接受已构建的 JS 入口，不编译 TS/TSX |
+| `dev [--shell]` | 开发模式：Vite HMR、项目 server 与插件变化重启 worker；接受 TS/TSX 入口并在 `.cordis/dev` 编译；`--shell` 用桌面外壳开窗，开发时也能使用原生能力 |
+| `build` | 构建 `dist/` 可发布布局；编译插件 TS/TSX 入口并改写产物清单 |
 | `start` | 运行 `dist/` 构建产物 |
 | `restart` | 通过 `.cordis/runtime.json` 重启运行中的项目 |
 
