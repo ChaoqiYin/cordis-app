@@ -25,7 +25,12 @@ import { basename, dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { build as esbuild } from 'esbuild'
 import { serverPreset } from '@cordis-app/preset'
-import { SHARED_MODULE_TABLE, PLUGIN_SOURCE_BUILT_PATH, WS_PATH } from '@cordis-app/protocol'
+import {
+  SHARED_MODULE_TABLE,
+  SHARED_PREFIX,
+  PLUGIN_SOURCE_BUILT_PATH,
+  WS_PATH,
+} from '@cordis-app/protocol'
 import {
   buildProject,
   createProjectDevServer,
@@ -848,6 +853,56 @@ test('dev 预构建的依赖复用 /__shared 的 React，不再打第二份', as
     )
     assert.equal(shared.status, 200)
     assert.match(await shared.text(), /export default __shared\.default/)
+  } finally {
+    await dev.close()
+  }
+})
+
+test('dev 把 /__shared/*.js 当作浏览器 URL，不解析成文件、不追加 ?v=', async () => {
+  // 回归：框架装进 node_modules 后（pnpm / npm file: 依赖），shell 里的
+  // /__shared/*.js 若可解析，Vite 会把它当 node_modules 模块并追加
+  // ?v=<browserHash>；而共享 bundle 之间仍写不带查询的同一 URL，同一份
+  // React 因此被加载两次，body 里的第一个 hook 读到 null dispatcher。
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'cordis-dev-shared-url-')))
+  mkdirSync(join(root, 'src'), { recursive: true })
+  writeFileSync(
+    join(root, 'src', 'body.tsx'),
+    [
+      "import { useLayoutEffect } from 'react'",
+      'export default function Body() { useLayoutEffect(() => {}, []); return null }',
+      '',
+    ].join('\n'),
+  )
+
+  const dev = await createProjectDevServer({
+    projectRoot: root,
+    port: await freePort(),
+    strictPort: true,
+    worker: { port: 9000 },
+  })
+  try {
+    // 共享模块不能出现在 shell root 下，否则 vite:resolve 会把它们当文件。
+    assert.equal(
+      existsSync(join(dev.server.config.root, '__shared')),
+      false,
+      'shell root 不能带 __shared 目录',
+    )
+
+    for (const definition of Object.values(SHARED_MODULE_TABLE)) {
+      const url = `${SHARED_PREFIX}/${definition.file}`
+      const resolved = await dev.server.pluginContainer.resolveId(url)
+      assert.equal(resolved?.id, url, `${url} 必须原样保留`)
+      assert.equal(resolved?.external, true, `${url} 必须作为 external 交给浏览器`)
+    }
+
+    // 宿主模块拿到的是规范 URL，与插件 bundle 里写的一致。
+    const shared = await fetch(
+      `http://127.0.0.1:${dev.port}/@id/__x00__cordis-app:shared:react`,
+    )
+    assert.equal(shared.status, 200)
+    const code = await shared.text()
+    assert.match(code, /from "\/__shared\/react\.js"/)
+    assert.doesNotMatch(code, /__shared\/react\.js\?/, '共享模块 URL 不能带版本查询')
   } finally {
     await dev.close()
   }
