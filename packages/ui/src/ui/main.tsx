@@ -77,6 +77,8 @@ async function main(): Promise<void> {
     } catch (error) {
       console.error('[cordis-app] 重连后刷新插件失败:', error)
     }
+    // 宿主自己的视图（如设置页）也要重新拉取服务端状态，不能只靠重新挂载
+    await runtime.notifyReconnected()
   })
 
   root.render(

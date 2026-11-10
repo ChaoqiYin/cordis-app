@@ -46,6 +46,16 @@ export interface PluginManagerProps {
 
 type ConfigMap = Record<string, unknown>
 
+/**
+ * 卸载 / 启用 / 安装的响应里与刷新有关的字段。
+ *
+ * `restarted` 为真时服务端已安排重启：此刻再请求 `/api/plugins` 会撞上正在
+ * 关闭的进程，清单留给重连后的刷新。
+ */
+interface PluginActionState {
+  restarted?: boolean
+}
+
 export function SettingsPanel(): ReactNode {
   const runtime = useRuntime()
   const settings = useSettings()
@@ -80,6 +90,9 @@ export function SettingsPanel(): ReactNode {
     void reload()
   }, [reload])
 
+  // 插件增删后 worker 会重启；组件不会重新挂载，所以清单靠重连事件刷新
+  useEffect(() => runtime.onReconnected(() => reload()), [runtime, reload])
+
   /** 保存单个插件配置：写入 config.json 后由服务端重启该插件。 */
   const save = async (pluginId: string, value: unknown) => {
     setBusy(pluginId)
@@ -112,8 +125,9 @@ export function SettingsPanel(): ReactNode {
           onInstall={async (spec) => {
             setBusy('install')
             try {
-              await runtime.http.post('/api/plugins', { spec })
-              // 安装后服务端会重启 worker；页面的 WebSocket 会收到重连通知
+              const result = await runtime.http.post<PluginActionState>('/api/plugins', { spec })
+              // 服务端重启时清单交给重连刷新；否则原地重拉
+              if (!result.restarted) await reload()
             } catch (e) {
               setError(e instanceof HttpError ? e.message : String(e))
             } finally {
@@ -123,7 +137,10 @@ export function SettingsPanel(): ReactNode {
           onUninstall={async (id) => {
             setBusy(id)
             try {
-              await runtime.http.delete(`/api/plugins/${encodeURIComponent(id)}`)
+              const result = await runtime.http.delete<PluginActionState>(
+                `/api/plugins/${encodeURIComponent(id)}`,
+              )
+              if (!result.restarted) await reload()
             } catch (e) {
               setError(e instanceof HttpError ? e.message : String(e))
             } finally {
@@ -133,7 +150,10 @@ export function SettingsPanel(): ReactNode {
           onEnable={async (id) => {
             setBusy(id)
             try {
-              await runtime.http.post(`/api/plugins/${encodeURIComponent(id)}/enable`)
+              const result = await runtime.http.post<PluginActionState>(
+                `/api/plugins/${encodeURIComponent(id)}/enable`,
+              )
+              if (!result.restarted) await reload()
             } catch (e) {
               setError(e instanceof HttpError ? e.message : String(e))
             } finally {

@@ -112,6 +112,7 @@ export class ClientRuntime {
 
   private menuListeners = new Set<() => void>()
   private menu: MenuState | null = null
+  private reconnectListeners = new Set<() => void | Promise<void>>()
 
   constructor(options: ClientRuntimeOptions) {
     this.token = options.token
@@ -144,6 +145,33 @@ export class ClientRuntime {
 
   private emitMenu(): void {
     for (const listener of this.menuListeners) listener()
+  }
+
+  // ---- 服务恢复：宿主视图重新拉取服务端状态 ----
+
+  /**
+   * 订阅「服务恢复」事件。
+   *
+   * 启动代码在 WebSocket 重连后调用 `notifyReconnected`。设置页这类宿主视图
+   * 据此刷新清单，而不是依赖组件重新挂载——插件增删后 worker 会重启，组件
+   * 本身却一直挂载着。
+   */
+  onReconnected(listener: () => void | Promise<void>): () => void {
+    this.reconnectListeners.add(listener)
+    return () => {
+      this.reconnectListeners.delete(listener)
+    }
+  }
+
+  /** 逐个通知重连监听者；单个失败不影响其他监听者。 */
+  async notifyReconnected(): Promise<void> {
+    for (const listener of this.reconnectListeners) {
+      try {
+        await listener()
+      } catch (error) {
+        console.error('[cordis-app] 重连监听者执行失败:', error)
+      }
+    }
   }
 
   // ---- 插件生命周期 ----
