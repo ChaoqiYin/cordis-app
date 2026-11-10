@@ -257,8 +257,10 @@ import Home from './pages/Home'
  *
  * 项目页面优先：\`/\` 与 \`/home\` 由这里渲染 Home，其余路径交给框架的参考
  * 布局。这样脚手架一启动就能看到示例页面，同时保留插件页面、插槽、菜单与
- * 设置面板。自定义布局时请保留宿主出口：PluginPageOutlet、PluginSlot、
- * PluginMenuTrigger、SettingsPanel，并让 app.json.ui 声明的能力与实际布局一致。
+ * 设置出口。自定义布局时请保留宿主出口：PluginPageOutlet、PluginSlot、
+ * PluginMenuTrigger，并用 usePluginSettings + SchemaForm 自己渲染插件设置
+ * 分组；让 app.json.ui 声明的能力与实际布局一致。插件管理界面由项目自己
+ * 决定是否提供，框架不附带固定面板。
  */
 export default function Body(): ReactElement {
   const path = usePath()

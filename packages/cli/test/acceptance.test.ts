@@ -38,7 +38,7 @@ import {
   PluginMenuTrigger,
   PluginPageOutlet,
   PluginSlot,
-  SettingsPanel,
+  usePluginSettings,
 } from '@cordis-app/ui/host'
 import { FRAMEWORK_VERSION } from '@cordis-app/protocol'
 import type { ClientManifest } from '@cordis-app/protocol'
@@ -246,6 +246,22 @@ async function fetchManifest(base: string, token: string): Promise<ClientManifes
   return (await res.json()) as ClientManifest
 }
 
+/** 项目自己的设置页：框架只给数据，布局与样式由 body 决定。 */
+function SettingsProbe(): ReactNode {
+  const { groups } = usePluginSettings()
+  return createElement(
+    'div',
+    { className: 'acceptance-settings' },
+    groups.map((group) =>
+      createElement(
+        'h2',
+        { key: `${group.pluginId}:${group.id}` },
+        group.title,
+      ),
+    ),
+  )
+}
+
 /** 项目 body：自己布局，同时保留四个宿主出口。 */
 function ProjectBody(): ReactNode {
   return createElement(
@@ -261,7 +277,7 @@ function ProjectBody(): ReactNode {
       ),
       createElement(PluginSlot, { name: 'header.right' }),
       createElement(PluginPageOutlet, { path: '/hello' }),
-      createElement(SettingsPanel),
+      createElement(SettingsProbe),
     ),
   )
 }

@@ -8,22 +8,29 @@
  *   - pages     `PluginPageOutlet` 渲染当前路径的插件页面
  *   - slots     `PluginSlot` 渲染 `header.right` 与 `activity.bottom`
  *   - menus     `PluginMenuTrigger` 把活动栏按钮绑定到 `activity` 菜单
- *   - settings  `SettingsPanel` + `SETTINGS_PATH` 提供框架设置页
+ *   - settings  `usePluginSettings` + `SchemaForm` 自己画设置分组
  *
  * 项目页面优先于插件页面：同路径时本项目渲染自己的页面，只在开发期告警。
  */
 
-import { useEffect, type ComponentType, type ReactElement, type ReactNode } from 'react'
+import {
+  createElement,
+  useEffect,
+  type ComponentType,
+  type ReactElement,
+  type ReactNode,
+} from 'react'
 import { usePages } from 'cordis-app/client'
 import {
   BodyHost,
   PluginMenuTrigger,
   PluginPageOutlet,
   PluginSlot,
+  SchemaForm,
   SETTINGS_PATH,
-  SettingsPanel,
   navigate,
   usePath,
+  usePluginSettings,
 } from 'cordis-app/ui'
 import Home from './pages/Home'
 
@@ -35,6 +42,39 @@ interface ProjectPage {
 
 /** 项目自己的页面表；新增页面时在这里登记即可。 */
 const PROJECT_PAGES: ProjectPage[] = [{ path: '/', name: '首页', component: Home }]
+
+/**
+ * 设置出口：分组与保存动作来自框架，页面结构由项目决定。
+ *
+ * 插件管理（安装/卸载/启用）不在这里；项目要提供的话，用
+ * `usePluginAdmin()` 自己画。
+ */
+function SettingsOutlet(): ReactNode {
+  const { groups, error, saving, save } = usePluginSettings()
+
+  return (
+    <div className="custom-settings">
+      {error && <p className="custom-error">{error}</p>}
+      {groups.map((group) => (
+        <section className="custom-settings-group" key={`${group.pluginId}:${group.id}`}>
+          <h2>{group.title}</h2>
+          {group.component ? (
+            createElement(group.component as never, {})
+          ) : group.schema ? (
+            <SchemaForm
+              schema={group.schema}
+              value={group.value}
+              disabled={saving === group.pluginId}
+              onSave={(next) => void save(group.pluginId, next)}
+            />
+          ) : (
+            <p>这个分组既没有 schema 也没有组件。</p>
+          )}
+        </section>
+      ))}
+    </div>
+  )
+}
 
 export default function Body(): ReactElement {
   const path = usePath()
@@ -56,7 +96,7 @@ export default function Body(): ReactElement {
 
   let content: ReactNode
   if (isSettings) {
-    content = <SettingsPanel />
+    content = <SettingsOutlet />
   } else if (projectPage) {
     const ProjectPage = projectPage.component
     content = <ProjectPage />

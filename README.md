@@ -363,9 +363,17 @@ body 决定布局，框架只固定宿主职责和四个出口。`cordis-app/ui`
 | `PluginPageOutlet` | 渲染当前路径对应的插件页面 |
 | `PluginSlot` | 渲染具名插槽（`header.right`、`activity.bottom` 等） |
 | `PluginMenuTrigger` | 把子元素的右键菜单绑定到某个菜单 id，可附带调用上下文 |
-| `SettingsPanel` | 插件管理与插件设置面板 |
+| `usePluginSettings` | 插件注册的设置分组、配置值与保存动作，不含界面 |
+| `SchemaForm` | 按插件 schema 渲染表单的可选原语 |
+| `usePluginAdmin` | 插件清单与安装/卸载/启用动作，不含界面 |
 | `SETTINGS_PATH`、`usePath`、`navigate` | body 自己的导航 |
 | `warnUiCompatibility`、`warnUiContractVersion` | UI 能力与契约版本告警 |
+
+框架不提供插件管理界面：`usePluginAdmin` 只返回清单、忙碌/错误状态与动作，
+安装、卸载、启用放在哪个页面、长什么样由项目决定。默认 body 不提供这些
+入口；管理插件用 CLI（`cordis-app add` / `remove` / `enable`）或项目自己的
+页面。插件设置同理：`usePluginSettings` 给出分组与保存动作，`SchemaForm`
+只是可选的 schema 渲染器。
 
 body 必须保留自己声明过的出口；项目页面优先于插件页面，未命中时才落到
 `PluginPageOutlet`。可以直接用 `DefaultBody` 起步，也可以参考
