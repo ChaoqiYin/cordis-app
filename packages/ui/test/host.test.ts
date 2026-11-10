@@ -17,10 +17,11 @@ import {
   PluginMenuTrigger,
   PluginPageOutlet,
   PluginSlot,
-  SettingsPanel,
   currentPath,
   navigate,
   usePath,
+  usePluginAdmin,
+  usePluginSettings,
   warnUiCompatibility,
   warnUiContractVersion,
 } from '../dist/host/index.js'
@@ -47,6 +48,26 @@ function pluginEntry(id = 'demo') {
 
 function runtimeWithRuntimeContext(): ClientRuntime {
   return new ClientRuntime({ token: 'test-token' })
+}
+
+/**
+ * 最小设置出口：项目自己决定怎么画，只需要从 hook 拿到分组。
+ *
+ * 这正是新的 settings 出口形态——框架不再提供固定的设置面板组件。
+ */
+function SettingsProbe(): ReactNode {
+  const { groups } = usePluginSettings()
+  return createElement(
+    'div',
+    { className: 'settings-probe' },
+    groups.map((group) =>
+      createElement(
+        'h2',
+        { key: `${group.pluginId}:${group.id}` },
+        `${group.pluginId}: ${group.title}`,
+      ),
+    ),
+  )
 }
 
 function render(runtime: ClientRuntime, node: ReactNode): string {
@@ -83,7 +104,7 @@ test('最小自定义 body 通过 SSR 渲染插件页面、插槽与设置面板
           path: '/demo',
           fallback: createElement('p', null, '没有匹配的页面'),
         }),
-        createElement(SettingsPanel),
+        createElement(SettingsProbe),
       ),
     ),
   )
@@ -92,6 +113,31 @@ test('最小自定义 body 通过 SSR 渲染插件页面、插槽与设置面板
   assert.match(html, /顶栏插槽内容/)
   assert.match(html, /示例设置/)
   assert.doesNotMatch(html, /没有匹配的页面/)
+})
+
+test('usePluginSettings 在首帧读取插件注册的设置分组', async () => {
+  const runtime = runtimeWithRuntimeContext()
+  await runtime.loadPlugin(pluginEntry())
+
+  const html = render(runtime, createElement(SettingsProbe))
+
+  assert.match(html, /示例设置/)
+  assert.match(html, /demo/, '分组应带上注册它的插件 id')
+})
+
+test('usePluginAdmin 在 SSR 首帧是 loading 的空清单', () => {
+  const runtime = runtimeWithRuntimeContext()
+
+  function AdminProbe(): ReactNode {
+    const admin = usePluginAdmin()
+    return createElement(
+      'span',
+      null,
+      `${admin.loading}:${admin.plugins.length}:${admin.busy ?? ''}`,
+    )
+  }
+
+  assert.equal(render(runtime, createElement(AdminProbe)), '<span>true:0:</span>')
 })
 
 test('PluginPageOutlet 在未命中时渲染 fallback', () => {

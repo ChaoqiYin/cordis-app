@@ -13,7 +13,7 @@ import { navigate, usePath } from './router.js'
 import { PluginMenuTrigger } from './PluginMenuTrigger.js'
 import { PluginPageOutlet } from './PluginPageOutlet.js'
 import { PluginSlot } from './PluginSlot.js'
-import { SettingsPanel } from './SettingsPanel.js'
+import { SettingsView } from './settings-view.js'
 
 /**
  * 设置页是框架自己的页面，不属于任何插件。
@@ -49,7 +49,7 @@ export function DefaultBody(): ReactNode {
 
         <div className="content-body">
           {isSettings ? (
-            <SettingsPanel />
+            <SettingsView />
           ) : (
             <PluginPageOutlet fallback={<NotFound path={path} hasPages={pages.length > 0} />} />
           )}

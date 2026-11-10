@@ -9,8 +9,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { ClientRuntime, RuntimeContext } from 'cordis-app/client'
-import { SettingsPanel } from '../dist/host/index.js'
+import { SchemaForm } from '../dist/host/index.js'
 import {
   contentKey,
   mergeInitial,
@@ -51,35 +50,20 @@ test('草稿重置判定：内容键不变时保留草稿，变化时重置', ()
 })
 
 /**
- * 通过公开的 SettingsPanel 渲染一个只含单个字段的 schema。
+ * 直接渲染一个只含单个字段的 schema。
  *
  * 这里不启动浏览器：SSR 只执行首次渲染，正好用来断言「schema 生成了哪种控件」。
  */
 async function renderField(meta: Record<string, unknown>): Promise<string> {
-  const runtime = new ClientRuntime({ token: 'test-token' })
-  const schema = {
-    type: 'object',
-    dict: { field: { type: 'string', meta } },
-  }
-  const source = `
-export default (ctx) => {
-  ctx.settings({
-    id: 'form',
-    title: '表单设置',
-    schema: ${JSON.stringify(schema)},
-  })
-}
-`
-  await runtime.loadPlugin({
-    id: 'form',
-    files: [`data:text/javascript,${encodeURIComponent(source)}`],
-  })
   return renderToStaticMarkup(
-    createElement(
-      RuntimeContext.Provider,
-      { value: runtime },
-      createElement(SettingsPanel),
-    ),
+    createElement(SchemaForm, {
+      schema: {
+        type: 'object',
+        dict: { field: { type: 'string', meta } },
+      },
+      value: {},
+      onSave: () => {},
+    }),
   )
 }
 

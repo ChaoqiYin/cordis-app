@@ -19,7 +19,7 @@ node packages/cli/lib/cli.js dev --project /tmp/cordis-demo
 | pages | 项目页面表优先匹配；未命中时用 `<PluginPageOutlet path={path} fallback={…} />` |
 | slots | `<PluginSlot name="header.right" />`、`<PluginSlot name="activity.bottom" />` |
 | menus | `<PluginMenuTrigger menuId="activity">` 把品牌按钮绑定到活动菜单 |
-| settings | `path === SETTINGS_PATH` 时渲染 `<SettingsPanel />`，并保留设置入口 |
+| settings | `path === SETTINGS_PATH` 时用 `usePluginSettings()` 取分组，自己画页面并用 `<SchemaForm>` 渲染 schema |
 
 与 `DefaultBody` 的区别：
 
@@ -29,6 +29,9 @@ node packages/cli/lib/cli.js dev --project /tmp/cordis-demo
   「插件装了但看不到」被误判成插件故障。
 - 样式刻意留空（只有语义化 class）。body 不 import CSS，样式属于项目自己的
   前端入口，按需补即可。
+- 框架不提供插件管理界面。需要在应用里安装/卸载/启用插件时，用
+  `usePluginAdmin()` 拿到清单与动作，再自己决定入口和布局；也可以完全交给
+  CLI。
 
 ## 验证
 

@@ -105,7 +105,8 @@ external。
 
 **宿主出口**
 body 暴露给插件的 UI 扩展点：pages（`PluginPageOutlet`）、slots
-（`PluginSlot`）、menus（`PluginMenuTrigger`）、settings（`SettingsPanel`）。
+（`PluginSlot`）、menus（`PluginMenuTrigger`）、settings（`usePluginSettings`
+取分组，`SchemaForm` 可选渲染 schema）。
 
 **菜单上下文**
 打开菜单时附带的调用上下文，随菜单状态保存，执行菜单项行为时原样传入。

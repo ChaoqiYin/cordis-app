@@ -107,9 +107,11 @@ test('cordis-app/ui 转出宿主组件，且不携带运行时重复实现', asy
     'PluginPageOutlet',
     'PluginSlot',
     'PluginMenuTrigger',
-    'SettingsPanel',
+    'SchemaForm',
     'usePath',
     'navigate',
+    'usePluginAdmin',
+    'usePluginSettings',
   ]) {
     assert.ok(name in aggregate, `cordis-app/ui 应导出 ${name}`)
   }
