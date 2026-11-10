@@ -1032,7 +1032,7 @@ function projectDevServerConfig(
     appType: 'spa',
     plugins: [
       devJsxRuntimePlugin(),
-      ...react(),
+      ...react({ exclude: SHARED_MODULE_URL_EXCLUDE }),
       // 放在 react() 之后：它必须看到 plugin-react 注入的 optimizeDeps.include。
       sharedModuleSingleInstancePlugin(),
       bodyPlugin(resolveProjectLayout(options.projectRoot).bodyEntry),
@@ -1170,6 +1170,12 @@ function unique<T>(values: T[]): T[] {
 }
 
 /**
+ * plugin-react 默认只排除 node_modules。`/__shared/*.js` 是框架构建好的
+ * 运行时产物，不能再被 Fast Refresh 改写（否则会把刷新运行时注入 React 内部）。
+ */
+const SHARED_MODULE_URL_EXCLUDE = [/\/node_modules\//, new RegExp(`^${SHARED_PREFIX}/`)]
+
+/**
  * 让壳里的共享模块说明符指向 `/__shared/*.js`。
  *
  * 插件 bundle 由 worker 提供，里面同样保留这些 URL。两边落在同一个浏览器
@@ -1182,10 +1188,25 @@ function sharedModulesPlugin(): Plugin {
     // 就会从 node_modules/.vite 来一份，与 /__shared 的不是同一个实例。
     enforce: 'pre',
     resolveId(source) {
+      if (source.startsWith(`${SHARED_PREFIX}/`)) {
+        // `/__shared/*.js` 是浏览器地址，由 serveSharedModules 提供，不是磁盘
+        // 文件。告诉 Vite 它是 external，import-analysis 才会原样保留 URL。
+        // 否则 Vite 把它当文件解析；当框架装进 node_modules 时还会追加
+        // `?v=<browserHash>`，而共享 bundle 之间写的是不带查询的同一地址，
+        // 同一份 React 因此被加载两次，hooks 读到 null dispatcher。
+        return { id: source, external: true }
+      }
       if (!(source in SHARED_MODULE_TABLE)) return undefined
       return `\0cordis-app:shared:${source}`
     },
     load(id) {
+      if (id.startsWith(`${SHARED_PREFIX}/`)) {
+        // 预热请求（preTransformRequests）会按 URL 加载模块；这里给出真实内容，
+        // 避免启动时刷出 “Failed to load url”。浏览器请求仍由
+        // serveSharedModules 原样返回，不经过 Vite 的转换管线。
+        const file = sharedModuleUrlFile(id)
+        return file ? readFileSync(file, 'utf8') : undefined
+      }
       if (!id.startsWith('\0cordis-app:shared:')) return undefined
       const specifier = id.slice('\0cordis-app:shared:'.length)
       const definition = SHARED_MODULE_TABLE[specifier as keyof typeof SHARED_MODULE_TABLE]
@@ -1237,18 +1258,29 @@ function devJsxRuntimePlugin(): Plugin {
   }
 }
 
+/**
+ * 把 `/__shared/<file>.js` 映射到框架的共享模块产物。
+ *
+ * 开发服务器以 shell 目录为 root，共享模块**不能**复制进去：可解析的真实
+ * 文件会被 vite:resolve 当成普通模块，安装路径位于 node_modules 时还会被
+ * 追加 `?v=<browserHash>`。URL 只由这里解析，模块身份才在开发与生产一致。
+ */
+function sharedModuleUrlFile(url: string): string | undefined {
+  if (!url.startsWith(`${SHARED_PREFIX}/`)) return undefined
+  const name = decodeURIComponent(url.slice(SHARED_PREFIX.length + 1).split('?')[0] ?? '')
+  if (!/^[A-Za-z0-9._-]+\.js$/.test(name)) return undefined
+  const file = join(sharedDir, name)
+  return existsSync(file) ? file : undefined
+}
+
 /** 开发时由 Vite 提供 /__shared，避免代理到 worker 产生第二份模块实例。 */
 function serveSharedModules(): Plugin {
   return {
     name: 'cordis-app:serve-shared',
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
-        const url = req.url ?? ''
-        if (!url.startsWith(`${SHARED_PREFIX}/`)) return next()
-        const name = decodeURIComponent(url.slice(SHARED_PREFIX.length + 1).split('?')[0] ?? '')
-        if (!/^[A-Za-z0-9._-]+\.js$/.test(name)) return next()
-        const file = join(sharedDir, name)
-        if (!existsSync(file)) return next()
+        const file = sharedModuleUrlFile(req.url ?? '')
+        if (!file) return next()
         res.setHeader('Content-Type', 'text/javascript; charset=utf-8')
         res.setHeader('Cache-Control', 'no-store')
         res.end(readFileSync(file))
