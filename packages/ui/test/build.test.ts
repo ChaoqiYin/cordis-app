@@ -6,6 +6,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import {
   cpSync,
   existsSync,
@@ -32,11 +33,17 @@ import {
   WS_PATH,
 } from '@cordis-app/protocol'
 import {
+  assertSharedModulesReady,
   buildProject,
   createProjectDevServer,
   createProjectWatcher,
   swapIntoPlace,
 } from '../src/build/index.ts'
+import {
+  SHARED_BUILD_COMMAND,
+  SHARED_PROFILE_DIRS,
+  sharedProfileMarker,
+} from '../shared-modules.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 // test/ → ui/ → packages/ → 仓库根
@@ -99,38 +106,23 @@ async function fetchSharedModule(port: number, file: string): Promise<string> {
   return response.text()
 }
 
-/**
- * 期待开发服务器拒绝启动。
- *
- * 启动成功时 assert.rejects 会失败，仍然要关闭已经起来的服务器，避免占用端口。
- */
-async function expectDevStartFailure(
-  projectRoot: string,
-  check: (error: Error) => void,
-): Promise<void> {
-  let started: Awaited<ReturnType<typeof createProjectDevServer>> | undefined
-  try {
-    await assert.rejects(
-      async () => {
-        started = await createProjectDevServer({
-          projectRoot,
-          port: await freePort(),
-          strictPort: true,
-          worker: { port: 9000 },
-        })
-      },
-      (error: Error) => {
-        check(error)
-        return true
-      },
-    )
-  } finally {
-    await started?.close()
-  }
+/** 正则里的字面量转义，用于断言错误信息包含路径。 */
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
-/** 框架自带的共享模块构建产物目录；缺失场景需要临时挪开它。 */
-const sharedDevDir = join(here, '..', 'dist', 'shared-dev')
+/** 在临时根下铺一套完整的共享模块产物。 */
+function createSharedProfileDir(
+  root: string,
+  profile: 'development' | 'production',
+): string {
+  const dir = join(root, SHARED_PROFILE_DIRS[profile])
+  mkdirSync(dir, { recursive: true })
+  for (const definition of Object.values(SHARED_MODULE_TABLE)) {
+    writeFileSync(join(dir, definition.file), `${sharedProfileMarker(profile)}\nexport {}\n`)
+  }
+  return dir
+}
 
 /** 在临时项目的 node_modules 里放一个假 npm 依赖。 */
 function writeDependency(
@@ -290,7 +282,7 @@ test('build 的共享模块是生产构建态，文件集合与清单一致', as
   for (const definition of Object.values(SHARED_MODULE_TABLE)) {
     const source = readFileSync(join(shared, definition.file), 'utf8')
     assert.ok(
-      source.startsWith('/* cordis-app:shared-profile:production */'),
+      source.startsWith(sharedProfileMarker('production')),
       `${definition.file} 必须带生产构建态标记`,
     )
   }
@@ -992,7 +984,7 @@ test('dev server 的 /__shared 提供开发构建态，文件集合与清单一�
     for (const definition of Object.values(SHARED_MODULE_TABLE)) {
       const source = await fetchSharedModule(dev.port, definition.file)
       assert.ok(
-        source.startsWith('/* cordis-app:shared-profile:development */'),
+        source.startsWith(sharedProfileMarker('development')),
         `${definition.file} 必须带开发构建态标记`,
       )
     }
@@ -1010,7 +1002,7 @@ test('dev server 的 /__shared 提供开发构建态，文件集合与清单一�
     const reactDom = await fetchSharedModule(dev.port, SHARED_MODULE_TABLE['react-dom'].file)
     assert.doesNotMatch(
       reactDom,
-      /cordis-app:shared-profile:production/,
+      new RegExp(escapeRegExp(sharedProfileMarker('production'))),
       '开发服务器不能回退到生产产物',
     )
   } finally {
@@ -1018,51 +1010,87 @@ test('dev server 的 /__shared 提供开发构建态，文件集合与清单一�
   }
 })
 
-test('开发构建目录缺失时 dev server 拒绝启动，错误包含路径与构建命令', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'cordis-dev-missing-profile-'))
+test('dev server 的 /__shared 提供开发构建的 sourcemap', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'cordis-dev-sourcemap-'))
   mkdirSync(join(root, 'src'), { recursive: true })
   writeFileSync(join(root, 'src', 'body.tsx'), 'export default function Body() { return null }\n')
 
-  const backup = `${sharedDevDir}.off-${process.pid}-${Date.now()}`
-  renameSync(sharedDevDir, backup)
+  const dev = await createProjectDevServer({
+    projectRoot: root,
+    port: await freePort(),
+    strictPort: true,
+    worker: { port: 9000 },
+  })
   try {
-    await expectDevStartFailure(root, (error) => {
-      assert.match(error.message, /shared-dev/, '错误应包含缺失的开发产物路径')
-      assert.match(
-        error.message,
-        /pnpm --filter @cordis-app\/ui build/,
-        '错误应给出修复命令',
-      )
-    })
+    const url = `${SHARED_PREFIX}/${SHARED_MODULE_TABLE['react-dom'].file}.map`
+    const response = await fetch(`http://127.0.0.1:${dev.port}${url}`)
+    assert.equal(response.status, 200, `${url} 必须由开发服务器提供`)
+    assert.match(
+      response.headers.get('content-type') ?? '',
+      /^application\/json/,
+      'sourcemap 必须以 JSON content-type 返回',
+    )
+
+    const map = JSON.parse(await response.text()) as { sources?: unknown }
+    assert.ok(
+      Array.isArray(map.sources) && map.sources.length > 0,
+      'sourcemap 必须可解析且包含 sources',
+    )
   } finally {
-    renameSync(backup, sharedDevDir)
+    await dev.close()
   }
 })
 
-test('开发构建态标记不匹配时 dev server 拒绝启动，错误包含路径与构建命令', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'cordis-dev-marker-profile-'))
-  mkdirSync(join(root, 'src'), { recursive: true })
-  writeFileSync(join(root, 'src', 'body.tsx'), 'export default function Body() { return null }\n')
+test('共享模块启动校验：目录缺失、文件缺失与标记不匹配都失败', () => {
+  const root = mkdtempSync(join(tmpdir(), 'cordis-shared-profile-'))
+  const missingDir = join(root, 'missing', SHARED_PROFILE_DIRS.development)
+  const missingFileDir = createSharedProfileDir(join(root, 'missing-file'), 'development')
+  const missingFile = join(missingFileDir, SHARED_MODULE_TABLE['react-dom'].file)
+  rmSync(missingFile)
+  const markerDir = createSharedProfileDir(join(root, 'marker'), 'development')
+  const markerFile = join(markerDir, SHARED_MODULE_TABLE['react-dom'].file)
+  writeFileSync(markerFile, `${sharedProfileMarker('production')}\nexport {}\n`)
 
-  const file = join(sharedDevDir, SHARED_MODULE_TABLE['react-dom'].file)
-  const original = readFileSync(file)
+  const cases = [
+    { name: '目录缺失', dir: missingDir, path: missingDir, expected: /产物缺失/ },
+    { name: '清单中文件缺失', dir: missingFileDir, path: missingFile, expected: /产物缺失/ },
+    { name: '标记不匹配', dir: markerDir, path: markerFile, expected: /构建态标记不匹配/ },
+  ]
+
   try {
-    writeFileSync(
-      file,
-      '/* cordis-app:shared-profile:production */\n' + original.toString('utf8'),
-    )
-    await expectDevStartFailure(root, (error) => {
-      assert.match(error.message, /react-dom\.js/, '错误应包含不匹配的产物路径')
-      assert.match(error.message, /构建态标记/, '错误应说明标记不匹配')
-      assert.match(
-        error.message,
-        /pnpm --filter @cordis-app\/ui build/,
-        '错误应给出修复命令',
+    for (const item of cases) {
+      assert.throws(
+        () => assertSharedModulesReady(item.dir, 'development'),
+        (error: Error) => {
+          assert.match(
+            error.message,
+            new RegExp(escapeRegExp(item.path)),
+            `${item.name}：错误应包含产物路径`,
+          )
+          assert.match(
+            error.message,
+            new RegExp(escapeRegExp(SHARED_BUILD_COMMAND)),
+            `${item.name}：错误应包含构建命令`,
+          )
+          assert.match(error.message, item.expected, item.name)
+          return true
+        },
+        item.name,
       )
-    })
+    }
   } finally {
-    writeFileSync(file, original)
+    rmSync(root, { recursive: true, force: true })
   }
+})
+
+test('共享模块构建脚本必须显式传入构建态', () => {
+  const result = spawnSync(process.execPath, [join(here, '..', 'scripts', 'build-shared.mjs')], {
+    encoding: 'utf8',
+  })
+  assert.notEqual(result.status, 0, '省略构建态时必须失败')
+  const output = `${result.stdout}${result.stderr}`
+  assert.match(output, /development/, '错误应列出 development')
+  assert.match(output, /production/, '错误应列出 production')
 })
 
 test('dev 加载项目根 vite.config，但不交出 root 与共享模块约束', async () => {

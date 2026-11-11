@@ -29,11 +29,17 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
-import { SHARED_MODULES } from '../shared-modules.mjs'
+import {
+  SHARED_MODULES,
+  SHARED_PROFILE_DIRS,
+  sharedProfileMarker,
+} from '../shared-modules.mjs'
 
-const profile = process.argv[2] ?? 'production'
+const profile = process.argv[2]
 if (profile !== 'development' && profile !== 'production') {
-  throw new Error(`未知共享模块构建态：${profile}（只支持 development / production）`)
+  throw new Error(
+    `共享模块构建态必须是 development 或 production（收到：${profile ?? '未提供'}）。`,
+  )
 }
 
 // 必须在 require 任何共享模块之前设置：React 的入口在这个值上分支。
@@ -42,8 +48,8 @@ process.env.NODE_ENV = profile
 const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '..')
 const isDevelopment = profile === 'development'
-const outdir = join(root, 'dist', isDevelopment ? 'shared-dev' : 'shared')
-const profileMarker = `/* cordis-app:shared-profile:${profile} */`
+const outdir = join(root, 'dist', SHARED_PROFILE_DIRS[profile])
+const profileMarker = sharedProfileMarker(profile)
 const pkgRequire = createRequire(join(root, 'package.json'))
 
 rmSync(outdir, { recursive: true, force: true })
@@ -112,7 +118,7 @@ try {
         },
       },
     })
-    console.log(`  ${isDevelopment ? 'shared-dev' : 'shared'}/${shared.file}  ← ${shared.specifier}`)
+    console.log(`  ${SHARED_PROFILE_DIRS[profile]}/${shared.file}  ← ${shared.specifier}`)
   }
 } finally {
   rmSync(scratch, { recursive: true, force: true })
