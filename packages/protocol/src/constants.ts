@@ -115,6 +115,15 @@ export const HEALTH_PATH = '/__health'
 /** 前端共享模块的挂载前缀 */
 export const SHARED_PREFIX = '/__shared'
 
+/**
+ * 共享模块的构建态。
+ *
+ * 同一份共享模块清单可以产出开发与生产两种构建：浏览器 URL、文件名与
+ * external 关系完全相同，构建态只影响 `NODE_ENV`、压缩与 sourcemap。
+ * 消费端按运行形态选择读哪一份产物，禁止跨构建态复用。
+ */
+export type SharedModuleProfile = 'development' | 'production'
+
 /** 插件前端资源的路径前缀 */
 export const PLUGINS_PREFIX = '/__plugins'
 
