@@ -659,9 +659,10 @@ hash、Ed25519 签名与 peer 范围；安装时先比 hash、再验签名，任
 
 `dev --shell` 在找不到 `dist/cordis-app` 时会自动编译外壳，等价于
 `pnpm build:shell`（只编译 Go，不构建前端）；也可以用 `CORDIS_APP_SHELL`
-指向已有的外壳可执行文件。窗口加载 Vite 页面，因此 HMR 照常工作；页面与
-worker 的鉴权仍走 supervisor 生成的会话 token，外壳从握手行取到后拼进入口
-地址，用户不需要手动输入 URL。不传 `--shell` 时行为不变。
+指向已有的外壳可执行文件。窗口加载 Vite 页面，组件与 CSS 都走 Vite 热更新；
+共享模块由开发构建提供，因此修改组件后界面同样立即更新，不需要重新载入窗口。
+页面与 worker 的鉴权仍走 supervisor 生成的会话 token，外壳从握手行取到后拼进
+入口地址，用户不需要手动输入 URL。不传 `--shell` 时行为不变。
 
 ### 开发时的项目 Vite 配置
 
@@ -675,8 +676,9 @@ worker 的鉴权仍走 supervisor 生成的会话 token，外壳从握手行取�
 （与普通 Vite 项目一致）；只导出普通对象则不需要额外依赖。
 
 开发模式下 `react`、`react-dom`、`cordis-app/client` 等共享模块也只有一份：
-Vite 预构建第三方依赖时会把它们留成外部导入，统一交给 `/__shared/*.js`。
-请不要在项目配置里 alias `react` / `react-dom`，否则会绕过这个保证。
+Vite 预构建第三方依赖时会把它们留成外部导入，统一交给 `/__shared/*.js`，
+由开发构建提供。请不要在项目配置里 alias `react` / `react-dom`，否则会绕过
+这个保证。
 
 ## 架构
 
