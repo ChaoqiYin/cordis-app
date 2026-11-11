@@ -103,6 +103,12 @@ external。
 开发模式下 Vite 预构建第三方依赖时同样把它们排除，统一由 `/__shared/*.js`
 提供；项目 `vite.config` 不应 alias 这些说明符。
 
+**构建态（共享模块 profile）**
+同一个共享模块清单可以产出开发与生产两种构建。两者的浏览器 URL 相同，模块
+身份不变，宿主、body 与插件仍共用同一份实例。开发服务器使用开发构建，发布
+布局构建使用生产构建；开发构建缺失或构建态标记不匹配时显式失败，不回退到
+生产构建。见 ADR 0008。
+
 **宿主出口**
 body 暴露给插件的 UI 扩展点：pages（`PluginPageOutlet`）、slots
 （`PluginSlot`）、menus（`PluginMenuTrigger`）、settings（`usePluginSettings`
