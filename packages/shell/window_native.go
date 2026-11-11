@@ -26,6 +26,7 @@ type windowBackend interface {
 	Window() unsafe.Pointer
 	SetTitle(title string)
 	SetSize(width, height int, hint webview.Hint)
+	Eval(js string)
 }
 
 // windowController 把 native.Window 的实现接到 webview 的 UI 线程上。
@@ -132,6 +133,30 @@ func (c *windowController) State(ctx context.Context) (native.WindowState, error
 	}
 	// dispatch 只在闭包执行完毕后返回，因此这里不会阻塞。
 	return <-result, nil
+}
+
+// reloadScript 用当前 URL 重新载入页面：不重新导航，也不改窗口状态。
+// 会话 token 存在 sessionStorage，同一 origin 下重新载入后仍可读取。
+const reloadScript = "location.reload()"
+
+// Reload 把「重新载入」投递到 UI 线程后执行。
+func (c *windowController) Reload(ctx context.Context) error {
+	return c.dispatch(ctx, func(backend windowBackend) {
+		backend.Eval(reloadScript)
+	})
+}
+
+// ReloadOnUIThread 供已经运行在 UI 线程上的回调直接调用（例如菜单动作）。
+// 它不再 Dispatch：从 UI 线程投递回 UI 线程会自锁。
+func (c *windowController) ReloadOnUIThread() error {
+	c.mu.RLock()
+	backend := c.backend
+	c.mu.RUnlock()
+	if backend == nil {
+		return errWindowUnavailable
+	}
+	backend.Eval(reloadScript)
+	return nil
 }
 
 // 编译期确认控制器满足 native 包契约。
