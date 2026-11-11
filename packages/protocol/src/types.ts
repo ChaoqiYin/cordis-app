@@ -1,5 +1,7 @@
 /** 各进程之间流转的数据结构定义。 */
 
+import type { RECONNECT_EVENT } from './constants.js'
+
 /** 单个插件加载失败的记录。 */
 export interface PluginFailure {
   id: string
@@ -38,6 +40,37 @@ export interface WorkerLogMessage {
 }
 
 export type WorkerMessage = WorkerReadyMessage | WorkerLogMessage
+
+/**
+ * worker 主动重启的原因。
+ *
+ * 由真正发起重启的一方填写，随 `server:reconnect` 广播送到页面。客户端因此
+ * 不需要根据「刚才点了什么」去猜；未知来源按 `unexpected` 处理。
+ */
+export type ReconnectReason =
+  /** 安装、卸载、启用或重装插件 */
+  | 'plugin-change'
+  /** 调用方请求重启（`POST /api/restart`） */
+  | 'restart'
+  /** 收到外部停止/重启信号（SIGTERM） */
+  | 'shutdown'
+  /** 客户端推断：没有收到广播的连接中断 */
+  | 'unexpected'
+
+/**
+ * worker 关闭监听前广播的重连事件。
+ *
+ * `reason` 是开放集合：服务端可以先于客户端增加原因，旧客户端按未知值回退为
+ * 中性的重连提示，不会解析失败。
+ */
+export interface ReconnectEvent {
+  type: typeof RECONNECT_EVENT
+  /** 与 `BroadcastMessage` 一致的载荷信封。 */
+  data?: {
+    /** 缺失表示旧版 worker 或未知来源。 */
+    reason?: ReconnectReason | (string & {})
+  }
+}
 
 /** supervisor 写入 `runtime.json` 的内容，供后来者「拉取」当前实例状态。 */
 export interface RuntimeFile {

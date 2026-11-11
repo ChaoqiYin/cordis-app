@@ -17,7 +17,13 @@ export type { RegistrationWarning } from './registry.js'
 
 export { bootstrapToken, createHttp, HttpError, waitForHealthy } from './http.js'
 export { browserTransport, connect } from './connection.js'
-export type { Connection, ConnectionState, Transport, TransportSocket } from './connection.js'
+export type {
+  Connection,
+  ConnectionPhase,
+  ConnectionState,
+  Transport,
+  TransportSocket,
+} from './connection.js'
 export { restoreAppearance, applyAccent, applyTheme } from './appearance.js'
 export type { Theme } from './appearance.js'
 
@@ -25,6 +31,7 @@ export {
   RuntimeContext,
   Slot,
   useAppearance,
+  useConnectionStatus,
   useMenu,
   useMenuAction,
   useMenuItems,

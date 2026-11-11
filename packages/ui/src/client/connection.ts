@@ -13,16 +13,38 @@
  * 最难手工复现、也最容易悄悄回归的部分，不能只靠「重启一次看看」。
  */
 
-import { HEALTH_PATH, RECONNECT_EVENT, WS_PATH } from '@cordis-app/protocol/client'
+import {
+  HEALTH_PATH,
+  RECONNECT_EVENT,
+  WS_PATH,
+  type ReconnectReason,
+} from '@cordis-app/protocol/client'
 import type { ClientRuntime } from './runtime.js'
 
-export type ConnectionState = 'connecting' | 'ready' | 'reconnecting' | 'failed'
+export type ConnectionPhase = 'connecting' | 'ready' | 'reconnecting' | 'failed'
+
+/**
+ * 连接状态：相位 + 进入该相位的原因。
+ *
+ * 相位回答「现在能不能用」，原因回答「为什么」。两者分开，是因为同一个
+ * `reconnecting` 既可能来自用户刚触发的插件变更，也可能是意外掉线；展示层
+ * 只有拿到原因才能选对措辞。原因只在重连与失败时有意义。
+ */
+export interface ConnectionState {
+  phase: ConnectionPhase
+  /** 缺失表示未知来源（旧版 worker、广播未携带原因）。 */
+  reason?: ReconnectReason | (string & {})
+}
 
 export interface Connection {
   close(): void
+  /** 当前状态快照。引用稳定，可直接作为 `useSyncExternalStore` 的 getSnapshot。 */
+  getState(): ConnectionState
   onStateChange(listener: (state: ConnectionState) => void): () => void
   /** 服务恢复后触发；监听者在这里重新拉清单并重放插件加载。 */
-  onReconnected(listener: () => void | Promise<void>): () => void
+  onReconnected(
+    listener: (reason?: ReconnectReason | (string & {})) => void | Promise<void>,
+  ): () => void
 }
 
 /** 一条 WebSocket 连接的四个观察点。适配器负责把它映射到真实的 WebSocket。 */
@@ -84,17 +106,21 @@ export function browserTransport(): Transport {
 }
 
 export function connect(runtime: ClientRuntime, transport: Transport = browserTransport()): Connection {
-  let state: ConnectionState = 'connecting'
+  // 快照对象只在真正变化时替换：getState 的引用必须稳定，useSyncExternalStore
+  // 才不会在每次读取时都判定为「变了」。
+  let state: ConnectionState = { phase: 'connecting' }
   let socket: TransportSocket | null = null
   let closed = false
 
   const stateListeners = new Set<(state: ConnectionState) => void>()
-  const reconnectedListeners = new Set<() => void | Promise<void>>()
+  const reconnectedListeners = new Set<
+    (reason?: ReconnectReason | (string & {})) => void | Promise<void>
+  >()
 
-  const setState = (next: ConnectionState) => {
-    if (state === next) return
-    state = next
-    for (const listener of stateListeners) listener(next)
+  const setState = (phase: ConnectionPhase, reason?: ReconnectReason | (string & {})) => {
+    if (state.phase === phase && state.reason === reason) return
+    state = reason === undefined ? { phase } : { phase, reason }
+    for (const listener of stateListeners) listener(state)
   }
 
   /**
@@ -116,15 +142,17 @@ export function connect(runtime: ClientRuntime, transport: Transport = browserTr
       }
       if (closed) return
       if (healthy) {
+        // 原因要赶在清空状态前取出：监听者据此知道这次恢复由什么引起
+        const reason = state.reason
         setState('connecting')
-        for (const listener of reconnectedListeners) await listener()
+        for (const listener of reconnectedListeners) await listener(reason)
         open()
         return
       }
       const delay = RETRY_DELAYS[Math.min(attempt++, RETRY_DELAYS.length - 1)]!
       await transport.wait(delay)
     }
-    if (!closed) setState('failed')
+    if (!closed) setState('failed', state.reason)
   }
 
   /**
@@ -136,22 +164,26 @@ export function connect(runtime: ClientRuntime, transport: Transport = browserTr
   const onDrop = (from: TransportSocket) => {
     if (closed || from !== socket) return
     socket = null
-    if (state === 'reconnecting') return
-    setState('reconnecting')
+    if (state.phase === 'reconnecting') return
+    // 没有收到服务端广播就断了：这是客户端唯一能确定的「意外掉线」
+    setState('reconnecting', 'unexpected')
     void waitForRecovery()
   }
 
   const onMessage = (from: TransportSocket, data: string) => {
     if (closed || from !== socket) return
-    let payload: { type?: string }
+    let payload: { type?: string; data?: { reason?: unknown } }
     try {
-      payload = JSON.parse(data) as { type?: string }
+      payload = JSON.parse(data) as { type?: string; data?: { reason?: unknown } }
     } catch {
       return
     }
     if (payload.type !== RECONNECT_EVENT) return
-    // 服务端即将关闭：主动断开，把重连交给轮询，避免撞上正在关闭的进程
-    setState('reconnecting')
+    // 服务端即将关闭：主动断开，把重连交给轮询，避免撞上正在关闭的进程。
+    // 原因原样透传；旧版 worker 不带原因，展示层会回退为中性措辞。
+    const raw = payload.data?.reason
+    const reason = typeof raw === 'string' ? raw : undefined
+    setState('reconnecting', reason)
     socket = null
     from.close()
     void waitForRecovery()
@@ -176,6 +208,9 @@ export function connect(runtime: ClientRuntime, transport: Transport = browserTr
       closed = true
       socket?.close()
       socket = null
+    },
+    getState() {
+      return state
     },
     onStateChange(listener) {
       stateListeners.add(listener)

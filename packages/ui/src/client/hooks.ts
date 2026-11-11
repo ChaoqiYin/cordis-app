@@ -16,6 +16,7 @@ import {
   type ReactNode,
 } from 'react'
 import type { ClientRuntime, MenuState } from './runtime.js'
+import type { ConnectionState } from './connection.js'
 import { invokeAction, runAction } from './actions.js'
 import { shortcutFromEvent } from './registry.js'
 import type {
@@ -33,6 +34,31 @@ export function useRuntime(): ClientRuntime {
   const runtime = useContext(RuntimeContext)
   if (!runtime) throw new Error('useRuntime 必须在框架 UI 内使用')
   return runtime
+}
+
+/** SSR 与连接尚未挂载时的快照：不显示任何连接提示。 */
+const IDLE_CONNECTION: ConnectionState = { phase: 'connecting' }
+
+/**
+ * 订阅 WebSocket 连接状态。
+ *
+ * 状态条、插件管理页等界面据此区分「用户刚触发的重启」与「意外掉线」。
+ * SSR 下固定返回 `connecting`，与页面首次拿到真实快照前的行为一致。
+ */
+export function useConnectionStatus(): ConnectionState {
+  const runtime = useRuntime()
+  const connection = runtime.connection
+  const subscribe = useCallback(
+    (listener: () => void) => connection?.onStateChange(() => listener()) ?? (() => {}),
+    [connection],
+  )
+  const read = useCallback(
+    () => connection?.getState() ?? IDLE_CONNECTION,
+    [connection],
+  )
+  // SSR 下通常没有连接，read 会返回 IDLE_CONNECTION；若嵌入方已经挂上连接，
+  // 服务端与客户端使用同一份快照，避免两套读取规则。
+  return useSyncExternalStore(subscribe, read, read)
 }
 
 /**

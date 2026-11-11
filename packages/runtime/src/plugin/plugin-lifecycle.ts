@@ -11,7 +11,7 @@
  * HTTP 层只负责把结果映射成响应；动作的幂等、404 与 409 规则都在这里。
  */
 
-import type { RuntimeMode } from '@cordis-app/protocol'
+import type { ReconnectReason, RuntimeMode } from '@cordis-app/protocol'
 import {
   findPlugin,
   pluginVersion,
@@ -34,8 +34,8 @@ export interface PluginLifecycleOptions {
   state: PluginStateStore
   /** 与启动扫描相同的发现逻辑；每次动作重新扫描。 */
   scan(): PluginScan
-  /** 由 worker 注入：请求优雅重启。 */
-  requestRestart?: () => void
+  /** 由 worker 注入：请求优雅重启，原因随重连事件广播给页面。 */
+  requestRestart?: (reason?: ReconnectReason) => void
   /** 时钟注入，测试用。 */
   now?: () => Date
 }
@@ -101,7 +101,7 @@ export class PluginLifecycle {
     if (physical) await this.options.installer.remove(id, hooks)
     else await this.options.installer.logical('remove', id, outcome, hooks)
 
-    this.options.requestRestart?.()
+    this.options.requestRestart?.('plugin-change')
     return { id, enabled: false, restarted: true, reason: outcome.reason }
   }
 
@@ -141,7 +141,7 @@ export class PluginLifecycle {
           this.options.state.markEnabled(id)
         },
       })
-      this.options.requestRestart?.()
+      this.options.requestRestart?.('plugin-change')
       return {
         id,
         enabled: true,
@@ -177,7 +177,7 @@ export class PluginLifecycle {
         )
       },
     })
-    this.options.requestRestart?.()
+    this.options.requestRestart?.('plugin-change')
     return {
       id,
       enabled: true,
