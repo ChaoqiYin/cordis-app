@@ -23,6 +23,25 @@ export const SHARED_MODULES = Object.entries(SHARED_MODULE_TABLE).map(([specifie
 
 export const SHARED_SPECIFIERS = SHARED_MODULES.map((m) => m.specifier)
 
+/**
+ * 各构建态的产物目录名（相对 packages/ui）。
+ *
+ * 目录名属于 ui 包内部实现，不进入协议层或浏览器 URL；构建脚本、开发服务器
+ * 与 ui 包内测试统一从这里读取，避免各写一份字面量。
+ */
+export const SHARED_PROFILE_DIRS = {
+  development: 'shared-dev',
+  production: 'shared',
+}
+
+/** 产物首部的构建态标记；消费端据此拒绝跨构建态复用。 */
+export function sharedProfileMarker(profile) {
+  return `/* cordis-app:shared-profile:${profile} */`
+}
+
+/** 共享模块产物缺失或不匹配时给出的修复命令。 */
+export const SHARED_BUILD_COMMAND = 'pnpm --filter @cordis-app/ui build'
+
 /** 浏览器 import map 的 `imports` 字段。 */
 export function importMap() {
   return {
