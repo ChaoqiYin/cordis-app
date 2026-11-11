@@ -919,7 +919,7 @@ test('dev 加载项目根 vite.config，但不交出 root 与共享模块约束'
       "  root: '/definitely-not-the-shell',",
       "  base: '/wrong/',",
       "  define: { __PROJECT_FLAG__: JSON.stringify('mounted') },",
-      "  server: { headers: { 'x-project': 'yes' }, fs: { allow: ['/tmp/cordis-extra'] } },",
+      "  server: { host: '0.0.0.0', port: 1, strictPort: false, headers: { 'x-project': 'yes' }, fs: { allow: ['/tmp/cordis-extra'] } },",
       "  optimizeDeps: { exclude: ['project-only-dep'] },",
       "  plugins: [{ name: 'project-marker-plugin' }],",
       '}',
@@ -927,9 +927,10 @@ test('dev 加载项目根 vite.config，但不交出 root 与共享模块约束'
     ].join('\n'),
   )
 
+  const port = await freePort()
   const dev = await createProjectDevServer({
     projectRoot: root,
-    port: await freePort(),
+    port,
     strictPort: true,
     worker: { port: 9000 },
     // 程序化挂载点叠加在项目文件之后。
@@ -942,6 +943,9 @@ test('dev 加载项目根 vite.config，但不交出 root 与共享模块约束'
     const config = dev.server.config
     assert.match(config.root, /dist\/shell$/, 'root 必须仍是框架壳')
     assert.equal(config.base, '/', 'base 不能交给项目改')
+    assert.equal(config.server.host, '127.0.0.1', 'host 由框架钉住')
+    assert.equal(config.server.port, port, '端口由 CLI 决定，项目配置不能改')
+    assert.equal(config.server.strictPort, true, 'strictPort 不能被项目配置改回 false')
     assert.equal(config.define?.__PROJECT_FLAG__, JSON.stringify('mounted'))
     assert.equal(config.define?.__HOOK_FLAG__, JSON.stringify('yes'))
     assert.equal(config.server.headers?.['x-project'], 'yes', '项目 server 项要生效')

@@ -46,6 +46,13 @@ func runWindow(url string, sh *supervisor, debug bool, title string, nativeWindo
 	defer w.Destroy()
 	defer nativeWindow.detach()
 
+	// 窗口 chrome 在控制器 attach 之后安装一次：菜单动作要能在窗口销毁后
+	// 安全返回 busy。所有运行形态都安装，不区分 dev 与打包形态。
+	//
+	// 菜单回调由平台在 UI 线程上触发，因此必须直接调用 ReloadOnUIThread：
+	// 再从 UI 线程 Dispatch 回 UI 线程会自锁。
+	installWindowChrome(func() { _ = nativeWindow.ReloadOnUIThread() })
+
 	// 窗口关闭后 w.Run 返回，但后台 goroutine 可能仍在等待 supervisor 或
 	// 激活请求。dispatchWindow 用 closed 标记把投递与 Destroy 串行化：
 	// Run 返回后不再向已销毁的 webview 投递（窗口关闭时的 SIGSEGV 来源）。
