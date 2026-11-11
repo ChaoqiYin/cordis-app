@@ -890,10 +890,64 @@ test('dev 先构建 worker 产物，再起 Vite，并在 server 变化时重启 
   assert.equal(appOptions?.serverEntry, watcher.serverEntry)
   assert.equal(appOptions?.localPluginsDir, watcher.localPluginsDir)
   assert.deepEqual(devOptions?.worker, { port: app.port, token: app.token })
+  assert.equal(devOptions?.port, 5173, '没有 --port 时优先使用 5173，并在会话开始前固定')
+  assert.equal(devOptions?.strictPort, true, '端口被占时不能由 Vite 静默换一个')
+  assert.notEqual(devOptions?.port, app.port, 'Vite 端口必须与 worker 端口不同')
   assert.equal(app.restarted, 1, 'server 变化应重启 worker')
   assert.equal(reloads, 0, 'server 变化不需要刷新页面')
   assert.ok(fake.out.includes(dev.url))
   assert.equal(app.stopped, 1)
+})
+
+test('dev 浏览器模式在 Vite 端口冲突时换端口重试，并避开 worker 端口', async () => {
+  const root = join(tempDir(), 'demo')
+  await commandNew(parseArgs(['new', 'demo', '--project', root]), fakeIO().io)
+
+  const app = new FakeApp() // worker 端口 5000
+  const ports = [5000, 51234] // 第一次分配撞上 worker，第二次可用
+  const devPorts: number[] = []
+  const devStrict: Array<boolean | undefined> = []
+  let devStarts = 0
+  let devClosed = 0
+
+  const fake = fakeIO({
+    findFreePort: async () => ports.shift()!,
+    projectWatcher: async () => ({
+      devRoot: join(root, '.cordis', 'dev'),
+      serverEntry: join(root, '.cordis', 'dev', 'server', 'index.js'),
+      localPluginsDir: join(root, '.cordis', 'dev', 'plugins'),
+      async close() {},
+    }),
+    appStarter: async () => app,
+    devServerStarter: async (options) => {
+      devStarts++
+      devPorts.push(options.port!)
+      devStrict.push(options.strictPort)
+      if (devStarts === 1) {
+        throw Object.assign(new Error('listen EADDRINUSE'), { code: 'EADDRINUSE' })
+      }
+      setTimeout(() => app.emit('exit', { code: 0, signal: null, expected: true }), 0)
+      return {
+        url: `http://127.0.0.1:${options.port}/#token=t`,
+        port: options.port!,
+        server: {} as ProjectDevServer['server'],
+        reload() {},
+        async close() {
+          devClosed++
+        },
+      }
+    },
+  })
+
+  const code = await commandDev(parseArgs(['dev', '--project', root]), fake.io)
+
+  assert.equal(code, 0)
+  assert.deepEqual(devPorts, [5173, 51234], '冲突后改用 findFreePort 分配的端口')
+  assert.deepEqual(devStrict, [true, true])
+  assert.notEqual(devPorts[1], app.port, 'Vite 端口必须避开 worker 端口')
+  assert.equal(devClosed, 1)
+  assert.ok(fake.out.some((line) => line.includes('127.0.0.1:51234')))
+  assert.ok(fake.err.some((line) => line.includes('Vite 端口') && line.includes('被占用')))
 })
 
 test('dev 的插件前端变化在重启后触发整页刷新', async () => {
@@ -1018,6 +1072,9 @@ test('dev --shell 用固定端口起 Vite，并把开发 UI 与 watcher 产物�
 
   assert.equal(code, 0)
   assert.equal(devOptions?.worker.port, 51234)
+  assert.equal(devOptions?.port, 5173, '没有 --port 时优先使用 5173，并在会话开始前固定')
+  assert.equal(devOptions?.strictPort, true, '端口被占时不能由 Vite 静默换一个')
+  assert.notEqual(devOptions?.port, devOptions?.worker.port, 'Vite 端口必须与 worker 端口不同')
   assert.equal(
     (devOptions?.worker as { token?: string }).token,
     undefined,
@@ -1165,6 +1222,247 @@ test('dev --shell 在端口被抢占时换端口重启 Vite 与外壳', async ()
   assert.equal(devStarts, 2, 'Vite 的代理目标换端口，必须跟着重启')
   assert.equal(closedBeforeRetry, 1, '第一轮 Vite 在重试前应关闭')
   assert.ok(fake.err.some((line) => line.includes('被占用')))
+})
+
+test('dev --shell 在 Vite 端口冲突时换端口重启 Vite 与外壳', async () => {
+  const root = join(tempDir(), 'demo')
+  await commandNew(parseArgs(['new', 'demo', '--project', root]), fakeIO().io)
+
+  // 第一轮：worker 51234 → Vite 5173 冲突；重试用 51235 给 Vite、51236 给 worker。
+  const ports = [51234, 51235, 51236]
+  const devPorts: number[] = []
+  const devStrict: Array<boolean | undefined> = []
+  const shellOptions: ShellDevOptions[] = []
+  let devStarts = 0
+  let devClosed = 0
+  let exitListener: ((code: number | null) => void) | undefined
+
+  const backend: ShellDevBackend = {
+    async restartWorker() {},
+    onExit(listener) {
+      exitListener = listener
+      return () => {}
+    },
+    async stop() {},
+  }
+
+  const fake = fakeIO({
+    shellLocator: () => ({ path: '/opt/cordis-app' }),
+    findFreePort: async () => ports.shift()!,
+    projectWatcher: async () => ({
+      devRoot: join(root, '.cordis', 'dev'),
+      serverEntry: join(root, '.cordis', 'dev', 'server', 'index.js'),
+      localPluginsDir: join(root, '.cordis', 'dev', 'plugins'),
+      async close() {},
+    }),
+    devServerStarter: async (options) => {
+      devStarts++
+      devPorts.push(options.port!)
+      devStrict.push(options.strictPort)
+      if (devStarts === 1) throw new Error('Port 5173 is already in use')
+      return {
+        url: `http://127.0.0.1:${options.port}/`,
+        port: options.port!,
+        server: {} as ProjectDevServer['server'],
+        reload() {},
+        async close() {
+          devClosed++
+        },
+      }
+    },
+    shellDevStarter: async (options) => {
+      shellOptions.push(options)
+      setTimeout(() => exitListener?.(0), 0)
+      return backend
+    },
+  })
+
+  const code = await commandDev(parseArgs(['dev', '--shell', '--project', root]), fake.io)
+
+  assert.equal(code, 0)
+  assert.deepEqual(devPorts, [5173, 51235], '先试 5173，冲突后改用 findFreePort 的端口')
+  assert.deepEqual(devStrict, [true, true], '每一轮都必须 strictPort')
+  assert.equal(shellOptions.length, 1, 'Vite 端口冲突时还没到外壳启动')
+  assert.equal(shellOptions[0]?.workerPort, 51236)
+  assert.notEqual(
+    shellOptions[0]?.workerPort,
+    devPorts[1],
+    '重试后的 worker 端口也必须避开新的 Vite 端口',
+  )
+  assert.equal(
+    shellOptions[0]?.devUrl,
+    'http://127.0.0.1:51235/',
+    '外壳拿到的 devUrl 必须与实际启动的 Vite 地址一致',
+  )
+  assert.equal(devClosed, 1, '成功那一轮的 Vite 最终要关闭')
+  assert.ok(fake.err.some((line) => line.includes('Vite 端口') && line.includes('被占用')))
+})
+
+test('dev 显式 --port 时仍用用户端口并固定住', async () => {
+  const root = join(tempDir(), 'demo')
+  await commandNew(parseArgs(['new', 'demo', '--project', root]), fakeIO().io)
+
+  const app = new FakeApp()
+  let devOptions: ProjectDevServerOptions | undefined
+  let findFreePortCalls = 0
+  const fake = fakeIO({
+    findFreePort: async () => {
+      findFreePortCalls++
+      return 51234
+    },
+    projectWatcher: async () => ({
+      devRoot: join(root, '.cordis', 'dev'),
+      serverEntry: join(root, '.cordis', 'dev', 'server', 'index.js'),
+      localPluginsDir: join(root, '.cordis', 'dev', 'plugins'),
+      async close() {},
+    }),
+    appStarter: async () => app,
+    devServerStarter: async (options) => {
+      devOptions = options
+      setTimeout(() => app.emit('exit', { code: 0, signal: null, expected: true }), 0)
+      return {
+        url: `http://127.0.0.1:${options.port}/#token=t`,
+        port: options.port!,
+        server: {} as ProjectDevServer['server'],
+        reload() {},
+        async close() {},
+      }
+    },
+  })
+
+  const code = await commandDev(parseArgs(['dev', '--port', '4000', '--project', root]), fake.io)
+
+  assert.equal(code, 0)
+  assert.equal(devOptions?.port, 4000)
+  assert.equal(devOptions?.strictPort, true)
+  assert.equal(findFreePortCalls, 0, '显式端口不需要再分配')
+})
+
+test('dev --shell 显式 --port 时仍用用户端口，worker 端口避开它', async () => {
+  const root = join(tempDir(), 'demo')
+  await commandNew(parseArgs(['new', 'demo', '--project', root]), fakeIO().io)
+
+  // 第一次分配返回用户端口本身，worker 必须继续找下一个。
+  const ports = [4000, 51234]
+  let devOptions: ProjectDevServerOptions | undefined
+  let shellOptions: ShellDevOptions | undefined
+  let exitListener: ((code: number | null) => void) | undefined
+
+  const backend: ShellDevBackend = {
+    async restartWorker() {},
+    onExit(listener) {
+      exitListener = listener
+      return () => {}
+    },
+    async stop() {},
+  }
+
+  const fake = fakeIO({
+    shellLocator: () => ({ path: '/opt/cordis-app' }),
+    findFreePort: async () => ports.shift()!,
+    projectWatcher: async () => ({
+      devRoot: join(root, '.cordis', 'dev'),
+      serverEntry: join(root, '.cordis', 'dev', 'server', 'index.js'),
+      localPluginsDir: join(root, '.cordis', 'dev', 'plugins'),
+      async close() {},
+    }),
+    devServerStarter: async (options) => {
+      devOptions = options
+      return {
+        url: `http://127.0.0.1:${options.port}/`,
+        port: options.port!,
+        server: {} as ProjectDevServer['server'],
+        reload() {},
+        async close() {},
+      }
+    },
+    shellDevStarter: async (options) => {
+      shellOptions = options
+      setTimeout(() => exitListener?.(0), 0)
+      return backend
+    },
+  })
+
+  const code = await commandDev(
+    parseArgs(['dev', '--shell', '--port', '4000', '--project', root]),
+    fake.io,
+  )
+
+  assert.equal(code, 0)
+  assert.equal(devOptions?.port, 4000)
+  assert.equal(devOptions?.strictPort, true)
+  assert.equal(devOptions?.worker.port, 51234)
+  assert.equal(shellOptions?.workerPort, 51234)
+  assert.equal(shellOptions?.devUrl, 'http://127.0.0.1:4000/')
+})
+
+test('dev --shell 的 Vite 端口重试耗尽时以可读文案失败', async () => {
+  const root = join(tempDir(), 'demo')
+  await commandNew(parseArgs(['new', 'demo', '--project', root]), fakeIO().io)
+
+  let nextPort = 51234
+  let devStarts = 0
+  let shellStarts = 0
+  const fake = fakeIO({
+    shellLocator: () => ({ path: '/opt/cordis-app' }),
+    findFreePort: async () => nextPort++,
+    projectWatcher: async () => ({
+      devRoot: join(root, '.cordis', 'dev'),
+      serverEntry: join(root, '.cordis', 'dev', 'server', 'index.js'),
+      localPluginsDir: join(root, '.cordis', 'dev', 'plugins'),
+      async close() {},
+    }),
+    devServerStarter: async () => {
+      devStarts++
+      throw new Error('Port 5173 is already in use')
+    },
+    shellDevStarter: async () => {
+      shellStarts++
+      throw new Error('不应启动外壳')
+    },
+  })
+
+  const code = await commandDev(parseArgs(['dev', '--shell', '--project', root]), fake.io)
+
+  assert.equal(code, 1)
+  assert.equal(devStarts, 3, '尝试次数不应超过上限')
+  assert.equal(shellStarts, 0, 'Vite 都没起来时不能启动外壳')
+  const errors = fake.err.join('\n')
+  assert.match(errors, /Vite 端口/)
+  assert.match(errors, /被占用/)
+  assert.match(errors, /已尝试 3 次/)
+})
+
+test('dev 浏览器模式的 Vite 端口重试耗尽时以可读文案失败', async () => {
+  const root = join(tempDir(), 'demo')
+  await commandNew(parseArgs(['new', 'demo', '--project', root]), fakeIO().io)
+
+  const app = new FakeApp()
+  let nextPort = 51234
+  let devStarts = 0
+  const fake = fakeIO({
+    findFreePort: async () => nextPort++,
+    projectWatcher: async () => ({
+      devRoot: join(root, '.cordis', 'dev'),
+      serverEntry: join(root, '.cordis', 'dev', 'server', 'index.js'),
+      localPluginsDir: join(root, '.cordis', 'dev', 'plugins'),
+      async close() {},
+    }),
+    appStarter: async () => app,
+    devServerStarter: async () => {
+      devStarts++
+      throw Object.assign(new Error('listen EADDRINUSE'), { code: 'EADDRINUSE' })
+    },
+  })
+
+  const code = await commandDev(parseArgs(['dev', '--project', root]), fake.io)
+
+  assert.equal(code, 1)
+  assert.equal(devStarts, 3)
+  assert.equal(app.stopped, 1, '失败后必须停掉已经启动的 worker')
+  const errors = fake.err.join('\n')
+  assert.match(errors, /Vite 端口/)
+  assert.match(errors, /已尝试 3 次/)
 })
 
 test('dev --shell 找不到外壳且不能自动编译时直接失败', async () => {
