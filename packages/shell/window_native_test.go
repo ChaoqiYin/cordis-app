@@ -20,6 +20,7 @@ type fakeWindowBackend struct {
 	mu            sync.Mutex
 	calls         []string
 	dispatches    int
+	evals         []string
 	runOnDispatch bool
 	pending       []func()
 }
@@ -49,6 +50,18 @@ func (f *fakeWindowBackend) SetTitle(title string) {
 
 func (f *fakeWindowBackend) SetSize(width, height int, _ webview.Hint) {
 	f.record("SetSize:" + strconv.Itoa(width) + "x" + strconv.Itoa(height))
+}
+
+func (f *fakeWindowBackend) Eval(js string) {
+	f.mu.Lock()
+	f.evals = append(f.evals, js)
+	f.mu.Unlock()
+}
+
+func (f *fakeWindowBackend) evalSnapshot() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.evals...)
 }
 
 func (f *fakeWindowBackend) record(call string) {
@@ -95,6 +108,82 @@ func TestWindowControllerDispatchesEveryCommandToUIThread(t *testing.T) {
 	// 句柄安全返回，因此只断言前两项的调用内容。
 	if len(calls) != 2 || calls[0] != "SetTitle:标题" {
 		t.Fatalf("calls = %v，期望首项 SetTitle:标题", calls)
+	}
+}
+
+func TestWindowControllerReloadDispatchesOnceToUIThread(t *testing.T) {
+	backend := newFakeWindowBackend()
+	controller := newWindowController()
+	controller.attach(backend)
+
+	if err := controller.Reload(context.Background()); err != nil {
+		t.Fatalf("Reload 失败: %v", err)
+	}
+
+	evals := backend.evalSnapshot()
+	if len(evals) != 1 || evals[0] != "location.reload()" {
+		t.Fatalf("Eval 调用 = %v，期望只执行一次 location.reload()", evals)
+	}
+	_, dispatches := backend.snapshot()
+	if dispatches != 1 {
+		t.Fatalf("Dispatch 次数 = %d，期望 1", dispatches)
+	}
+}
+
+func TestWindowControllerReloadOnUIThreadDoesNotDispatch(t *testing.T) {
+	backend := newFakeWindowBackend()
+	controller := newWindowController()
+	controller.attach(backend)
+
+	if err := controller.ReloadOnUIThread(); err != nil {
+		t.Fatalf("ReloadOnUIThread 失败: %v", err)
+	}
+
+	evals := backend.evalSnapshot()
+	if len(evals) != 1 || evals[0] != "location.reload()" {
+		t.Fatalf("Eval 调用 = %v，期望只执行一次 location.reload()", evals)
+	}
+	_, dispatches := backend.snapshot()
+	if dispatches != 0 {
+		t.Fatalf("Dispatch 次数 = %d，期望 0（已在 UI 线程，不能再投递）", dispatches)
+	}
+}
+
+func TestWindowControllerReloadWithoutAttachedWindow(t *testing.T) {
+	controller := newWindowController()
+	assertWindowUnavailableBusy(t, controller.Reload(context.Background()))
+	assertWindowUnavailableBusy(t, controller.ReloadOnUIThread())
+
+	backend := newFakeWindowBackend()
+	controller.attach(backend)
+	controller.detach()
+	assertWindowUnavailableBusy(t, controller.Reload(context.Background()))
+	assertWindowUnavailableBusy(t, controller.ReloadOnUIThread())
+
+	if evals := backend.evalSnapshot(); len(evals) != 0 {
+		t.Fatalf("未 attach 或已 detach 时触碰了后端: %v", evals)
+	}
+}
+
+func TestWindowControllerReloadRespectsContextDeadline(t *testing.T) {
+	backend := newFakeWindowBackend()
+	backend.runOnDispatch = false // 模拟 UI 线程一直没轮到这条命令
+	controller := newWindowController()
+	controller.attach(backend)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- controller.Reload(ctx) }()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("错误 = %v，期望 DeadlineExceeded", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Reload 的命令 goroutine 没有被 ctx 唤醒，可能永久阻塞")
 	}
 }
 
