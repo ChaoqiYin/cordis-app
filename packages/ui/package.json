@@ -29,7 +29,7 @@
   "scripts": {
     "dev": "vite",
     "build:host": "node scripts/build-host.mjs && tsc -p tsconfig.host.json",
-    "build:shared": "node scripts/build-shared.mjs && tsc -p tsconfig.lib.json",
+    "build:shared": "node scripts/build-shared.mjs development && node scripts/build-shared.mjs production && tsc -p tsconfig.lib.json",
     "build:web-shell": "node scripts/stage-web-shell.mjs",
     "build:build": "tsc -p tsconfig.build.json",
     "build": "pnpm build:shared && vite build && pnpm build:host && pnpm build:web-shell && pnpm build:build",

@@ -49,12 +49,24 @@ import {
   resolveProjectLayout,
   type AppManifest,
   type PluginManifest,
+  type SharedModuleProfile,
 } from '@cordis-app/protocol'
 
 const packageRoot = fileURLToPath(new URL('../../', import.meta.url))
 const shellDir = join(packageRoot, 'dist', 'shell')
+/** 发布布局构建读取的生产共享模块。 */
 const sharedDir = join(packageRoot, 'dist', 'shared')
+/** 开发服务器读取的开发共享模块；目录名是 ui 包内部实现，不进入协议层。 */
+const sharedDevDir = join(packageRoot, 'dist', 'shared-dev')
 const hostEntry = join(packageRoot, 'dist', 'host', 'index.js')
+
+/** 共享模块产物缺失或不匹配时给出的修复命令。 */
+const SHARED_BUILD_COMMAND = 'pnpm --filter @cordis-app/ui build'
+
+/** 产物首部的构建态标记格式，必须与 scripts/build-shared.mjs 一致。 */
+function sharedProfileMarker(profile: SharedModuleProfile): string {
+  return `/* cordis-app:shared-profile:${profile} */`
+}
 
 const BODY_ID = 'virtual:cordis-app/body'
 const RESOLVED_BODY_ID = '\0' + BODY_ID
@@ -939,10 +951,44 @@ export interface ProjectDevServer {
   close(): Promise<void>
 }
 
+/**
+ * 校验开发构建态的共享模块是否完整。
+ *
+ * 开发服务器只能使用开发构建：生产版的 `react-dom` 不注册 renderer，
+ * React Refresh 会静默失效。因此缺目录、缺文件或标记不匹配都必须拒绝启动，
+ * 不允许回退到生产产物——静默回退正是这次修复要消除的失效方式。
+ */
+function assertDevSharedModulesReady(): void {
+  if (!existsSync(sharedDevDir)) {
+    throw new Error(
+      `共享模块开发产物缺失：${sharedDevDir}。先构建 @cordis-app/ui（${SHARED_BUILD_COMMAND}）。`,
+    )
+  }
+
+  const expected = sharedProfileMarker('development')
+  for (const definition of Object.values(SHARED_MODULE_TABLE)) {
+    const file = join(sharedDevDir, definition.file)
+    if (!existsSync(file)) {
+      throw new Error(
+        `共享模块开发产物缺失：${file}。先构建 @cordis-app/ui（${SHARED_BUILD_COMMAND}）。`,
+      )
+    }
+    if (!readFileSync(file, 'utf8').startsWith(expected)) {
+      throw new Error(
+        `共享模块开发构建态标记不匹配：${file}。` +
+          `删除 dist/shared-dev 后重新构建 @cordis-app/ui（${SHARED_BUILD_COMMAND}）。`,
+      )
+    }
+  }
+}
+
 /** 启动项目 body 的 Vite 开发服务器。 */
 export async function createProjectDevServer(
   options: ProjectDevServerOptions,
 ): Promise<ProjectDevServer> {
+  // 先于任何 Vite 初始化：缺开发构建时必须立刻失败，不能带着错误产物启动。
+  assertDevSharedModulesReady()
+
   if (!existsSync(join(shellDir, 'index.html'))) {
     throw new Error(`框架壳产物缺失：${shellDir}。先构建 @cordis-app/ui。`)
   }
@@ -1259,17 +1305,20 @@ function devJsxRuntimePlugin(): Plugin {
 }
 
 /**
- * 把 `/__shared/<file>.js` 映射到框架的共享模块产物。
+ * 把 `/__shared/<file>.js` 映射到框架的开发共享模块产物。
  *
  * 开发服务器以 shell 目录为 root，共享模块**不能**复制进去：可解析的真实
  * 文件会被 vite:resolve 当成普通模块，安装路径位于 node_modules 时还会被
  * 追加 `?v=<browserHash>`。URL 只由这里解析，模块身份才在开发与生产一致。
+ *
+ * 这里固定读开发构建；生产产物只属于发布布局。开发构建缺失时启动校验
+ * 已经失败，因此不存在回退路径。
  */
 function sharedModuleUrlFile(url: string): string | undefined {
   if (!url.startsWith(`${SHARED_PREFIX}/`)) return undefined
   const name = decodeURIComponent(url.slice(SHARED_PREFIX.length + 1).split('?')[0] ?? '')
   if (!/^[A-Za-z0-9._-]+\.js$/.test(name)) return undefined
-  const file = join(sharedDir, name)
+  const file = join(sharedDevDir, name)
   return existsSync(file) ? file : undefined
 }
 

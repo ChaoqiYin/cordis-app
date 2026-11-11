@@ -1,5 +1,14 @@
 /**
- * 构建共享模块 → dist/shared/。
+ * 构建共享模块 → dist/shared/（生产）或 dist/shared-dev/（开发）。
+ *
+ * 构建态由第一个命令行参数给出：`development` 或 `production`。每个构建态
+ * 必须用独立进程运行——shim 在构建期 `require()` 真实模块来枚举具名导出，
+ * 而 React 的 `react-dom` 按进程里的 NODE_ENV 选择 development / production
+ * 入口，两者的导出集合并不相同。进程内切换 NODE_ENV 会命中模块缓存。
+ *
+ * 构建态只影响三件事：`NODE_ENV` 的构建期替换、压缩、sourcemap。入口、
+ * 产物文件名、共享模块之间的 external 关系在两个构建态下完全一致，浏览器
+ * URL 因此不需要条件分支。产物首部写 profile 标记，消费端据此校验。
  *
  * 为什么不能直接 `export * from 'react'`：React 是 CJS 包，其 index.js 是
  * `module.exports = require('./cjs/react.production.js')`——不是静态可分析的
@@ -22,9 +31,19 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 import { SHARED_MODULES } from '../shared-modules.mjs'
 
+const profile = process.argv[2] ?? 'production'
+if (profile !== 'development' && profile !== 'production') {
+  throw new Error(`未知共享模块构建态：${profile}（只支持 development / production）`)
+}
+
+// 必须在 require 任何共享模块之前设置：React 的入口在这个值上分支。
+process.env.NODE_ENV = profile
+
 const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '..')
-const outdir = join(root, 'dist', 'shared')
+const isDevelopment = profile === 'development'
+const outdir = join(root, 'dist', isDevelopment ? 'shared-dev' : 'shared')
+const profileMarker = `/* cordis-app:shared-profile:${profile} */`
 const pkgRequire = createRequire(join(root, 'package.json'))
 
 rmSync(outdir, { recursive: true, force: true })
@@ -63,21 +82,37 @@ try {
       root,
       configFile: false,
       logLevel: 'warn',
-      define: { 'process.env.NODE_ENV': '"production"' },
+      define: { 'process.env.NODE_ENV': JSON.stringify(profile) },
       build: {
         outDir: outdir,
         emptyOutDir: false,
         // 文件名由 import map 固定，不能带 hash
-        minify: true,
+        minify: !isDevelopment,
         target: 'es2022',
-        sourcemap: false,
+        // 开发构建保留 sourcemap，便于在浏览器里定位问题。
+        sourcemap: isDevelopment,
         lib: { entry, formats: ['es'], fileName: () => shared.file },
         rollupOptions: {
           external: shared.externals,
+          // Rollup 的 output.banner 会被 Vite 的 esbuild 转换当普通注释剥掉，
+          // 因此在 generateBundle 里（转换与压缩之后）写标记。插入一行会让
+          // sourcemap 行号整体后移，mappings 前补一个分号正好抵消。
+          plugins: [
+            {
+              name: 'cordis-app:shared-profile-marker',
+              generateBundle(_options, bundle) {
+                for (const output of Object.values(bundle)) {
+                  if (output.type !== 'chunk') continue
+                  output.code = `${profileMarker}\n${output.code}`
+                  if (output.map) output.map.mappings = `;${output.map.mappings}`
+                }
+              },
+            },
+          ],
         },
       },
     })
-    console.log(`  shared/${shared.file}  ← ${shared.specifier}`)
+    console.log(`  ${isDevelopment ? 'shared-dev' : 'shared'}/${shared.file}  ← ${shared.specifier}`)
   }
 } finally {
   rmSync(scratch, { recursive: true, force: true })
