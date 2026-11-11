@@ -266,7 +266,7 @@ export async function commandDev(args: ParsedArgs, io: CommandIO): Promise<numbe
  * 与外壳的 `ShellPortUnavailableError` 并列：两者都可能落在「分配端口」与
  * 「真正监听」之间的窗口里，由开发命令按同一上限整轮重试。
  */
-export class VitePortUnavailableError extends Error {}
+class VitePortUnavailableError extends Error {}
 
 /** 开发时优先使用的 Vite 端口；占用了才换成系统分配的空闲端口。 */
 const DEFAULT_VITE_PORT = 5173
@@ -286,7 +286,13 @@ async function pickVitePort(
   explicit: number | undefined,
   ...avoid: number[]
 ): Promise<number> {
-  if (explicit !== undefined) return explicit
+  if (explicit !== undefined) {
+    // 显式端口不能静默换成别的端口，也不能与 worker 撞车：只能明确失败。
+    if (avoid.includes(explicit)) {
+      throw new Error(`Vite 端口 ${explicit} 已被 worker 使用，请换一个端口或不指定 --port`)
+    }
+    return explicit
+  }
   if (!avoid.includes(DEFAULT_VITE_PORT)) return DEFAULT_VITE_PORT
   return allocatePort(freePort, ...avoid)
 }
@@ -301,6 +307,30 @@ async function allocatePort(
     if (!avoid.includes(port)) return port
   }
   throw new Error('无法分配到与其它监听端口不同的空闲端口')
+}
+
+/**
+ * Vite 端口冲突后的统一处理：次数耗尽就抛错，否则返回下一轮端口。
+ * 显式 --port 是用户的明确要求，不能静默换端口，只能在同端口重试。
+ */
+async function nextVitePortOnConflict(
+  io: CommandIO,
+  current: number,
+  attempt: number,
+  explicit: number | undefined,
+  freePort: () => Promise<number>,
+  ...avoid: number[]
+): Promise<number> {
+  if (attempt >= DEV_START_ATTEMPTS) {
+    throw new VitePortUnavailableError(`Vite 端口 ${current} 被占用，已尝试 ${attempt} 次`)
+  }
+  if (explicit !== undefined) {
+    io.err(`Vite 端口 ${current} 被占用，将用同一端口重试（第 ${attempt} 次）`)
+    return explicit
+  }
+  const next = await allocatePort(freePort, ...avoid)
+  io.err(`Vite 端口 ${current} 被占用，改用端口 ${next} 重试（第 ${attempt} 次）`)
+  return next
 }
 
 /**
@@ -324,11 +354,17 @@ async function startVite(
   }
 }
 
+/**
+ * 只把真正的端口占用当作可重试冲突。
+ *
+ * Vite strictPort 的文案是 `Port 5173 is already in use`；`already in use`
+ * 单独出现太宽，会把「handle is already in use」之类的无关错误误判成端口冲突。
+ */
 function isPortInUseError(error: unknown): boolean {
   if (typeof error !== 'object' || error === null) return false
   const { code, message } = error as { code?: unknown; message?: unknown }
   if (code === 'EADDRINUSE') return true
-  return typeof message === 'string' && /EADDRINUSE|already in use/i.test(message)
+  return typeof message === 'string' && /EADDRINUSE|port \S+ is already in use/i.test(message)
 }
 
 /**
@@ -395,16 +431,15 @@ async function commandDevBrowser(
         })
       } catch (error) {
         if (!(error instanceof VitePortUnavailableError)) throw error
-        if (attempt >= DEV_START_ATTEMPTS) {
-          throw new VitePortUnavailableError(
-            `Vite 端口 ${vitePort} 被占用，已尝试 ${attempt} 次`,
-          )
-        }
-        io.err(`Vite 端口 ${vitePort} 被占用，重新分配后重试（第 ${attempt} 次）`)
-        // 显式 --port 是用户的明确要求，不能静默换成别的端口。
-        if (args.port === undefined) {
-          vitePort = await allocatePort(freePort, app.port, vitePort)
-        }
+        vitePort = await nextVitePortOnConflict(
+          io,
+          vitePort,
+          attempt,
+          args.port,
+          freePort,
+          app.port,
+          vitePort,
+        )
       }
     }
 
@@ -451,7 +486,8 @@ async function ensureShell(io: CommandIO): Promise<ShellLocation> {
  *
  * 端口分配与实际监听之间有一个窗口：Vite 端口被抢占时以 EADDRINUSE 失败，
  * supervisor 端口被抢占时以 76 退出。两种冲突都会关闭本轮 Vite、重新分配
- * 端口，并把整轮（Vite + 外壳）一起重来。
+ * 端口，并把整轮（Vite + 外壳）一起重来；显式 --port 时 Vite 端口由用户
+ * 固定，重试只重新分配 worker 端口。
  */
 async function commandDevShell(
   workspace: Workspace,
@@ -500,11 +536,11 @@ async function commandDevShell(
     const resourcesDir = io.resourcesDir ?? findResourcesDir(workspace.projectRoot)
 
     // 外壳模式下 Vite 端口先定，worker 端口再避开它；顺序反过来会留下
-    // 「Vite 恰好落在 worker 端口上」的冲突窗口。Vite 端口一旦成功监听就
-    // 作为会话身份保持稳定，后续换 worker 端口时也不跟着漂移。
+    // 「Vite 恰好落在 worker 端口上」的冲突窗口。Vite 端口在成功监听后保持
+    // 稳定，只有整轮重试（且未显式指定 --port）时才重新分配。
     let vitePort = await pickVitePort(freePort, args.port)
     for (let attempt = 1; backend === undefined; attempt++) {
-      const workerPort = await allocateWorkerPort(freePort, vitePort)
+      const workerPort = await allocatePort(freePort, vitePort)
       try {
         dev = await startVite(io, {
           projectRoot: workspace.projectRoot,
@@ -514,16 +550,15 @@ async function commandDevShell(
         })
       } catch (error) {
         if (!(error instanceof VitePortUnavailableError)) throw error
-        if (attempt >= DEV_START_ATTEMPTS) {
-          throw new VitePortUnavailableError(
-            `Vite 端口 ${vitePort} 被占用，已尝试 ${attempt} 次`,
-          )
-        }
-        io.err(`Vite 端口 ${vitePort} 被占用，重新分配后重试（第 ${attempt} 次）`)
-        // 显式 --port 是用户的明确要求，不能静默换成别的端口。
-        if (args.port === undefined) {
-          vitePort = await allocatePort(freePort, workerPort)
-        }
+        vitePort = await nextVitePortOnConflict(
+          io,
+          vitePort,
+          attempt,
+          args.port,
+          freePort,
+          workerPort,
+          vitePort,
+        )
         continue
       }
 
@@ -545,6 +580,12 @@ async function commandDevShell(
           throw error
         }
         io.err(`端口 ${workerPort} 被占用，重新分配后重试（第 ${attempt} 次）`)
+        // 关闭本轮 Vite 后同时重新分配端口：避免旧 worker 端口与刚关闭的旧
+        // Vite 端口尚未释放就被再次选中。显式 --port 时 Vite 端口由用户固定，
+        // 只重分 worker 端口，这是「整轮重分配」的显式例外。
+        if (args.port === undefined) {
+          vitePort = await allocatePort(freePort, workerPort, vitePort)
+        }
       }
     }
 
@@ -558,18 +599,6 @@ async function commandDevShell(
   }
 
   return waitForBackendExit(backend, io, stopAll)
-}
-
-/** 分配 worker 端口，并避开用户显式固定的 Vite 端口。 */
-async function allocateWorkerPort(
-  freePort: () => Promise<number>,
-  vitePort: number | undefined,
-): Promise<number> {
-  for (let i = 0; i < 10; i++) {
-    const port = await freePort()
-    if (port !== vitePort) return port
-  }
-  throw new Error('无法分配到与 Vite 端口不同的 worker 端口')
 }
 
 /** 外壳模式的生命周期：等外壳退出，或把信号转成一次受控停止。 */

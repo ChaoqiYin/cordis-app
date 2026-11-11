@@ -910,11 +910,11 @@ function watchDirectory(dir: string, listener: () => void): ReturnType<typeof wa
 
 export interface ProjectDevServerOptions {
   projectRoot: string
-  /** Vite 端口；缺省 5173，占用时自动换一个 */
+  /** Vite 端口；开发模式由 CLI 在会话开始前固定并恒传 */
   port?: number
   /** worker 的监听地址，代理目标 */
   worker: { port: number; token?: string }
-  /** 固定端口（用户显式 --port 时） */
+  /** 端口被占用时直接失败而不是换端口；开发模式恒为 true */
   strictPort?: boolean
   /**
    * 项目级 Vite 配置挂载点。

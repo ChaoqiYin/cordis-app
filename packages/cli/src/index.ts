@@ -14,7 +14,6 @@ export {
   commandRun,
   commandStart,
   defaultIO,
-  VitePortUnavailableError,
   type CommandIO,
 } from './commands.js'
 export {

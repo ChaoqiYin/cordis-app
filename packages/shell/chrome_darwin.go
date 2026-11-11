@@ -60,14 +60,12 @@ static id cordisNewMenuItem(id title, SEL action, id key) {
 		title, action, key);
 }
 
-// cordisInstallWindowChrome 注册最小的主菜单：「重新载入」(⌘R) 与「退出」(⌘Q)。
+// cordisInstallWindowChrome 注册最小的主菜单：应用菜单里只有「重新载入」(⌘R)。
 //
 // 必须在应用主线程、且窗口已经创建之后调用。菜单动作的目标是我们自己的
 // 对象，所以点击不会落到页面或 responder 链上；窗口销毁后 Go 侧会 detach，
 // 动作只返回 busy，不触碰已销毁的 webview。
-static void cordisInstallWindowChrome(void *handle) {
-	(void)handle;
-
+static void cordisInstallWindowChrome(void) {
 	id app = ((id (*)(id, SEL))objc_msgSend)(
 		(id)objc_getClass("NSApplication"), sel_registerName("sharedApplication"));
 	if (app == nil) return;
@@ -99,17 +97,6 @@ static void cordisInstallWindowChrome(void *handle) {
 		appMenu, sel_registerName("addItem:"), reloadItem);
 
 	((void (*)(id, SEL, id))objc_msgSend)(
-		appMenu, sel_registerName("addItem:"),
-		((id (*)(id, SEL))objc_msgSend)(
-			(id)objc_getClass("NSMenuItem"), sel_registerName("separatorItem")));
-
-	// 退出项 target 留空，走 responder 链交给 NSApplication 的 terminate:。
-	id quitItem = cordisNewMenuItem(
-		cordisString("退出"), sel_registerName("terminate:"), cordisString("q"));
-	((void (*)(id, SEL, id))objc_msgSend)(
-		appMenu, sel_registerName("addItem:"), quitItem);
-
-	((void (*)(id, SEL, id))objc_msgSend)(
 		appItem, sel_registerName("setSubmenu:"), appMenu);
 
 	id mainMenu = cordisNewMenu(cordisString(""));
@@ -123,7 +110,7 @@ import "C"
 
 // installWindowChrome 在窗口创建且 windowController.attach 之后安装一次。
 // 降级路径不会走到 runWindow，因此不会安装菜单。
-func installWindowChrome(backend windowBackend, reload func()) {
+func installWindowChrome(reload func()) {
 	setChromeReload(reload)
-	C.cordisInstallWindowChrome(backend.Window())
+	C.cordisInstallWindowChrome()
 }

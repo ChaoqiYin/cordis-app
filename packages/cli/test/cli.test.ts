@@ -950,6 +950,63 @@ test('dev 浏览器模式在 Vite 端口冲突时换端口重试，并避开 wor
   assert.ok(fake.err.some((line) => line.includes('Vite 端口') && line.includes('被占用')))
 })
 
+test('dev 显式 --port 与 worker 端口相同时明确失败', async () => {
+  const root = join(tempDir(), 'demo')
+  await commandNew(parseArgs(['new', 'demo', '--project', root]), fakeIO().io)
+
+  const app = new FakeApp() // worker 端口 5000
+  let devStarts = 0
+  const fake = fakeIO({
+    findFreePort: async () => 51234,
+    projectWatcher: async () => ({
+      devRoot: join(root, '.cordis', 'dev'),
+      serverEntry: join(root, '.cordis', 'dev', 'server', 'index.js'),
+      localPluginsDir: join(root, '.cordis', 'dev', 'plugins'),
+      async close() {},
+    }),
+    appStarter: async () => app,
+    devServerStarter: async () => {
+      devStarts++
+      throw new Error('不应启动 Vite')
+    },
+  })
+
+  const code = await commandDev(parseArgs(['dev', '--port', '5000', '--project', root]), fake.io)
+
+  assert.notEqual(code, 0)
+  assert.equal(devStarts, 0, '端口冲突应在启动 Vite 之前就失败')
+  const errors = fake.err.join('\n')
+  assert.match(errors, /Vite 端口 5000 已被 worker 使用，请换一个端口或不指定 --port/)
+})
+
+test('dev 只把真正的端口占用识别为可重试冲突', async () => {
+  const root = join(tempDir(), 'demo')
+  await commandNew(parseArgs(['new', 'demo', '--project', root]), fakeIO().io)
+
+  const app = new FakeApp()
+  let devStarts = 0
+  const fake = fakeIO({
+    findFreePort: async () => 51234,
+    projectWatcher: async () => ({
+      devRoot: join(root, '.cordis', 'dev'),
+      serverEntry: join(root, '.cordis', 'dev', 'server', 'index.js'),
+      localPluginsDir: join(root, '.cordis', 'dev', 'plugins'),
+      async close() {},
+    }),
+    appStarter: async () => app,
+    devServerStarter: async () => {
+      devStarts++
+      throw new Error('handle is already in use')
+    },
+  })
+
+  const code = await commandDev(parseArgs(['dev', '--project', root]), fake.io)
+
+  assert.equal(code, 1)
+  assert.equal(devStarts, 1, '无关的 already in use 错误不应触发重试')
+  assert.match(fake.err.join('\n'), /handle is already in use/)
+})
+
 test('dev 的插件前端变化在重启后触发整页刷新', async () => {
   const root = join(tempDir(), 'demo')
   await commandNew(parseArgs(['new', 'demo', '--project', root]), fakeIO().io)
@@ -1167,8 +1224,11 @@ test('dev --shell 在端口被抢占时换端口重启 Vite 与外壳', async ()
   const root = join(tempDir(), 'demo')
   await commandNew(parseArgs(['new', 'demo', '--project', root]), fakeIO().io)
 
-  const ports = [51234, 51235]
+  // 第一轮：worker 51234、Vite 5173；外壳冲突后 Vite 重分到 51235，worker 再分到 51236。
+  const ports = [51234, 51235, 51236]
   const shellPorts: number[] = []
+  const shellDevUrls: string[] = []
+  const devPorts: number[] = []
   let devStarts = 0
   let devClosed = 0
   let attempts = 0
@@ -1192,11 +1252,12 @@ test('dev --shell 在端口被抢占时换端口重启 Vite 与外壳', async ()
       localPluginsDir: join(root, '.cordis', 'dev', 'plugins'),
       async close() {},
     }),
-    devServerStarter: async () => {
+    devServerStarter: async (options) => {
       devStarts++
+      devPorts.push(options.port!)
       return {
-        url: 'http://127.0.0.1:5173/',
-        port: 5173,
+        url: `http://127.0.0.1:${options.port}/`,
+        port: options.port!,
         server: {} as ProjectDevServer['server'],
         reload() {},
         async close() {
@@ -1208,6 +1269,7 @@ test('dev --shell 在端口被抢占时换端口重启 Vite 与外壳', async ()
       attempts++
       if (attempts === 2) closedBeforeRetry = devClosed
       shellPorts.push(options.workerPort)
+      shellDevUrls.push(options.devUrl)
       if (attempts === 1) throw new ShellPortUnavailableError('端口被占用')
       setTimeout(() => exitListener?.(0), 0)
       return backend
@@ -1218,10 +1280,77 @@ test('dev --shell 在端口被抢占时换端口重启 Vite 与外壳', async ()
 
   assert.equal(code, 0)
   assert.equal(attempts, 2, '端口冲突后应再试一次')
-  assert.deepEqual(shellPorts, [51234, 51235])
+  assert.deepEqual(shellPorts, [51234, 51236])
+  assert.deepEqual(
+    devPorts,
+    [5173, 51235],
+    '外壳端口冲突后重新分配 Vite 端口，避开旧 worker 与旧 Vite 端口',
+  )
   assert.equal(devStarts, 2, 'Vite 的代理目标换端口，必须跟着重启')
   assert.equal(closedBeforeRetry, 1, '第一轮 Vite 在重试前应关闭')
+  assert.equal(
+    shellDevUrls[1],
+    'http://127.0.0.1:51235/',
+    '外壳拿到的 devUrl 必须指向重新分配的 Vite 端口',
+  )
   assert.ok(fake.err.some((line) => line.includes('被占用')))
+})
+
+test('dev --shell 显式 --port 且外壳端口冲突时 Vite 端口不变，只重分 worker 端口', async () => {
+  const root = join(tempDir(), 'demo')
+  await commandNew(parseArgs(['new', 'demo', '--project', root]), fakeIO().io)
+
+  // 显式 4000 不需要分配；worker 避开 4000 后拿到 51234，冲突后再分 51235。
+  const ports = [4000, 51234, 51235]
+  const devPorts: number[] = []
+  const shellPorts: number[] = []
+  let attempts = 0
+  let exitListener: ((code: number | null) => void) | undefined
+
+  const backend: ShellDevBackend = {
+    async restartWorker() {},
+    onExit(listener) {
+      exitListener = listener
+      return () => {}
+    },
+    async stop() {},
+  }
+  const fake = fakeIO({
+    shellLocator: () => ({ path: '/opt/cordis-app' }),
+    findFreePort: async () => ports.shift()!,
+    projectWatcher: async () => ({
+      devRoot: join(root, '.cordis', 'dev'),
+      serverEntry: join(root, '.cordis', 'dev', 'server', 'index.js'),
+      localPluginsDir: join(root, '.cordis', 'dev', 'plugins'),
+      async close() {},
+    }),
+    devServerStarter: async (options) => {
+      devPorts.push(options.port!)
+      return {
+        url: `http://127.0.0.1:${options.port}/`,
+        port: options.port!,
+        server: {} as ProjectDevServer['server'],
+        reload() {},
+        async close() {},
+      }
+    },
+    shellDevStarter: async (options) => {
+      attempts++
+      shellPorts.push(options.workerPort)
+      if (attempts === 1) throw new ShellPortUnavailableError('端口被占用')
+      setTimeout(() => exitListener?.(0), 0)
+      return backend
+    },
+  })
+
+  const code = await commandDev(
+    parseArgs(['dev', '--shell', '--port', '4000', '--project', root]),
+    fake.io,
+  )
+
+  assert.equal(code, 0)
+  assert.deepEqual(devPorts, [4000, 4000], '显式 --port 不会被静默更换')
+  assert.deepEqual(shellPorts, [51234, 51235], '冲突后只重新分配 worker 端口')
 })
 
 test('dev --shell 在 Vite 端口冲突时换端口重启 Vite 与外壳', async () => {
