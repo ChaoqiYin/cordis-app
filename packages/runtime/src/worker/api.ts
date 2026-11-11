@@ -9,6 +9,7 @@ import type {
   ClientManifest,
   PluginFailure,
   PluginInventory,
+  ReconnectReason,
   RuntimeMode,
 } from '@cordis-app/protocol'
 import { parseJson, readBody, sendError, sendJson } from '../builtin/http-utils.js'
@@ -44,8 +45,8 @@ export interface ApiOptions {
    */
   state: PluginStateStore
   failures: PluginFailure[]
-  /** 由 worker 注入：请求优雅重启 */
-  requestRestart?: () => void
+  /** 由 worker 注入：请求优雅重启，原因随重连事件广播给页面 */
+  requestRestart?: (reason?: ReconnectReason) => void
   /** 时钟注入，测试用。 */
   now?: () => Date
 }
@@ -123,7 +124,7 @@ export function installRoutes(ctx: KernelContext, options: ApiOptions): void {
       // 安装动作本身已经写盘，进程内无法可靠卸载 require.cache，
       // 所以一律走重启；result.restarted 用于向调用方说明原因。
       sendJson(res, 200, result)
-      options.requestRestart?.()
+      options.requestRestart?.('plugin-change')
     } catch (error) {
       sendError(res, 400, 'install_failed', (error as Error).message)
     }
@@ -187,7 +188,7 @@ export function installRoutes(ctx: KernelContext, options: ApiOptions): void {
    */
   ctx.router.post('/api/restart', (_req, res) => {
     sendJson(res, 202, { restarting: true })
-    options.requestRestart?.()
+    options.requestRestart?.('restart')
   })
 }
 

@@ -13,6 +13,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { ClientRuntime, RuntimeContext } from 'cordis-app/client'
 import {
   BodyHost,
+  ConnectionStatusBar,
   DefaultBody,
   PluginMenuTrigger,
   PluginPageOutlet,
@@ -234,6 +235,40 @@ test('DefaultBody 提供 pages、slots、menus、settings 全部能力', () => {
   assert.match(html, /活动栏插槽/)
   assert.match(html, /设置/, '默认 body 必须保留设置入口')
   assert.doesNotMatch(html, /未找到页面/)
+})
+
+test('连接状态条按重启原因选择文案', () => {
+  const cases: Array<{
+    phase: 'connecting' | 'ready' | 'reconnecting' | 'failed'
+    reason?: string
+    expected: string | null
+  }> = [
+    { phase: 'reconnecting', reason: 'plugin-change', expected: '正在应用插件变更…' },
+    { phase: 'reconnecting', reason: 'restart', expected: '正在重启服务…' },
+    { phase: 'reconnecting', reason: 'unexpected', expected: '正在重连…' },
+    { phase: 'reconnecting', expected: '正在重连…' },
+    { phase: 'failed', reason: 'unexpected', expected: '与服务的连接已断开，请刷新页面' },
+    { phase: 'ready', expected: null },
+    { phase: 'connecting', expected: null },
+  ]
+
+  for (const { phase, reason, expected } of cases) {
+    const runtime = runtimeWithRuntimeContext()
+    runtime.attachConnection({
+      close() {},
+      getState: () => ({ phase, ...(reason ? { reason } : {}) }),
+      onStateChange: () => () => {},
+      onReconnected: () => () => {},
+    })
+
+    const html = render(runtime, createElement(ConnectionStatusBar))
+    const label = `${phase}/${reason ?? '无原因'}`
+    if (expected === null) {
+      assert.equal(html, '', `${label} 不应显示状态条`)
+    } else {
+      assert.ok(html.includes(expected), `${label} 应显示「${expected}」，实际：${html}`)
+    }
+  }
 })
 
 test('卸载插件后页面、插槽、菜单与设置全部消失', async () => {

@@ -7,6 +7,7 @@
  */
 
 import type { ClientManifest, ClientPluginEntry } from '@cordis-app/protocol/client'
+import type { Connection } from './connection.js'
 import { Registry } from './registry.js'
 import { createHttp } from './http.js'
 import { applyAccent, applyTheme } from './appearance.js'
@@ -112,7 +113,8 @@ export class ClientRuntime {
 
   private menuListeners = new Set<() => void>()
   private menu: MenuState | null = null
-  private reconnectListeners = new Set<() => void | Promise<void>>()
+  private reconnectListeners = new Set<(reason?: string) => void | Promise<void>>()
+  private attachedConnection: Connection | null = null
 
   constructor(options: ClientRuntimeOptions) {
     this.token = options.token
@@ -147,6 +149,23 @@ export class ClientRuntime {
     for (const listener of this.menuListeners) listener()
   }
 
+  // ---- 连接状态 ----
+
+  /**
+   * 挂上已建立的连接。
+   *
+   * 连接由启动代码创建（它需要在 React 渲染前就绪），之后通过运行时共享给
+   * body 与插件；`useConnectionStatus()` 从这里读取。重复挂载以最后一次为准。
+   */
+  attachConnection(connection: Connection): void {
+    this.attachedConnection = connection
+  }
+
+  /** 当前连接；启动早期或 SSR 下为 null。 */
+  get connection(): Connection | null {
+    return this.attachedConnection
+  }
+
   // ---- 服务恢复：宿主视图重新拉取服务端状态 ----
 
   /**
@@ -154,9 +173,9 @@ export class ClientRuntime {
    *
    * 启动代码在 WebSocket 重连后调用 `notifyReconnected`。设置页这类宿主视图
    * 据此刷新清单，而不是依赖组件重新挂载——插件增删后 worker 会重启，组件
-   * 本身却一直挂载着。
+   * 本身却一直挂载着。`reason` 是这次重启的原因，只在确实由重启引起时存在。
    */
-  onReconnected(listener: () => void | Promise<void>): () => void {
+  onReconnected(listener: (reason?: string) => void | Promise<void>): () => void {
     this.reconnectListeners.add(listener)
     return () => {
       this.reconnectListeners.delete(listener)
@@ -164,10 +183,10 @@ export class ClientRuntime {
   }
 
   /** 逐个通知重连监听者；单个失败不影响其他监听者。 */
-  async notifyReconnected(): Promise<void> {
+  async notifyReconnected(reason?: string): Promise<void> {
     for (const listener of this.reconnectListeners) {
       try {
-        await listener()
+        await listener(reason)
       } catch (error) {
         console.error('[cordis-app] 重连监听者执行失败:', error)
       }

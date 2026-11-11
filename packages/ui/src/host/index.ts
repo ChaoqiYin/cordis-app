@@ -12,6 +12,7 @@
  */
 
 export { BodyHost } from './BodyHost.js'
+export { ConnectionStatusBar } from './connection-status.js'
 export { DefaultBody, SETTINGS_PATH } from './DefaultBody.js'
 export { ErrorBoundary } from './ErrorBoundary.js'
 export { PluginMenuTrigger } from './PluginMenuTrigger.js'
@@ -44,3 +45,5 @@ export { warnUiCompatibility, warnUiContractVersion } from './capabilities.js'
 
 // 菜单触发器与插件侧共用同一个 hook，避免 body 自己再实现一套
 export { useMenu } from 'cordis-app/client'
+// 连接状态同理：body 用它决定是否/如何提示重连
+export { useConnectionStatus } from 'cordis-app/client'

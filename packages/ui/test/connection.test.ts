@@ -95,6 +95,11 @@ function setup() {
   return { transport, connection, states }
 }
 
+/** 大多数用例只关心相位，原因由专门的用例覆盖。 */
+function phases(states: ConnectionState[]): string[] {
+  return states.map((state) => state.phase)
+}
+
 test('连接建立后从 connecting 进入 ready', () => {
   const { transport, connection, states } = setup()
 
@@ -103,7 +108,7 @@ test('连接建立后从 connecting 进入 ready', () => {
   assert.equal(socket.closed, false)
 
   socket.fireOpen()
-  assert.deepEqual(states, ['ready'])
+  assert.deepEqual(phases(states), ['ready'])
 
   connection.close()
   assert.equal(socket.closed, true, 'close 必须真的关掉底层连接')
@@ -134,6 +139,58 @@ test('server:reconnect：轮询恢复后先重放清单，再建立新连接', a
   connection.close()
 })
 
+test('重连事件的原因进入状态，恢复后传给监听者并被清空', async () => {
+  const transport = new FakeTransport()
+  const runtime = fakeRuntime()
+  const connection = connect(runtime, transport)
+  transport.probeResults.push(true)
+
+  const states: ConnectionState[] = []
+  connection.onStateChange((state) => states.push(state))
+  const reasons: Array<string | undefined> = []
+  connection.onReconnected((reason) => {
+    reasons.push(reason)
+  })
+
+  transport.sockets[0]!.fireOpen()
+  transport.sockets[0]!.fireMessage(
+    JSON.stringify({ type: RECONNECT_EVENT, data: { reason: 'plugin-change' } }),
+  )
+  await tick()
+
+  assert.deepEqual(states, [
+    { phase: 'ready' },
+    { phase: 'reconnecting', reason: 'plugin-change' },
+    { phase: 'connecting' },
+  ])
+  assert.deepEqual(reasons, ['plugin-change'], '恢复监听者要能拿到重启原因')
+
+  transport.sockets[1]!.fireOpen()
+  assert.deepEqual(
+    states[states.length - 1],
+    { phase: 'ready' },
+    '恢复后不能沿用上一次的原因',
+  )
+  connection.close()
+})
+
+test('未收到广播的意外断开标记为 unexpected', async () => {
+  const transport = new FakeTransport()
+  const runtime = fakeRuntime()
+  const connection = connect(runtime, transport)
+  transport.probeResults.push(true)
+
+  const states: ConnectionState[] = []
+  connection.onStateChange((state) => states.push(state))
+
+  transport.sockets[0]!.fireOpen()
+  transport.sockets[0]!.fireClose()
+  await tick()
+
+  assert.deepEqual(states[1], { phase: 'reconnecting', reason: 'unexpected' })
+  connection.close()
+})
+
 test('意外断开后按退避节奏轮询，恢复后重建连接', async () => {
   const { transport, connection, states } = setup()
   transport.probeResults.push(false, false, true)
@@ -143,12 +200,12 @@ test('意外断开后按退避节奏轮询，恢复后重建连接', async () =>
   first.fireClose()
   await tick()
 
-  assert.deepEqual(states, ['ready', 'reconnecting', 'connecting'])
+  assert.deepEqual(phases(states), ['ready', 'reconnecting', 'connecting'])
   assert.deepEqual(transport.waits, [200, 400], '前几次探测密集，随后放宽')
   assert.equal(transport.sockets.length, 2)
 
   transport.sockets[1]!.fireOpen()
-  assert.deepEqual(states, ['ready', 'reconnecting', 'connecting', 'ready'])
+  assert.deepEqual(phases(states), ['ready', 'reconnecting', 'connecting', 'ready'])
   connection.close()
 })
 
@@ -187,7 +244,7 @@ test('轮询超过 30 秒仍不可用则进入 failed，且不会无限空转', 
   transport.sockets[0]!.fireClose()
   await tick()
 
-  assert.deepEqual(states, ['ready', 'reconnecting', 'failed'])
+  assert.deepEqual(phases(states), ['ready', 'reconnecting', 'failed'])
   assert.ok(transport.probes > 1)
   assert.ok(transport.waits.length < 30, '退避必须收窄成有限次探测')
   assert.ok(transport.now() >= 30_000)

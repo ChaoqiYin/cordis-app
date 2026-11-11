@@ -8,6 +8,7 @@
 
 import { useEffect, type ReactNode } from 'react'
 import { usePages } from 'cordis-app/client'
+import { ConnectionStatusBar } from './connection-status.js'
 import { Icon } from './icons.js'
 import { navigate, usePath } from './router.js'
 import { PluginMenuTrigger } from './PluginMenuTrigger.js'
@@ -55,6 +56,9 @@ export function DefaultBody(): ReactNode {
           )}
         </div>
       </main>
+
+      {/* 连接提示属于布局：默认 body 用它，项目 body 可换成自己的实现 */}
+      <ConnectionStatusBar />
     </div>
   )
 }

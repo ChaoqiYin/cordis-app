@@ -44,6 +44,7 @@ import {
   type AppManifest,
   type ClientManifest,
   type PluginFailure,
+  type ReconnectReason,
   type RuntimeMode,
   type WorkerMessage,
 } from '@cordis-app/protocol'
@@ -115,8 +116,10 @@ export interface WorkerOptions {
   /**
    * 覆盖重启请求。只由进程配置注入，供测试使用，避免测试进程被 `exit(75)`
    * 终止；HTTP 请求不能设置它。
+   *
+   * 原因由调用点声明，随重连事件广播给页面；缺省按 `restart` 处理。
    */
-  requestRestart?: () => void
+  requestRestart?: (reason?: ReconnectReason) => void
   /**
    * 原生传输端点。supervisor 从环境变量读取后注入；直接调用 `startWorker`
    * 时可由测试或嵌入方提供。缺省时 `ctx.native.available` 为 false。
@@ -137,7 +140,7 @@ export interface WorkerHandle {
   /** 本轮运行实际使用的安装来源；项目模式为 npm，打包模式为 bundle */
   sourceKind: 'npm' | 'bundle'
   /** 优雅重启：关监听 → 通知客户端 → dispose → exit(75) */
-  restart(): Promise<never>
+  restart(reason?: ReconnectReason): Promise<never>
   /** 测试用：直接关闭 */
   close(): Promise<void>
 }
@@ -415,7 +418,8 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
     scan: () => scanPluginRoots(pluginRoots, { frameworkVersion }),
     state: pluginState,
     failures,
-    requestRestart: options.requestRestart ?? (() => setTimeout(() => void restart(), 50)),
+    requestRestart:
+      options.requestRestart ?? ((reason) => setTimeout(() => void restart(reason), 50)),
   })
 
   // 完整就绪：HTTP 已监听且全部插件加载完成，才标记 healthy。
@@ -431,10 +435,11 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
   }
   report({ type: 'ready', port: ctx.server.port, failures })
 
-  const restart = async (): Promise<never> => {
-    logger.info('开始重启：关闭监听并通知客户端')
-    // 1. 先通知客户端即将重连——它需要收到「请等待」才能进入等待态而不是当成掉线
-    ctx.ws.broadcastAll({ type: RECONNECT_EVENT })
+  const restart = async (reason: ReconnectReason = 'restart'): Promise<never> => {
+    logger.info(`开始重启（${reason}）：关闭监听并通知客户端`)
+    // 1. 先通知客户端即将重连——它需要收到「请等待」才能进入等待态而不是当成掉线。
+    //    原因一并带上，页面据此区分「用户刚触发的变更」与「意外掉线」。
+    ctx.ws.broadcastAll({ type: RECONNECT_EVENT, data: { reason } })
     // 2. 释放全部内置插件。ws 在释放时断开已升级的 socket，否则 server.close()
     //    会一直等那些连接——重启就卡死在这里。
     const server = ctx.server
@@ -445,7 +450,8 @@ export async function startWorker(options: WorkerOptions): Promise<WorkerHandle>
   }
 
   const sigterm = () => {
-    void restart()
+    // worker 分不清外部是在停止还是重启，交给展示层用中性措辞
+    void restart('shutdown')
   }
   process.on('SIGTERM', sigterm)
 

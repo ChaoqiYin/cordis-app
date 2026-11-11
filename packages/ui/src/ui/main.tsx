@@ -6,8 +6,8 @@
  *   2. 从 URL fragment 取 token（用过即抹）
  *   3. 拉插件清单 —— 它需要 token
  *   4. 逐个加载插件前端入口
- *   5. 建 WebSocket，进入「可重连」状态
- *   6. 渲染
+ *   5. 建 WebSocket 并挂到运行时，进入「可重连」状态
+ *   6. 渲染 —— 重连提示由 body 读取运行时状态自行渲染
  *
  * 第 3 步失败要停在启动页：没有清单就没有页面，硬渲染出一个空壳只会让人
  * 误以为插件全坏了。
@@ -32,7 +32,6 @@ import {
   bootstrapToken,
   connect,
   restoreAppearance,
-  type Connection,
 } from 'cordis-app/client'
 
 async function main(): Promise<void> {
@@ -66,11 +65,13 @@ async function main(): Promise<void> {
   }
 
   const connection = connect(runtime)
-  mountStatusBar(connection)
+  // 连接在 React 渲染前建立，挂到运行时上供 body 通过 useConnectionStatus 读取；
+  // 重连提示由 body 渲染，壳不再直接操作 DOM
+  runtime.attachConnection(connection)
   // 浏览器前进/后退只挂一次；SSR 下返回 no-op
   installHistoryListener()
 
-  connection.onReconnected(async () => {
+  connection.onReconnected(async (reason) => {
     // 重启后插件可能已增删，重新拉清单并重放加载；旧实例会被逐个替换
     try {
       await loadAllPlugins(runtime)
@@ -78,7 +79,7 @@ async function main(): Promise<void> {
       console.error('[cordis-app] 重连后刷新插件失败:', error)
     }
     // 宿主自己的视图（如设置页）也要重新拉取服务端状态，不能只靠重新挂载
-    await runtime.notifyReconnected()
+    await runtime.notifyReconnected(reason)
   })
 
   root.render(
@@ -104,27 +105,6 @@ async function loadAllPlugins(runtime: ClientRuntime): Promise<void> {
       return runtime.loadPlugin(entry)
     }),
   )
-}
-
-/** 重启期间的状态条。挂在 body 上，不参与 React 树，与被等待的页面互不影响。 */
-function mountStatusBar(connection: Connection): void {
-  const node = document.createElement('div')
-  node.className = 'reconnect-bar'
-  node.hidden = true
-  node.textContent = '正在重连…'
-  document.body.appendChild(node)
-
-  connection.onStateChange((state) => {
-    if (state === 'ready') {
-      node.hidden = true
-    } else if (state === 'failed') {
-      node.hidden = false
-      node.textContent = '与服务的连接已断开，请刷新页面'
-    } else {
-      node.hidden = false
-      node.textContent = '正在重连…'
-    }
-  })
 }
 
 function BootError(props: { title: string; detail: string; onRetry?: () => void }): ReactNode {

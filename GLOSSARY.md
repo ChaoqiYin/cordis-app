@@ -301,6 +301,13 @@ Node 进程：内核、内置插件、项目 server 入口、应用插件与前�
 supervisor stdout 上唯一的字符串契约：
 `@@CORDIS_APP@@{"ready":true,"port":…,"token":…,"version":…,"failures":[]}`。
 
+**重启原因（`ReconnectReason`）**
+worker 主动重启时随 `server:reconnect` 广播给页面的原因：`plugin-change`
+（安装、卸载、启用、重装插件）、`restart`（`POST /api/restart`）、`shutdown`
+（收到 SIGTERM）。没有收到广播的连接中断由页面记为 `unexpected`。它是开放
+集合：未知值由展示层回退为中性措辞。连接提示的界面归 body，框架只保证原因
+送达。
+
 ## 已废弃的说法
 
 以下词来自旧模型，文档与代码中不应再出现（除非明确讨论历史）：
